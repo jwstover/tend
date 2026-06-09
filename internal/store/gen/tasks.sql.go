@@ -7,7 +7,39 @@ package gen
 
 import (
 	"context"
+	"database/sql"
 )
+
+const createChildTask = `-- name: CreateChildTask :one
+INSERT INTO tasks (title, parent_id)
+VALUES (?, ?)
+RETURNING id, title, body_md, state, parent_id, project, priority, due, snooze_until, created_at, updated_at, completed_at
+`
+
+type CreateChildTaskParams struct {
+	Title    string
+	ParentID sql.NullInt64
+}
+
+func (q *Queries) CreateChildTask(ctx context.Context, arg CreateChildTaskParams) (Task, error) {
+	row := q.db.QueryRowContext(ctx, createChildTask, arg.Title, arg.ParentID)
+	var i Task
+	err := row.Scan(
+		&i.ID,
+		&i.Title,
+		&i.BodyMd,
+		&i.State,
+		&i.ParentID,
+		&i.Project,
+		&i.Priority,
+		&i.Due,
+		&i.SnoozeUntil,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.CompletedAt,
+	)
+	return i, err
+}
 
 const createTask = `-- name: CreateTask :one
 INSERT INTO tasks (title)
@@ -61,6 +93,92 @@ func (q *Queries) GetTask(ctx context.Context, id int64) (Task, error) {
 	return i, err
 }
 
+const listChildTasks = `-- name: ListChildTasks :many
+SELECT id, title, body_md, state, parent_id, project, priority, due, snooze_until, created_at, updated_at, completed_at
+FROM tasks
+WHERE parent_id = ?
+ORDER BY id
+`
+
+func (q *Queries) ListChildTasks(ctx context.Context, parentID sql.NullInt64) ([]Task, error) {
+	rows, err := q.db.QueryContext(ctx, listChildTasks, parentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Task{}
+	for rows.Next() {
+		var i Task
+		if err := rows.Scan(
+			&i.ID,
+			&i.Title,
+			&i.BodyMd,
+			&i.State,
+			&i.ParentID,
+			&i.Project,
+			&i.Priority,
+			&i.Due,
+			&i.SnoozeUntil,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.CompletedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listInboxTasks = `-- name: ListInboxTasks :many
+SELECT id, title, body_md, state, parent_id, project, priority, due, snooze_until, created_at, updated_at, completed_at
+FROM tasks
+WHERE state = 'inbox'
+ORDER BY id
+`
+
+func (q *Queries) ListInboxTasks(ctx context.Context) ([]Task, error) {
+	rows, err := q.db.QueryContext(ctx, listInboxTasks)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Task{}
+	for rows.Next() {
+		var i Task
+		if err := rows.Scan(
+			&i.ID,
+			&i.Title,
+			&i.BodyMd,
+			&i.State,
+			&i.ParentID,
+			&i.Project,
+			&i.Priority,
+			&i.Due,
+			&i.SnoozeUntil,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.CompletedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listLiveTasks = `-- name: ListLiveTasks :many
 SELECT t.id, t.title, t.body_md, t.state, t.parent_id, t.project, t.priority, t.due, t.snooze_until, t.created_at, t.updated_at, t.completed_at
 FROM tasks t
@@ -105,4 +223,73 @@ func (q *Queries) ListLiveTasks(ctx context.Context) ([]Task, error) {
 		return nil, err
 	}
 	return items, nil
+}
+
+const setTaskBody = `-- name: SetTaskBody :exec
+UPDATE tasks
+SET body_md    = ?,
+    updated_at = datetime('now')
+WHERE id = ?
+`
+
+type SetTaskBodyParams struct {
+	BodyMd string
+	ID     int64
+}
+
+func (q *Queries) SetTaskBody(ctx context.Context, arg SetTaskBodyParams) error {
+	_, err := q.db.ExecContext(ctx, setTaskBody, arg.BodyMd, arg.ID)
+	return err
+}
+
+const setTaskDue = `-- name: SetTaskDue :exec
+UPDATE tasks
+SET due        = ?,
+    updated_at = datetime('now')
+WHERE id = ?
+`
+
+type SetTaskDueParams struct {
+	Due sql.NullString
+	ID  int64
+}
+
+func (q *Queries) SetTaskDue(ctx context.Context, arg SetTaskDueParams) error {
+	_, err := q.db.ExecContext(ctx, setTaskDue, arg.Due, arg.ID)
+	return err
+}
+
+const setTaskProject = `-- name: SetTaskProject :exec
+UPDATE tasks
+SET project    = ?,
+    updated_at = datetime('now')
+WHERE id = ?
+`
+
+type SetTaskProjectParams struct {
+	Project sql.NullString
+	ID      int64
+}
+
+func (q *Queries) SetTaskProject(ctx context.Context, arg SetTaskProjectParams) error {
+	_, err := q.db.ExecContext(ctx, setTaskProject, arg.Project, arg.ID)
+	return err
+}
+
+const setTaskState = `-- name: SetTaskState :exec
+UPDATE tasks
+SET state        = ?1,
+    completed_at = CASE WHEN ?1 = 'done' THEN datetime('now') ELSE NULL END,
+    updated_at   = datetime('now')
+WHERE id = ?2
+`
+
+type SetTaskStateParams struct {
+	State string
+	ID    int64
+}
+
+func (q *Queries) SetTaskState(ctx context.Context, arg SetTaskStateParams) error {
+	_, err := q.db.ExecContext(ctx, setTaskState, arg.State, arg.ID)
+	return err
 }

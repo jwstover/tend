@@ -4,6 +4,7 @@ package task
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 )
@@ -21,8 +22,27 @@ const (
 	StateSomeday State = "someday"
 )
 
+// Valid reports whether s is one of the seeded workflow states.
+func (s State) Valid() bool {
+	switch s {
+	case StateInbox, StateTodo, StateDoing, StateBlocked, StateDone, StateSomeday:
+		return true
+	}
+	return false
+}
+
 // ErrEmptyTitle is returned when a captured title is blank.
 var ErrEmptyTitle = errors.New("task title is empty")
+
+// NormalizeDate parses and canonicalizes an ISO 8601 date (YYYY-MM-DD),
+// the only date format the schema stores.
+func NormalizeDate(s string) (string, error) {
+	t, err := time.Parse("2006-01-02", strings.TrimSpace(s))
+	if err != nil {
+		return "", fmt.Errorf("invalid date %q (want YYYY-MM-DD)", s)
+	}
+	return t.Format("2006-01-02"), nil
+}
 
 // NormalizeTitle trims surrounding whitespace and rejects blank titles.
 // A bare title is the only thing capture requires, so this is the entire

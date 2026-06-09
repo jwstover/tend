@@ -102,15 +102,92 @@ func (s *Store) ListLive(ctx context.Context) ([]task.Task, error) {
 	if err != nil {
 		return nil, fmt.Errorf("listing live tasks: %w", err)
 	}
-	tasks := make([]task.Task, 0, len(rows))
-	for _, row := range rows {
-		t, err := toDomain(row)
-		if err != nil {
-			return nil, err
-		}
-		tasks = append(tasks, t)
+	return toDomainSlice(rows)
+}
+
+// AddChild captures a sub-task under an existing task.
+func (s *Store) AddChild(ctx context.Context, parentID int64, title string) (task.Task, error) {
+	t, err := task.NormalizeTitle(title)
+	if err != nil {
+		return task.Task{}, err
 	}
-	return tasks, nil
+	row, err := s.q.CreateChildTask(ctx, gen.CreateChildTaskParams{
+		Title:    t,
+		ParentID: sql.NullInt64{Int64: parentID, Valid: true},
+	})
+	if err != nil {
+		return task.Task{}, fmt.Errorf("inserting sub-task of %d: %w", parentID, err)
+	}
+	return toDomain(row)
+}
+
+// ListInbox returns every task still in the inbox state, oldest first.
+// This feeds the triage view.
+func (s *Store) ListInbox(ctx context.Context) ([]task.Task, error) {
+	rows, err := s.q.ListInboxTasks(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("listing inbox tasks: %w", err)
+	}
+	return toDomainSlice(rows)
+}
+
+// ListChildren returns the sub-tasks of a task, oldest first.
+func (s *Store) ListChildren(ctx context.Context, parentID int64) ([]task.Task, error) {
+	rows, err := s.q.ListChildTasks(ctx, sql.NullInt64{Int64: parentID, Valid: true})
+	if err != nil {
+		return nil, fmt.Errorf("listing children of task %d: %w", parentID, err)
+	}
+	return toDomainSlice(rows)
+}
+
+// SetState moves a task to a new workflow state. Entering done stamps
+// completed_at; entering any other state clears it.
+func (s *Store) SetState(ctx context.Context, id int64, st task.State) error {
+	if !st.Valid() {
+		return fmt.Errorf("unknown state %q", st)
+	}
+	err := s.q.SetTaskState(ctx, gen.SetTaskStateParams{State: string(st), ID: id})
+	if err != nil {
+		return fmt.Errorf("setting task %d state to %s: %w", id, st, err)
+	}
+	return nil
+}
+
+// SetProject assigns a project to a task; nil clears it.
+func (s *Store) SetProject(ctx context.Context, id int64, project *string) error {
+	err := s.q.SetTaskProject(ctx, gen.SetTaskProjectParams{
+		Project: toNullString(project),
+		ID:      id,
+	})
+	if err != nil {
+		return fmt.Errorf("setting task %d project: %w", id, err)
+	}
+	return nil
+}
+
+// SetDue assigns a due date (ISO 8601, validated) to a task; nil clears it.
+func (s *Store) SetDue(ctx context.Context, id int64, due *string) error {
+	var v *string
+	if due != nil {
+		d, err := task.NormalizeDate(*due)
+		if err != nil {
+			return err
+		}
+		v = &d
+	}
+	err := s.q.SetTaskDue(ctx, gen.SetTaskDueParams{Due: toNullString(v), ID: id})
+	if err != nil {
+		return fmt.Errorf("setting task %d due date: %w", id, err)
+	}
+	return nil
+}
+
+// SetBody replaces a task's markdown body.
+func (s *Store) SetBody(ctx context.Context, id int64, body string) error {
+	if err := s.q.SetTaskBody(ctx, gen.SetTaskBodyParams{BodyMd: body, ID: id}); err != nil {
+		return fmt.Errorf("setting task %d body: %w", id, err)
+	}
+	return nil
 }
 
 // GetTask loads a single task by id.
@@ -120,6 +197,18 @@ func (s *Store) GetTask(ctx context.Context, id int64) (task.Task, error) {
 		return task.Task{}, fmt.Errorf("loading task %d: %w", id, err)
 	}
 	return toDomain(row)
+}
+
+func toDomainSlice(rows []gen.Task) ([]task.Task, error) {
+	tasks := make([]task.Task, 0, len(rows))
+	for _, row := range rows {
+		t, err := toDomain(row)
+		if err != nil {
+			return nil, err
+		}
+		tasks = append(tasks, t)
+	}
+	return tasks, nil
 }
 
 func toDomain(row gen.Task) (task.Task, error) {
@@ -161,6 +250,13 @@ func parseTime(s string) (time.Time, error) {
 		return time.Time{}, fmt.Errorf("parsing %q: %w", s, err)
 	}
 	return t, nil
+}
+
+func toNullString(v *string) sql.NullString {
+	if v == nil {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: *v, Valid: true}
 }
 
 func nullString(v sql.NullString) *string {

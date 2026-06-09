@@ -6,12 +6,20 @@ package gen
 
 import (
 	"context"
+	"database/sql"
 )
 
 type Querier interface {
+	CreateChildTask(ctx context.Context, arg CreateChildTaskParams) (Task, error)
 	CreateTask(ctx context.Context, title string) (Task, error)
 	GetTask(ctx context.Context, id int64) (Task, error)
+	ListChildTasks(ctx context.Context, parentID sql.NullInt64) ([]Task, error)
+	ListInboxTasks(ctx context.Context) ([]Task, error)
 	ListLiveTasks(ctx context.Context) ([]Task, error)
+	SetTaskBody(ctx context.Context, arg SetTaskBodyParams) error
+	SetTaskDue(ctx context.Context, arg SetTaskDueParams) error
+	SetTaskProject(ctx context.Context, arg SetTaskProjectParams) error
+	SetTaskState(ctx context.Context, arg SetTaskStateParams) error
 }
 
 var _ Querier = (*Queries)(nil)

@@ -115,6 +115,125 @@ func TestListLiveFiltering(t *testing.T) {
 	}
 }
 
+func TestTriageMutators(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	created, err := s.AddTask(ctx, "needs triage")
+	if err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+
+	inbox, err := s.ListInbox(ctx)
+	if err != nil {
+		t.Fatalf("ListInbox: %v", err)
+	}
+	if len(inbox) != 1 || inbox[0].ID != created.ID {
+		t.Fatalf("ListInbox = %+v, want the one captured task", inbox)
+	}
+
+	proj := "home"
+	if err := s.SetProject(ctx, created.ID, &proj); err != nil {
+		t.Fatalf("SetProject: %v", err)
+	}
+	if err := s.SetDue(ctx, created.ID, ptr("2026-12-01")); err != nil {
+		t.Fatalf("SetDue: %v", err)
+	}
+	if err := s.SetDue(ctx, created.ID, ptr("not a date")); err == nil {
+		t.Error("SetDue with invalid date should fail")
+	}
+	if err := s.SetBody(ctx, created.ID, "## context\nhttps://example.com"); err != nil {
+		t.Fatalf("SetBody: %v", err)
+	}
+	if err := s.SetState(ctx, created.ID, task.StateDone); err != nil {
+		t.Fatalf("SetState(done): %v", err)
+	}
+	if err := s.SetState(ctx, created.ID, "bogus"); err == nil {
+		t.Error("SetState with unknown state should fail")
+	}
+
+	got, err := s.GetTask(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if got.Project == nil || *got.Project != "home" {
+		t.Errorf("Project = %v, want home", got.Project)
+	}
+	if got.Due == nil || *got.Due != "2026-12-01" {
+		t.Errorf("Due = %v, want 2026-12-01", got.Due)
+	}
+	if got.BodyMD == "" {
+		t.Error("BodyMD not saved")
+	}
+	if got.State != task.StateDone {
+		t.Errorf("State = %s, want done", got.State)
+	}
+	if got.CompletedAt == nil {
+		t.Error("CompletedAt not stamped on done")
+	}
+	if !got.UpdatedAt.After(created.UpdatedAt) && got.UpdatedAt.Equal(created.UpdatedAt) {
+		// updated_at has second resolution; equal is acceptable, going
+		// backwards is not.
+		if got.UpdatedAt.Before(created.UpdatedAt) {
+			t.Error("UpdatedAt went backwards")
+		}
+	}
+
+	// Leaving done clears the completion stamp.
+	if err := s.SetState(ctx, created.ID, task.StateTodo); err != nil {
+		t.Fatalf("SetState(todo): %v", err)
+	}
+	got, err = s.GetTask(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if got.CompletedAt != nil {
+		t.Error("CompletedAt should clear when leaving done")
+	}
+
+	// Clearing project/due with nil.
+	if err := s.SetProject(ctx, created.ID, nil); err != nil {
+		t.Fatalf("SetProject(nil): %v", err)
+	}
+	if err := s.SetDue(ctx, created.ID, nil); err != nil {
+		t.Fatalf("SetDue(nil): %v", err)
+	}
+	got, _ = s.GetTask(ctx, created.ID)
+	if got.Project != nil || got.Due != nil {
+		t.Errorf("Project/Due not cleared: %v %v", got.Project, got.Due)
+	}
+}
+
+func TestSubTasks(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	parent, err := s.AddTask(ctx, "parent")
+	if err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	c1, err := s.AddChild(ctx, parent.ID, "child one")
+	if err != nil {
+		t.Fatalf("AddChild: %v", err)
+	}
+	if c1.ParentID == nil || *c1.ParentID != parent.ID {
+		t.Fatalf("child ParentID = %v, want %d", c1.ParentID, parent.ID)
+	}
+	if _, err := s.AddChild(ctx, parent.ID, "child two"); err != nil {
+		t.Fatalf("AddChild: %v", err)
+	}
+
+	kids, err := s.ListChildren(ctx, parent.ID)
+	if err != nil {
+		t.Fatalf("ListChildren: %v", err)
+	}
+	if len(kids) != 2 {
+		t.Fatalf("ListChildren returned %d tasks, want 2", len(kids))
+	}
+}
+
+func ptr(s string) *string { return &s }
+
 func TestOpenIsIdempotent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "td.db")
 	ctx := context.Background()

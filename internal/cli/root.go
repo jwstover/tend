@@ -23,12 +23,16 @@ type Store interface {
 // concrete implementation in; commands call it lazily after flag parsing.
 type StoreFactory func(ctx context.Context, dbPath string) (Store, error)
 
+// TUIRunner launches the TUI against the database at dbPath and blocks
+// until it exits. main wires it so cli never imports the tui package.
+type TUIRunner func(ctx context.Context, dbPath string) error
+
 // Execute builds the command tree and runs it.
-func Execute(open StoreFactory) error {
-	return newRootCmd(open).Execute()
+func Execute(open StoreFactory, runTUI TUIRunner) error {
+	return newRootCmd(open, runTUI).Execute()
 }
 
-func newRootCmd(open StoreFactory) *cobra.Command {
+func newRootCmd(open StoreFactory, runTUI TUIRunner) *cobra.Command {
 	var dbPath string
 
 	root := &cobra.Command{
@@ -36,10 +40,8 @@ func newRootCmd(open StoreFactory) *cobra.Command {
 		Short:         "td is a terminal-native personal task tracker",
 		SilenceUsage:  true,
 		SilenceErrors: true,
-		// TODO(owner): Gate 2 — running bare `td` launches the TUI.
-		// Until then, show help.
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return cmd.Help()
+			return runTUI(cmd.Context(), resolveDBPath(dbPath))
 		},
 	}
 	root.PersistentFlags().StringVar(&dbPath, "db", "",
