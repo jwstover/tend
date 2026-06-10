@@ -45,7 +45,7 @@ func DefaultStyles() Styles {
 			task.StateSomeday: stateStyle("8"),  // gray
 		},
 		DetailBorder: lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
+			Border(lipgloss.NormalBorder(), false, false, false, true).
 			BorderForeground(lipgloss.Color("8")).
 			Padding(0, 1),
 		DetailTitle: lipgloss.NewStyle().Bold(true).Underline(true),

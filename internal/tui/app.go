@@ -338,9 +338,9 @@ func (a *app) resize() {
 	listWidth := a.width
 	if a.showDetail {
 		listWidth = a.width / 2
-		detailWidth := max(a.width-listWidth-4, 10) // border + padding
+		detailWidth := max(a.width-listWidth-3, 10) // divider + padding
 		a.detail.SetWidth(detailWidth)
-		a.detail.SetHeight(max(bodyHeight-2, 1))
+		a.detail.SetHeight(bodyHeight)
 		a.renderer, _ = newBodyRenderer(detailWidth - 2)
 	}
 	a.list.SetSize(listWidth, bodyHeight)
