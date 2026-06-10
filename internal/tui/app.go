@@ -104,6 +104,8 @@ type app struct {
 	promptKind   promptKind
 	promptTarget int64 // task the prompt acts on (project/due/sub-task)
 
+	statePending bool // `c` pressed; next key picks the new state
+
 	status      string
 	statusIsErr bool
 }
@@ -140,7 +142,12 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.mode != a.mode {
 			return a, nil
 		}
-		cmd := a.list.SetItems(toItems(msg.tasks))
+		items := toItems(msg.tasks)
+		if msg.mode == modeList {
+			items = toGroupedItems(msg.tasks)
+		}
+		cmd := a.list.SetItems(items)
+		moveOffHeading(&a.list, 1)
 		return a, tea.Batch(cmd, a.syncDetail(true))
 
 	case childrenLoadedMsg:
@@ -211,6 +218,18 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return a, cmd
 	}
 
+	// A pending `c` chord consumes the next key: a state key applies it,
+	// anything else cancels.
+	if a.statePending {
+		a.statePending = false
+		if st, ok := a.stateForKey(msg); ok {
+			if t, selected := a.selected(); selected {
+				return a, a.setState(t, st)
+			}
+		}
+		return a, nil
+	}
+
 	switch {
 	case key.Matches(msg, a.keys.Quit):
 		return a, tea.Quit
@@ -260,6 +279,12 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, a.keys.Palette):
 		return a, a.openPrompt(promptPalette, ": ", 0)
 
+	case key.Matches(msg, a.keys.ChangeState):
+		if _, ok := a.selected(); ok {
+			a.statePending = true
+		}
+		return a, nil
+
 	case key.Matches(msg, a.keys.EditBody):
 		if t, ok := a.selected(); ok {
 			return a, editBodyCmd(t)
@@ -301,6 +326,29 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	a.list, cmd = a.list.Update(msg)
 	return a, tea.Batch(cmd, a.syncDetail(false))
+}
+
+// stateForKey maps a state-mutation key to its workflow state.
+func (a app) stateForKey(msg tea.KeyPressMsg) (task.State, bool) {
+	switch {
+	case key.Matches(msg, a.keys.SetTodo):
+		return task.StateTodo, true
+	case key.Matches(msg, a.keys.SetDoing):
+		return task.StateDoing, true
+	case key.Matches(msg, a.keys.SetBlocked):
+		return task.StateBlocked, true
+	case key.Matches(msg, a.keys.SetDone):
+		return task.StateDone, true
+	case key.Matches(msg, a.keys.SetSomeday):
+		return task.StateSomeday, true
+	}
+	return "", false
+}
+
+func (a app) setState(t task.Task, st task.State) tea.Cmd {
+	return a.mutate(fmt.Sprintf("#%d → %s", t.ID, st), func() error {
+		return a.store.SetState(a.ctx, t.ID, st)
+	})
 }
 
 // selected returns the task under the cursor.
@@ -497,9 +545,10 @@ func (a app) saveBody(id int64, path string) tea.Cmd {
 // --- view ---
 
 func (a app) View() tea.View {
-	label := fmt.Sprintf("tasks (%d)", len(a.list.Items()))
+	n := taskCount(a.list.Items())
+	label := fmt.Sprintf("tasks (%d)", n)
 	if a.mode == modeTriage {
-		label = fmt.Sprintf("triage — inbox (%d)", len(a.list.Items()))
+		label = fmt.Sprintf("triage — inbox (%d)", n)
 	}
 	header := a.styles.Header.Render("td") + a.styles.HeaderAccent.Render("· "+label)
 
@@ -519,13 +568,16 @@ func (a app) footer() string {
 	if a.promptKind != promptNone {
 		return a.styles.PromptLabel.Render("") + a.prompt.View()
 	}
+	if a.statePending {
+		return a.styles.Status.Render("state → t todo · d doing · b blocked · x done · s someday · esc cancel")
+	}
 	if a.status != "" {
 		if a.statusIsErr {
 			return a.styles.Error.Render(a.status)
 		}
 		return a.styles.Status.Render(a.status)
 	}
-	help := "j/k nav · / search · n add · a sub-task · ]/enter detail · e edit · o links · i triage · : palette · q quit"
+	help := "j/k nav · / search · n add · a sub-task · c state · ]/enter detail · e edit · o links · i triage · : palette · q quit"
 	if a.mode == modeTriage {
 		help = "t todo · d doing · b blocked · x done · s someday · p project · u due · e edit · esc back"
 	}

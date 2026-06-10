@@ -90,8 +90,56 @@ func TestAppRendersLiveTasks(t *testing.T) {
 	if !strings.Contains(content, "write the report") {
 		t.Errorf("view missing task title:\n%s", content)
 	}
-	if !strings.Contains(content, "inbox") {
-		t.Errorf("view missing state badge:\n%s", content)
+	if !strings.Contains(content, "INBOX (1)") {
+		t.Errorf("view missing state section heading:\n%s", content)
+	}
+}
+
+func TestListGroupsTasksByState(t *testing.T) {
+	ctx := context.Background()
+	m, s := newTestApp(t)
+
+	states := map[string]task.State{
+		"capture me": task.StateInbox,
+		"queue me":   task.StateTodo,
+		"start me":   task.StateDoing,
+	}
+	for title, st := range states {
+		captured, err := s.AddTask(ctx, title)
+		if err != nil {
+			t.Fatalf("AddTask: %v", err)
+		}
+		if err := s.SetState(ctx, captured.ID, st); err != nil {
+			t.Fatalf("SetState: %v", err)
+		}
+	}
+
+	m = drive(t, m, refreshMsg{})
+	content := ansi.Strip(m.View().Content)
+
+	// Headings appear in display order: doing, then todo, then inbox.
+	doing := strings.Index(content, "DOING (1)")
+	todo := strings.Index(content, "TODO (1)")
+	inbox := strings.Index(content, "INBOX (1)")
+	if doing == -1 || todo == -1 || inbox == -1 {
+		t.Fatalf("missing section headings:\n%s", content)
+	}
+	if !(doing < todo && todo < inbox) {
+		t.Errorf("headings out of order (doing=%d todo=%d inbox=%d):\n%s", doing, todo, inbox, content)
+	}
+
+	// The cursor starts on the first task, not the heading, and j/k
+	// navigation lands on tasks only.
+	if sel, ok := m.(app).selected(); !ok || sel.Title != "start me" {
+		t.Errorf("initial selection = %+v, want start me", sel)
+	}
+	m = drive(t, m, keyPress('j'))
+	if sel, ok := m.(app).selected(); !ok || sel.Title != "queue me" {
+		t.Errorf("selection after j = %+v, want queue me", sel)
+	}
+	m = drive(t, m, keyPress('k'))
+	if sel, ok := m.(app).selected(); !ok || sel.Title != "start me" {
+		t.Errorf("selection after k = %+v, want start me", sel)
 	}
 }
 
@@ -118,6 +166,52 @@ func TestTriageStateKey(t *testing.T) {
 	}
 	if strings.Contains(ansi.Strip(m.View().Content), "triage me") {
 		t.Error("done task should leave the triage view")
+	}
+}
+
+func TestChangeStateChord(t *testing.T) {
+	ctx := context.Background()
+	m, s := newTestApp(t)
+	captured, err := s.AddTask(ctx, "finish me")
+	if err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	m = drive(t, m, refreshMsg{})
+
+	// `c` arms the chord and shows the state hint.
+	m = drive(t, m, keyPress('c'))
+	if !m.(app).statePending {
+		t.Fatal("statePending = false after c, want true")
+	}
+	if !strings.Contains(ansi.Strip(m.View().Content), "state →") {
+		t.Errorf("footer missing chord hint:\n%s", ansi.Strip(m.View().Content))
+	}
+
+	// The next state key applies the mutation.
+	m = drive(t, m, keyPress('x'))
+	got, err := s.GetTask(ctx, captured.ID)
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if got.State != task.StateDone {
+		t.Errorf("state after c,x = %s, want done", got.State)
+	}
+	if m.(app).statePending {
+		t.Error("statePending still true after chord completed")
+	}
+
+	// A non-state key cancels the chord without mutating or navigating.
+	m = drive(t, m, keyPress('c'))
+	m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyEscape})
+	if m.(app).statePending {
+		t.Error("statePending still true after esc")
+	}
+	got, err = s.GetTask(ctx, captured.ID)
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if got.State != task.StateDone {
+		t.Errorf("state after cancelled chord = %s, want done", got.State)
 	}
 }
 

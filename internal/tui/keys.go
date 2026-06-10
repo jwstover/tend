@@ -15,8 +15,10 @@ type keyMap struct {
 	EditBody     key.Binding
 	OpenURL      key.Binding
 	OpenAllURLs  key.Binding
+	ChangeState  key.Binding
 
-	// Triage-mode state mutations.
+	// State mutations: single keys in triage mode, the second key of the
+	// `c` chord everywhere else.
 	SetTodo    key.Binding
 	SetDoing   key.Binding
 	SetBlocked key.Binding
@@ -38,6 +40,7 @@ func defaultKeyMap() keyMap {
 		EditBody:     key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "edit body")),
 		OpenURL:      key.NewBinding(key.WithKeys("o"), key.WithHelp("o", "open link")),
 		OpenAllURLs:  key.NewBinding(key.WithKeys("O"), key.WithHelp("O", "open all links")),
+		ChangeState:  key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "change state")),
 
 		SetTodo:    key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "todo")),
 		SetDoing:   key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "doing")),
