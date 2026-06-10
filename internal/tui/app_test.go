@@ -178,17 +178,23 @@ func TestChangeStateChord(t *testing.T) {
 	}
 	m = drive(t, m, refreshMsg{})
 
-	// `c` arms the chord and shows the state hint.
+	// `c` arms the chord and shows the which-key panel.
 	m = drive(t, m, keyPress('c'))
 	if !m.(app).statePending {
 		t.Fatal("statePending = false after c, want true")
 	}
-	if !strings.Contains(ansi.Strip(m.View().Content), "state →") {
-		t.Errorf("footer missing chord hint:\n%s", ansi.Strip(m.View().Content))
+	content := ansi.Strip(m.View().Content)
+	for _, want := range []string{"state", "t todo", "x done", "esc cancel"} {
+		if !strings.Contains(content, want) {
+			t.Errorf("which-key panel missing %q:\n%s", want, content)
+		}
 	}
 
-	// The next state key applies the mutation.
+	// The next state key applies the mutation and dismisses the panel.
 	m = drive(t, m, keyPress('x'))
+	if strings.Contains(ansi.Strip(m.View().Content), "esc cancel") {
+		t.Errorf("panel still visible after chord resolved:\n%s", ansi.Strip(m.View().Content))
+	}
 	got, err := s.GetTask(ctx, captured.ID)
 	if err != nil {
 		t.Fatalf("GetTask: %v", err)

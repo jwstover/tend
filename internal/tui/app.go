@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/list"
@@ -104,6 +105,8 @@ type app struct {
 	promptKind   promptKind
 	promptTarget int64 // task the prompt acts on (project/due/sub-task)
 
+	modal modal // centered floating input (log entries)
+
 	statePending bool // `c` pressed; next key picks the new state
 
 	status      string
@@ -121,6 +124,7 @@ func newApp(ctx context.Context, s Store) app {
 		list:   newTaskList(styles),
 		detail: viewport.New(),
 		prompt: textinput.New(),
+		modal:  newModal(),
 	}
 }
 
@@ -182,6 +186,10 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// components.
 	var cmds []tea.Cmd
 	var cmd tea.Cmd
+	if a.modal.Active() {
+		a.modal, cmd = a.modal.Update(msg)
+		cmds = append(cmds, cmd)
+	}
 	if a.promptKind != promptNone {
 		a.prompt, cmd = a.prompt.Update(msg)
 		cmds = append(cmds, cmd)
@@ -195,6 +203,21 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	a.status = ""
+
+	// An open modal swallows all keys.
+	if a.modal.Active() {
+		switch {
+		case msg.String() == "esc":
+			a.modal.Close()
+			return a, nil
+		case a.modal.IsSubmit(msg):
+			return a.submitModal()
+		default:
+			var cmd tea.Cmd
+			a.modal, cmd = a.modal.Update(msg)
+			return a, cmd
+		}
+	}
 
 	// An open prompt swallows all keys.
 	if a.promptKind != promptNone {
@@ -222,6 +245,7 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// anything else cancels.
 	if a.statePending {
 		a.statePending = false
+		a.resize()
 		if st, ok := a.stateForKey(msg); ok {
 			if t, selected := a.selected(); selected {
 				return a, a.setState(t, st)
@@ -282,12 +306,19 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, a.keys.ChangeState):
 		if _, ok := a.selected(); ok {
 			a.statePending = true
+			a.resize()
 		}
 		return a, nil
 
 	case key.Matches(msg, a.keys.EditBody):
 		if t, ok := a.selected(); ok {
 			return a, editBodyCmd(t)
+		}
+		return a, nil
+
+	case key.Matches(msg, a.keys.LogEntry):
+		if t, ok := a.selected(); ok {
+			return a, a.modal.Open(modalLog, true, fmt.Sprintf("log — #%d", t.ID), t.ID, t.BodyMD)
 		}
 		return a, nil
 
@@ -345,6 +376,28 @@ func (a app) stateForKey(msg tea.KeyPressMsg) (task.State, bool) {
 	return "", false
 }
 
+// statePanel renders the which-key panel for the pending `c` chord, with
+// each key cap in its target state's color.
+func (a app) statePanel() string {
+	bindings := []struct {
+		b     key.Binding
+		style lipgloss.Style
+	}{
+		{a.keys.SetTodo, a.styles.State[task.StateTodo]},
+		{a.keys.SetDoing, a.styles.State[task.StateDoing]},
+		{a.keys.SetBlocked, a.styles.State[task.StateBlocked]},
+		{a.keys.SetDone, a.styles.State[task.StateDone]},
+		{a.keys.SetSomeday, a.styles.State[task.StateSomeday]},
+		{a.keys.Cancel, a.styles.Dimmed},
+	}
+	entries := make([]panelEntry, 0, len(bindings))
+	for _, e := range bindings {
+		h := e.b.Help()
+		entries = append(entries, panelEntry{key: h.Key, desc: h.Desc, keyStyle: e.style})
+	}
+	return renderKeyPanel(a.styles, a.width, "state", entries)
+}
+
 func (a app) setState(t task.Task, st task.State) tea.Cmd {
 	return a.mutate(fmt.Sprintf("#%d → %s", t.ID, st), func() error {
 		return a.store.SetState(a.ctx, t.ID, st)
@@ -381,7 +434,13 @@ func (a *app) syncDetail(force bool) tea.Cmd {
 }
 
 func (a *app) resize() {
-	const headerHeight, footerHeight = 1, 1
+	const headerHeight = 1
+	footerHeight := 1
+	if a.statePending {
+		// The list must shrink by exactly the panel's height; bubbles
+		// list pads its view to the height it was given.
+		footerHeight = max(lipgloss.Height(a.statePanel()), 1)
+	}
 	bodyHeight := max(a.height-headerHeight-footerHeight, 1)
 	listWidth := a.width
 	if a.showDetail {
@@ -392,6 +451,7 @@ func (a *app) resize() {
 		a.renderer, _ = newBodyRenderer(detailWidth - 2)
 	}
 	a.list.SetSize(listWidth, bodyHeight)
+	a.modal.SetWidth(a.width)
 }
 
 // --- prompt ---
@@ -455,6 +515,29 @@ func (a app) submitPrompt() (tea.Model, tea.Cmd) {
 		})
 	case promptPalette:
 		return a.runPaletteCommand(value)
+	}
+	return a, nil
+}
+
+// submitModal performs the action the open modal was collecting input
+// for; the modal itself only owns presentation and text entry.
+func (a app) submitModal() (tea.Model, tea.Cmd) {
+	kind, target, extra := a.modal.kind, a.modal.target, a.modal.extra
+	value := a.modal.Value()
+	a.modal.Close()
+
+	switch kind {
+	case modalLog:
+		if value == "" {
+			return a, nil
+		}
+		body := "## " + time.Now().Format("2006-01-02 15:04") + "\n\n" + value + "\n"
+		if old := strings.TrimSpace(extra); old != "" {
+			body += "\n" + old + "\n"
+		}
+		return a, a.mutate(fmt.Sprintf("log added to #%d", target), func() error {
+			return a.store.SetBody(a.ctx, target, body)
+		})
 	}
 	return a, nil
 }
@@ -558,7 +641,18 @@ func (a app) View() tea.View {
 			a.styles.DetailBorder.Render(a.detail.View()))
 	}
 
-	v := tea.NewView(header + "\n" + body + "\n" + a.footer())
+	frame := header + "\n" + body + "\n" + a.footer()
+	if a.modal.Active() {
+		box := a.modal.View(a.styles)
+		x := max((a.width-lipgloss.Width(box))/2, 0)
+		y := max((a.height-lipgloss.Height(box))/2, 0)
+		canvas := lipgloss.NewCanvas(a.width, a.height)
+		canvas.Compose(lipgloss.NewLayer(frame))
+		canvas.Compose(lipgloss.NewLayer(box).X(x).Y(y).Z(1))
+		frame = canvas.Render()
+	}
+
+	v := tea.NewView(frame)
 	v.AltScreen = true
 	v.WindowTitle = "td"
 	return v
@@ -569,7 +663,7 @@ func (a app) footer() string {
 		return a.styles.PromptLabel.Render("") + a.prompt.View()
 	}
 	if a.statePending {
-		return a.styles.Status.Render("state → t todo · d doing · b blocked · x done · s someday · esc cancel")
+		return a.statePanel()
 	}
 	if a.status != "" {
 		if a.statusIsErr {
@@ -577,7 +671,7 @@ func (a app) footer() string {
 		}
 		return a.styles.Status.Render(a.status)
 	}
-	help := "j/k nav · / search · n add · a sub-task · c state · ]/enter detail · e edit · o links · i triage · : palette · q quit"
+	help := "j/k nav · / search · n add · a sub-task · c state · ]/enter detail · e edit · U log · o links · i triage · : palette · q quit"
 	if a.mode == modeTriage {
 		help = "t todo · d doing · b blocked · x done · s someday · p project · u due · e edit · esc back"
 	}
