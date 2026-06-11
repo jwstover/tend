@@ -18,8 +18,8 @@ import (
 	"github.com/pressly/goose/v3/database"
 	_ "modernc.org/sqlite"
 
-	"github.com/jwstover/td/internal/store/gen"
-	"github.com/jwstover/td/internal/task"
+	"github.com/jwstover/tend/internal/store/gen"
+	"github.com/jwstover/tend/internal/task"
 )
 
 //go:generate sqlc -f ../../sqlc.yaml generate

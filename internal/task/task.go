@@ -61,7 +61,7 @@ func NormalizeDate(s string) (string, error) {
 
 // NormalizeTitle trims surrounding whitespace and rejects blank titles.
 // A bare title is the only thing capture requires, so this is the entire
-// validation surface for `td add`.
+// validation surface for `tend add`.
 func NormalizeTitle(s string) (string, error) {
 	t := strings.TrimSpace(s)
 	if t == "" {

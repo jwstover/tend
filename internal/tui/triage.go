@@ -9,7 +9,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
-	"github.com/jwstover/td/internal/task"
+	"github.com/jwstover/tend/internal/task"
 )
 
 // handleTriageKey processes the fast single-key mutations available while
@@ -159,7 +159,7 @@ func (a app) triageCardLines(width int) []string {
 	return lines
 }
 
-// inboxZeroLines is the reward screen — the only celebratory moment in td.
+// inboxZeroLines is the reward screen — the only celebratory moment in tend.
 func (a app) inboxZeroLines(width, height int) []string {
 	s, g := a.styles, a.styles.Glyphs
 	content := []string{
@@ -168,7 +168,7 @@ func (a app) inboxZeroLines(width, height int) []string {
 		centerLine(s.InboxZero.Render("inbox zero"), width),
 		"",
 		centerLine(s.Dimmed.Render("Nothing left to process. The dump is clean."), width),
-		centerLine(s.Muted.Render("Capture more from the shell with ")+s.Accent.Render(`td add "…"`), width),
+		centerLine(s.Muted.Render("Capture more from the shell with ")+s.Accent.Render(`tend add "…"`), width),
 		"",
 		centerLine(s.FooterKey.Render("esc")+s.Muted.Render(" back to list"), width),
 	}

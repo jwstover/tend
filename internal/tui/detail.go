@@ -13,7 +13,7 @@ import (
 	"charm.land/glamour/v2"
 	glamourstyles "charm.land/glamour/v2/styles"
 
-	"github.com/jwstover/td/internal/task"
+	"github.com/jwstover/tend/internal/task"
 )
 
 // newBodyRenderer builds a glamour renderer wrapped to the detail pane
@@ -175,7 +175,7 @@ func openURLCmd(url string) tea.Cmd {
 // editBodyCmd writes the body to a temp file and suspends the TUI to run
 // $EDITOR on it; the callback message carries the file for reading back.
 func editBodyCmd(t task.Task) tea.Cmd {
-	f, err := os.CreateTemp("", fmt.Sprintf("td-%d-*.md", t.ID))
+	f, err := os.CreateTemp("", fmt.Sprintf("tend-%d-*.md", t.ID))
 	if err != nil {
 		return errCmd(fmt.Errorf("creating temp file: %w", err))
 	}

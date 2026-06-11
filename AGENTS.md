@@ -1,6 +1,6 @@
-# AGENTS.md — `td`, a terminal-native personal task tracker
+# AGENTS.md — `tend`, a terminal-native personal task tracker
 
-> Working name: `td`. The owner may rename the binary/module later; do not let naming block work.
+> The project is named `tend` (binary `tend`, module `github.com/jwstover/tend`). Capture dumps tasks in; the TUI is where you *tend* to them.
 > This document is the single source of truth for the v1 build. Read it fully before writing code.
 
 ---
@@ -33,7 +33,7 @@ Therefore the entire design obeys one rule:
 Concretely:
 
 - Capturing a task requires **nothing** — no project, no due date, no state. A bare title is a complete, valid task.
-- The capture command (`td add`) **must not start the TUI**. It opens the DB, inserts a row, and exits. Target: sub-100ms, perceptually instant.
+- The capture command (`tend add`) **must not start the TUI**. It opens the DB, inserts a row, and exits. Target: sub-100ms, perceptually instant.
 - All richness — long-form body, sub-tasks, links, state, project — is added **later**, in the TUI detail pane, when the user is *processing*, not when they're *capturing*.
 - Captured items land in an `inbox` state. The TUI must make **triage** (processing the inbox) cheap and batched, because an un-triaged inbox is just a graveyard with a friendlier name.
 
@@ -58,7 +58,7 @@ Versions below were current as of June 2026; pull the latest patch releases at b
 - Access generated code through Go's standard `database/sql` with the modernc driver.
 
 **CLI layer**
-- `github.com/spf13/cobra` — command tree (`td`, `td add`, `td ls`, `td done`).
+- `github.com/spf13/cobra` — command tree (`tend`, `tend add`, `tend ls`, `tend done`).
 
 **Migrations**
 - `github.com/pressly/goose/v3` — embed `.sql` migrations via `embed.FS`, apply on startup.
@@ -72,9 +72,9 @@ Bubble Tea is The Elm Architecture: a `Model`, `Update(msg) (Model, Cmd)`, and `
 ## 4. Project structure
 
 ```
-td/
+tend/
 ├── cmd/
-│   └── td/
+│   └── tend/
 │       └── main.go          # entrypoint: open DB, run migrations, build Store, dispatch to CLI. THIN — wiring only.
 ├── internal/
 │   ├── task/                # DOMAIN — types + rules, zero I/O. Depends on nothing.
@@ -164,13 +164,13 @@ Semantics:
 
 ### Connection / DSN
 
-SQLite is single-writer. Both `td add` and the TUI may open the file, so open in WAL mode with a busy timeout:
+SQLite is single-writer. Both `tend add` and the TUI may open the file, so open in WAL mode with a busy timeout:
 
 ```
 file:<path>?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)
 ```
 
-DB path: default to `${XDG_DATA_HOME:-$HOME/.local/share}/td/td.db`, overridable via `--db` flag and a `TD_DB` env var. Create the directory if missing.
+DB path: default to `${XDG_DATA_HOME:-$HOME/.local/share}/tend/tend.db`, overridable via `--db` flag and a `TEND_DB` env var. Create the directory if missing.
 
 ### sqlc config (`sqlc.yaml`)
 
@@ -193,10 +193,10 @@ sql:
 
 | Command | Behavior |
 | --- | --- |
-| `td` | Launch the TUI (the no-arg path) |
-| `td add "<text>"` / `td a "<text>"` | Instant capture to `inbox`. No TUI. Also reads from stdin: `echo "..." \| td a` |
-| `td ls` | Plain-text dump of the live view to stdout (scriptable, no TUI) |
-| `td done <id>` | Mark a task complete from the shell |
+| `tend` | Launch the TUI (the no-arg path) |
+| `tend add "<text>"` / `tend a "<text>"` | Instant capture to `inbox`. No TUI. Also reads from stdin: `echo "..." \| tend a` |
+| `tend ls` | Plain-text dump of the live view to stdout (scriptable, no TUI) |
+| `tend done <id>` | Mark a task complete from the shell |
 
 Global flags: `--db <path>`.
 
@@ -223,8 +223,8 @@ Built on Bubble Tea v2 + Bubbles v2 + Lip Gloss v2; Glamour v2 renders the body.
 Build in this order. Each gate is independently usable; **stop and report at the end of each one.**
 
 **Gate 1 — Capture (no TUI).**
-Deliver: `go.mod`, `sqlc.yaml`, schema + migrations (run on startup via goose), the `Store` with its interface, and the `td add` / `td a` / `td ls` commands.
-Acceptance: from a cold shell, `td add "something"` returns near-instantly and the row is queryable via `td ls`. No TUI exists yet.
+Deliver: `go.mod`, `sqlc.yaml`, schema + migrations (run on startup via goose), the `Store` with its interface, and the `tend add` / `tend a` / `tend ls` commands.
+Acceptance: from a cold shell, `tend add "something"` returns near-instantly and the row is queryable via `tend ls`. No TUI exists yet.
 *This is the most important gate. If capture isn't effortless here, fix that before anything else — it's the entire premise.*
 
 **Gate 2 — See and process.**

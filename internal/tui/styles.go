@@ -5,7 +5,7 @@ import (
 
 	"charm.land/lipgloss/v2"
 
-	"github.com/jwstover/td/internal/task"
+	"github.com/jwstover/tend/internal/task"
 )
 
 // token is one semantic color from the design spec, carrying both
@@ -154,7 +154,7 @@ type Styles struct {
 	Glyphs  glyphs
 
 	// Chrome.
-	HeaderApp  lipgloss.Style // "td" — accent bold
+	HeaderApp  lipgloss.Style // "tend" — accent bold
 	HeaderSep  lipgloss.Style // "·" separators — faint
 	HeaderView lipgloss.Style // view label — bold fg
 	InboxNudge lipgloss.Style // "● N in inbox" — inbox orange
