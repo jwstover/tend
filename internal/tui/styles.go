@@ -21,6 +21,12 @@ type Styles struct {
 	Status       lipgloss.Style
 	Error        lipgloss.Style
 	PromptLabel  lipgloss.Style
+	PanelBorder  lipgloss.Style
+	PanelTitle   lipgloss.Style
+	PanelKey     lipgloss.Style
+	PanelDesc    lipgloss.Style
+	ModalBorder  lipgloss.Style
+	ModalTitle   lipgloss.Style
 }
 
 // DefaultStyles returns the standard dark-terminal styling.
@@ -53,5 +59,17 @@ func DefaultStyles() Styles {
 		Status:      lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Padding(0, 1),
 		Error:       lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Padding(0, 1),
 		PromptLabel: lipgloss.NewStyle().Foreground(lipgloss.Color("13")).Bold(true).Padding(0, 1),
+		PanelBorder: lipgloss.NewStyle().
+			Border(lipgloss.NormalBorder(), true, false, false, false).
+			BorderForeground(lipgloss.Color("8")).
+			Padding(0, 1),
+		PanelTitle: lipgloss.NewStyle().Foreground(lipgloss.Color("13")).Bold(true),
+		PanelKey:   lipgloss.NewStyle().Foreground(lipgloss.Color("13")).Bold(true),
+		PanelDesc:  lipgloss.NewStyle(),
+		ModalBorder: lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("13")).
+			Padding(0, 1),
+		ModalTitle: lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("13")),
 	}
 }

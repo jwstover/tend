@@ -5,8 +5,6 @@ import (
 
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
-
-	"github.com/jwstover/td/internal/task"
 )
 
 // handleTriageKey processes the fast single-key mutations available while
@@ -18,23 +16,11 @@ func (a *app) handleTriageKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		return *a, nil, false
 	}
 
-	setState := func(st task.State) tea.Cmd {
-		return a.mutate(fmt.Sprintf("#%d → %s", t.ID, st), func() error {
-			return a.store.SetState(a.ctx, t.ID, st)
-		})
+	if st, ok := a.stateForKey(msg); ok {
+		return *a, a.setState(t, st), true
 	}
 
 	switch {
-	case key.Matches(msg, a.keys.SetTodo):
-		return *a, setState(task.StateTodo), true
-	case key.Matches(msg, a.keys.SetDoing):
-		return *a, setState(task.StateDoing), true
-	case key.Matches(msg, a.keys.SetBlocked):
-		return *a, setState(task.StateBlocked), true
-	case key.Matches(msg, a.keys.SetDone):
-		return *a, setState(task.StateDone), true
-	case key.Matches(msg, a.keys.SetSomeday):
-		return *a, setState(task.StateSomeday), true
 	case key.Matches(msg, a.keys.SetProject):
 		cmd := a.openPrompt(promptProject, fmt.Sprintf("project for #%d (empty clears): ", t.ID), t.ID)
 		return *a, cmd, true
