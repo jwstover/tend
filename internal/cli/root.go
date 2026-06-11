@@ -4,12 +4,14 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 
 	"github.com/spf13/cobra"
 
 	"github.com/jwstover/tend/internal/task"
+	"github.com/jwstover/tend/internal/version"
 )
 
 // Store is the slice of the persistence layer the CLI needs.
@@ -38,6 +40,7 @@ func newRootCmd(open StoreFactory, runTUI TUIRunner) *cobra.Command {
 	root := &cobra.Command{
 		Use:           "tend",
 		Short:         "tend is a terminal-native personal task tracker",
+		Version:       version.String(),
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -53,6 +56,13 @@ func newRootCmd(open StoreFactory, runTUI TUIRunner) *cobra.Command {
 	}
 	root.AddCommand(newAddCmd(openHere))
 	root.AddCommand(newLsCmd(openHere))
+	root.AddCommand(&cobra.Command{
+		Use:   "version",
+		Short: "Print the tend version",
+		Run: func(cmd *cobra.Command, _ []string) {
+			fmt.Fprintln(cmd.OutOrStdout(), version.String())
+		},
+	})
 	return root
 }
 
