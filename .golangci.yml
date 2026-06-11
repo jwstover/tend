@@ -1,0 +1,11 @@
+version: "2"
+
+linters:
+  exclusions:
+    presets:
+      # Don't flag unchecked errors from best-effort stdlib calls
+      # (deferred Close, fmt.Fprint, os.Remove, ...).
+      - std-error-handling
+    paths:
+      # sqlc output — generated, never hand-edited
+      - internal/store/gen
