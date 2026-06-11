@@ -122,6 +122,8 @@ func unicodeGlyphs() glyphs {
 // usable Unicode.
 // TODO(owner): select via termenv capabilities at startup; for now the
 // unicode set is always used.
+//
+//nolint:unused // kept until capability detection wires it in
 func asciiGlyphs() glyphs {
 	return glyphs{
 		State: map[task.State]string{

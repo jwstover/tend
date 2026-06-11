@@ -16,6 +16,8 @@ type panelEntry struct {
 
 // panelEntries adapts bindings to entries with the default key style,
 // skipping disabled bindings and ones without help text.
+//
+//nolint:unused // adapter for callers that take raw bindings
 func panelEntries(st Styles, bindings []key.Binding) []panelEntry {
 	entries := make([]panelEntry, 0, len(bindings))
 	for _, b := range bindings {

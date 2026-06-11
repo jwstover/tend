@@ -25,9 +25,7 @@ func drive(t *testing.T, m tea.Model, msg tea.Msg) tea.Model {
 		next, queue = queue[0], queue[1:]
 		var cmd tea.Cmd
 		m, cmd = m.Update(next)
-		for _, out := range collect(cmd) {
-			queue = append(queue, out)
-		}
+		queue = append(queue, collect(cmd)...)
 	}
 	return m
 }
@@ -126,7 +124,7 @@ func TestListGroupsTasksByState(t *testing.T) {
 	if doing == -1 || todo == -1 || inbox == -1 {
 		t.Fatalf("missing section headings:\n%s", content)
 	}
-	if !(doing < todo && todo < inbox) {
+	if doing >= todo || todo >= inbox {
 		t.Errorf("headings out of order (doing=%d todo=%d inbox=%d):\n%s", doing, todo, inbox, content)
 	}
 
@@ -470,7 +468,7 @@ func TestPriorityChord(t *testing.T) {
 
 	// `p`,`n` clears the priority.
 	m = drive(t, m, keyPress('p'))
-	m = drive(t, m, keyPress('n'))
+	_ = drive(t, m, keyPress('n'))
 	got, err = s.GetTask(ctx, captured.ID)
 	if err != nil {
 		t.Fatalf("GetTask: %v", err)
@@ -496,7 +494,7 @@ func TestProjectPromptFromListView(t *testing.T) {
 	for _, r := range "home" {
 		m = drive(t, m, keyPress(r))
 	}
-	m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	_ = drive(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
 	got, err := s.GetTask(ctx, captured.ID)
 	if err != nil {
@@ -578,7 +576,7 @@ func TestLogEntryPrependsToExistingBody(t *testing.T) {
 	for _, r := range "new note" {
 		m = drive(t, m, keyPress(r))
 	}
-	m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyEnter, Mod: tea.ModAlt}) // alt+enter also submits
+	_ = drive(t, m, tea.KeyPressMsg{Code: tea.KeyEnter, Mod: tea.ModAlt}) // alt+enter also submits
 
 	got, err := s.GetTask(ctx, captured.ID)
 	if err != nil {
@@ -835,7 +833,7 @@ func TestToggleChildDoneWithX(t *testing.T) {
 	if sel, ok := m.(app).selected(); !ok || sel.ID != child.ID {
 		t.Fatalf("selection drifted after refresh: %+v", sel)
 	}
-	m = drive(t, m, keyPress('x'))
+	_ = drive(t, m, keyPress('x'))
 	got, err = s.GetTask(ctx, child.ID)
 	if err != nil {
 		t.Fatalf("GetTask: %v", err)
