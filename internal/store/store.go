@@ -140,6 +140,32 @@ func (s *Store) ListChildren(ctx context.Context, parentID int64) ([]task.Task, 
 	return toDomainSlice(rows)
 }
 
+// ChildCounts returns per-parent sub-task done/total counts for every
+// task that has children. Done children are filtered out of the live
+// view, so the list derives its N/M progress from this instead.
+func (s *Store) ChildCounts(ctx context.Context) (map[int64]task.ChildCount, error) {
+	rows, err := s.q.ListChildCounts(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("listing child counts: %w", err)
+	}
+	counts := make(map[int64]task.ChildCount, len(rows))
+	for _, r := range rows {
+		if r.ParentID.Valid {
+			counts[r.ParentID.Int64] = task.ChildCount{Done: r.Done, Total: r.Total}
+		}
+	}
+	return counts, nil
+}
+
+// CountInbox returns the number of tasks awaiting triage.
+func (s *Store) CountInbox(ctx context.Context) (int64, error) {
+	n, err := s.q.CountInboxTasks(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("counting inbox tasks: %w", err)
+	}
+	return n, nil
+}
+
 // SetState moves a task to a new workflow state. Entering done stamps
 // completed_at; entering any other state clears it.
 func (s *Store) SetState(ctx context.Context, id int64, st task.State) error {
@@ -161,6 +187,21 @@ func (s *Store) SetProject(ctx context.Context, id int64, project *string) error
 	})
 	if err != nil {
 		return fmt.Errorf("setting task %d project: %w", id, err)
+	}
+	return nil
+}
+
+// SetPriority assigns a priority (1 = highest .. 4) to a task; nil clears it.
+func (s *Store) SetPriority(ctx context.Context, id int64, p *int64) error {
+	if p != nil && (*p < task.PriorityHighest || *p > task.PriorityLowest) {
+		return fmt.Errorf("priority %d out of range %d..%d", *p, task.PriorityHighest, task.PriorityLowest)
+	}
+	err := s.q.SetTaskPriority(ctx, gen.SetTaskPriorityParams{
+		Priority: toNullInt64(p),
+		ID:       id,
+	})
+	if err != nil {
+		return fmt.Errorf("setting task %d priority: %w", id, err)
 	}
 	return nil
 }
@@ -264,6 +305,13 @@ func nullString(v sql.NullString) *string {
 		return nil
 	}
 	return &v.String
+}
+
+func toNullInt64(v *int64) sql.NullInt64 {
+	if v == nil {
+		return sql.NullInt64{}
+	}
+	return sql.NullInt64{Int64: *v, Valid: true}
 }
 
 func nullInt64(v sql.NullInt64) *int64 {

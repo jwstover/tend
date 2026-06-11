@@ -34,6 +34,21 @@ func (s State) Valid() bool {
 // ErrEmptyTitle is returned when a captured title is blank.
 var ErrEmptyTitle = errors.New("task title is empty")
 
+// Priority bounds: stored values 1 (highest, "A") through 4 ("D"); NULL
+// means unprioritized and sorts last.
+const (
+	PriorityHighest int64 = 1
+	PriorityLowest  int64 = 4
+)
+
+// PriorityLetter returns "A".."D" for stored values 1..4, "" otherwise.
+func PriorityLetter(p *int64) string {
+	if p == nil || *p < PriorityHighest || *p > PriorityLowest {
+		return ""
+	}
+	return string(rune('A' + *p - 1))
+}
+
 // NormalizeDate parses and canonicalizes an ISO 8601 date (YYYY-MM-DD),
 // the only date format the schema stores.
 func NormalizeDate(s string) (string, error) {
@@ -53,6 +68,12 @@ func NormalizeTitle(s string) (string, error) {
 		return "", ErrEmptyTitle
 	}
 	return t, nil
+}
+
+// ChildCount summarizes a task's sub-tasks for progress display (the N/M
+// indicator in the list and detail pane).
+type ChildCount struct {
+	Done, Total int64
 }
 
 // Task is the domain representation of a row in the tasks table.

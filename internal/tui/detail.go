@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/glamour/v2"
@@ -27,25 +28,43 @@ func newBodyRenderer(width int) (*glamour.TermRenderer, error) {
 	)
 }
 
-// renderDetail builds the full detail pane content: glamour-rendered body,
-// sub-task checklist with progress, and the URLs detected in the body.
-func renderDetail(t task.Task, children []task.Task, renderer *glamour.TermRenderer, styles Styles) string {
+// renderDetail builds the full detail pane content: a compact metadata
+// header, the glamour-rendered body, the sub-task checklist with progress,
+// and the URLs detected in the body. selectedID highlights the checklist
+// row of the sub-task under the list cursor (0 = none).
+func renderDetail(t task.Task, children []task.Task, renderer *glamour.TermRenderer, styles Styles, selectedID int64) string {
+	g := styles.Glyphs
 	var b strings.Builder
 
-	b.WriteString(styles.DetailTitle.Render(fmt.Sprintf("#%d %s", t.ID, t.Title)))
-	b.WriteString("\n")
-	meta := string(t.State)
-	if t.Project != nil {
-		meta += "  @" + *t.Project
-	}
-	if t.Due != nil {
-		meta += "  due:" + *t.Due
-	}
-	b.WriteString(styles.Dimmed.Render(meta))
+	// Line 1: id + state (glyph, color, label — three signals).
+	b.WriteString(" " + styles.DetailID.Render(fmt.Sprintf("#%d", t.ID)) + "  ")
+	b.WriteString(styles.State[t.State].Bold(true).Render(g.State[t.State] + " " + string(t.State)))
 	b.WriteString("\n")
 
+	// Line 2: project · due · priority — only what's set.
+	var meta []string
+	if t.Project != nil {
+		meta = append(meta, styles.DetailLabel.Render("project ")+styles.Dimmed.Render("#"+*t.Project))
+	}
+	if t.Due != nil {
+		label, style := dueLabel(*t.Due, styles, time.Now())
+		meta = append(meta, styles.DetailLabel.Render("due ")+style.Render(label))
+	}
+	if letter := task.PriorityLetter(t.Priority); letter != "" {
+		meta = append(meta, styles.DetailLabel.Render("pri ")+styles.Priority[*t.Priority].Render(g.Flag+letter))
+	}
+	if len(meta) > 0 {
+		b.WriteString("  " + strings.Join(meta, "   ") + "\n")
+	}
+
+	// Line 3: created / updated, faint.
+	now := time.Now().UTC()
+	b.WriteString("  " + styles.DetailFaint.Render(
+		"created "+t.CreatedAt.Format("Jan 2")+" · updated "+relTime(t.UpdatedAt, now)) + "\n")
+
 	if strings.TrimSpace(t.BodyMD) == "" {
-		b.WriteString("\n" + styles.Dimmed.Render("no body — press e to write one") + "\n")
+		b.WriteString("\n  " + styles.Muted.Render("no body — ") +
+			styles.FooterKey.Render("e") + styles.Muted.Render(" opens $EDITOR") + "\n")
 	} else if renderer != nil {
 		if out, err := renderer.Render(t.BodyMD); err == nil {
 			b.WriteString(out)
@@ -56,6 +75,19 @@ func renderDetail(t task.Task, children []task.Task, renderer *glamour.TermRende
 		b.WriteString("\n" + t.BodyMD + "\n")
 	}
 
+	if urls := extractURLs(t.BodyMD); len(urls) > 0 {
+		noun := "links"
+		if len(urls) == 1 {
+			noun = "link"
+		}
+		b.WriteString("\n" + "  " + styles.Link.Render(g.Link+" ") +
+			styles.Muted.Render(fmt.Sprintf("%d %s detected — ", len(urls), noun)) +
+			styles.FooterKey.Render("o") + styles.Muted.Render(" to open") + "\n")
+		for i, u := range urls {
+			b.WriteString("  " + styles.Muted.Render(fmt.Sprintf("[%d] ", i+1)) + styles.Link.Render(u) + "\n")
+		}
+	}
+
 	if len(children) > 0 {
 		done := 0
 		for _, c := range children {
@@ -63,26 +95,49 @@ func renderDetail(t task.Task, children []task.Task, renderer *glamour.TermRende
 				done++
 			}
 		}
-		b.WriteString("\n" + styles.DetailTitle.Render(fmt.Sprintf("sub-tasks %d/%d", done, len(children))) + "\n")
-		for _, c := range children {
-			box := "[ ]"
-			style := styles.Normal
-			if c.State == task.StateDone {
-				box = "[x]"
-				style = styles.Dimmed
-			}
-			b.WriteString(style.Render(fmt.Sprintf("%s %s", box, c.Title)) + "\n")
+		count := styles.SubPartial
+		if done == len(children) {
+			count = styles.SubFull
 		}
-	}
-
-	if urls := extractURLs(t.BodyMD); len(urls) > 0 {
-		b.WriteString("\n" + styles.DetailTitle.Render("links") + "\n")
-		for i, u := range urls {
-			b.WriteString(styles.Dimmed.Render(fmt.Sprintf("[%d] ", i+1)) + u + "\n")
+		b.WriteString("\n" + "  " + styles.SubHeader.Render("SUB-TASKS") + "  " +
+			count.Render(fmt.Sprintf("%d/%d", done, len(children))) + "\n")
+		for _, c := range children {
+			title := styles.Title
+			switch {
+			case c.ID == selectedID:
+				title = styles.SubSelText
+			case c.State == task.StateDone:
+				title = styles.SubDoneText
+			}
+			if c.State == task.StateDone {
+				b.WriteString("  " + styles.CheckDone.Render(g.BoxChecked) + " " +
+					title.Render(c.Title) + "\n")
+			} else {
+				b.WriteString("  " + styles.CheckOpen.Render(g.BoxUnchecked) + " " +
+					title.Render(c.Title) + "\n")
+			}
 		}
 	}
 
 	return b.String()
+}
+
+// relTime renders an update timestamp as a short relative age, falling
+// back to a date past a week.
+func relTime(t, now time.Time) string {
+	d := now.Sub(t)
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	case d < 7*24*time.Hour:
+		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+	default:
+		return t.Format("Jan 2")
+	}
 }
 
 var urlRe = regexp.MustCompile(`https?://[^\s<>()\[\]"']+`)
@@ -113,7 +168,7 @@ func openURLCmd(url string) tea.Cmd {
 		if err := exec.Command(opener, url).Run(); err != nil {
 			return errMsg{fmt.Errorf("opening %s: %w", url, err)}
 		}
-		return statusMsg("opened " + url)
+		return statusMsg{kind: flashLink, text: "opened " + url}
 	}
 }
 

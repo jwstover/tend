@@ -22,7 +22,7 @@ func main() {
 			return err
 		}
 		defer s.Close()
-		return tui.Run(ctx, s)
+		return tui.Run(ctx, s, dbPath)
 	}
 	if err := cli.Execute(open, runTUI); err != nil {
 		fmt.Fprintln(os.Stderr, "td:", err)
