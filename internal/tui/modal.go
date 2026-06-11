@@ -18,7 +18,7 @@ const (
 
 // modal is a centered floating input box. It owns presentation and text
 // entry only; the app decides what submit means by switching on kind.
-// It has two input modes: multiline (enter inserts a newline, cmd+enter
+// It has two input modes: multiline (enter inserts a newline, ctrl+enter
 // submits) and single-line (enter submits).
 type modal struct {
 	kind      modalKind
@@ -27,6 +27,7 @@ type modal struct {
 	target    int64  // task the modal acts on
 	extra     string // captured context, e.g. the old body for modalLog
 	area      textarea.Model
+	rows      int // textarea height in multiline mode, from SetSize
 
 	submitMulti  key.Binding
 	submitSingle key.Binding
@@ -36,11 +37,16 @@ func newModal() modal {
 	ta := textarea.New()
 	ta.ShowLineNumbers = false
 	ta.Prompt = ""
+	st := textarea.DefaultStyles(true)
+	// The default focused cursor-line background fights the modal border
+	// colors and makes the text hard to read.
+	st.Focused.CursorLine = lipgloss.NewStyle()
+	ta.SetStyles(st)
 	return modal{
 		area: ta,
-		// ctrl+enter and alt+enter cover terminals that don't pass cmd
-		// (super) through to the app.
-		submitMulti:  key.NewBinding(key.WithKeys("super+enter", "ctrl+enter", "alt+enter")),
+		// alt+enter covers terminals without kitty-protocol support,
+		// where ctrl+enter is indistinguishable from plain enter.
+		submitMulti:  key.NewBinding(key.WithKeys("ctrl+enter", "alt+enter")),
 		submitSingle: key.NewBinding(key.WithKeys("enter")),
 	}
 }
@@ -54,7 +60,7 @@ func (m *modal) Open(kind modalKind, multiline bool, title string, target int64,
 	m.extra = extra
 	m.area.Reset()
 	if multiline {
-		m.area.SetHeight(6)
+		m.area.SetHeight(max(m.rows, 6))
 	} else {
 		m.area.SetHeight(1)
 	}
@@ -90,10 +96,14 @@ func (m modal) Value() string {
 	return strings.TrimSpace(m.area.Value())
 }
 
-// SetWidth fits the modal to the terminal width.
-func (m *modal) SetWidth(termWidth int) {
-	w := min(64, max(termWidth-8, 20))
+// SetSize fits the modal to the terminal.
+func (m *modal) SetSize(termWidth, termHeight int) {
+	w := min(100, max(termWidth*3/4, 20))
 	m.area.SetWidth(w - 4) // border + padding
+	m.rows = min(max(termHeight/2-4, 6), 20)
+	if m.Active() && m.multiline {
+		m.area.SetHeight(m.rows)
+	}
 }
 
 func (m modal) Update(msg tea.Msg) (modal, tea.Cmd) {
@@ -104,7 +114,7 @@ func (m modal) Update(msg tea.Msg) (modal, tea.Cmd) {
 
 func (m modal) helpText() string {
 	if m.multiline {
-		return "⌘+enter save · enter newline · esc cancel"
+		return "ctrl+enter save · enter newline · esc cancel"
 	}
 	return "enter save · esc cancel"
 }

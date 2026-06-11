@@ -10,14 +10,17 @@ import (
 )
 
 type Querier interface {
+	CountInboxTasks(ctx context.Context) (int64, error)
 	CreateChildTask(ctx context.Context, arg CreateChildTaskParams) (Task, error)
 	CreateTask(ctx context.Context, title string) (Task, error)
 	GetTask(ctx context.Context, id int64) (Task, error)
+	ListChildCounts(ctx context.Context) ([]ListChildCountsRow, error)
 	ListChildTasks(ctx context.Context, parentID sql.NullInt64) ([]Task, error)
 	ListInboxTasks(ctx context.Context) ([]Task, error)
 	ListLiveTasks(ctx context.Context) ([]Task, error)
 	SetTaskBody(ctx context.Context, arg SetTaskBodyParams) error
 	SetTaskDue(ctx context.Context, arg SetTaskDueParams) error
+	SetTaskPriority(ctx context.Context, arg SetTaskPriorityParams) error
 	SetTaskProject(ctx context.Context, arg SetTaskProjectParams) error
 	SetTaskState(ctx context.Context, arg SetTaskStateParams) error
 }

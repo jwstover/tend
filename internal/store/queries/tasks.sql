@@ -26,6 +26,7 @@ ORDER BY s.sort_order, t.priority IS NULL, t.priority, t.id;
 SELECT *
 FROM tasks
 WHERE state = 'inbox'
+  AND parent_id IS NULL
 ORDER BY id;
 
 -- name: ListChildTasks :many
@@ -33,6 +34,20 @@ SELECT *
 FROM tasks
 WHERE parent_id = ?
 ORDER BY id;
+
+-- name: ListChildCounts :many
+SELECT parent_id,
+       COUNT(*)                                                   AS total,
+       CAST(SUM(CASE WHEN state = 'done' THEN 1 ELSE 0 END) AS INTEGER) AS done
+FROM tasks
+WHERE parent_id IS NOT NULL
+GROUP BY parent_id;
+
+-- name: CountInboxTasks :one
+SELECT COUNT(*)
+FROM tasks
+WHERE state = 'inbox'
+  AND parent_id IS NULL;
 
 -- name: SetTaskState :exec
 UPDATE tasks
@@ -44,6 +59,12 @@ WHERE id = sqlc.arg(id);
 -- name: SetTaskProject :exec
 UPDATE tasks
 SET project    = ?,
+    updated_at = datetime('now')
+WHERE id = ?;
+
+-- name: SetTaskPriority :exec
+UPDATE tasks
+SET priority   = ?,
     updated_at = datetime('now')
 WHERE id = ?;
 

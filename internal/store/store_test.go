@@ -204,6 +204,85 @@ func TestTriageMutators(t *testing.T) {
 	}
 }
 
+func TestSetPriority(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	created, err := s.AddTask(ctx, "rank me")
+	if err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+
+	one := int64(1)
+	if err := s.SetPriority(ctx, created.ID, &one); err != nil {
+		t.Fatalf("SetPriority(1): %v", err)
+	}
+	got, err := s.GetTask(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if got.Priority == nil || *got.Priority != 1 {
+		t.Errorf("Priority = %v, want 1", got.Priority)
+	}
+
+	for _, bad := range []int64{0, 5, -1} {
+		if err := s.SetPriority(ctx, created.ID, &bad); err == nil {
+			t.Errorf("SetPriority(%d) should fail", bad)
+		}
+	}
+
+	if err := s.SetPriority(ctx, created.ID, nil); err != nil {
+		t.Fatalf("SetPriority(nil): %v", err)
+	}
+	got, _ = s.GetTask(ctx, created.ID)
+	if got.Priority != nil {
+		t.Errorf("Priority not cleared: %v", got.Priority)
+	}
+}
+
+func TestListLiveOrdersByPriorityWithinState(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	// Captured in an order that would sort wrong by id alone.
+	fixtures := []struct {
+		title    string
+		priority *int64
+	}{
+		{"no priority", nil},
+		{"priority C", ptrInt64(3)},
+		{"priority A", ptrInt64(1)},
+	}
+	for _, f := range fixtures {
+		created, err := s.AddTask(ctx, f.title)
+		if err != nil {
+			t.Fatalf("AddTask(%q): %v", f.title, err)
+		}
+		if err := s.SetState(ctx, created.ID, task.StateTodo); err != nil {
+			t.Fatalf("SetState: %v", err)
+		}
+		if f.priority != nil {
+			if err := s.SetPriority(ctx, created.ID, f.priority); err != nil {
+				t.Fatalf("SetPriority: %v", err)
+			}
+		}
+	}
+
+	got, err := s.ListLive(ctx)
+	if err != nil {
+		t.Fatalf("ListLive: %v", err)
+	}
+	want := []string{"priority A", "priority C", "no priority"}
+	if len(got) != len(want) {
+		t.Fatalf("ListLive returned %d tasks, want %d", len(got), len(want))
+	}
+	for i, title := range want {
+		if got[i].Title != title {
+			t.Errorf("ListLive[%d] = %q, want %q", i, got[i].Title, title)
+		}
+	}
+}
+
 func TestSubTasks(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
@@ -232,7 +311,67 @@ func TestSubTasks(t *testing.T) {
 	}
 }
 
+func TestChildCounts(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	parent, err := s.AddTask(ctx, "parent")
+	if err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	c1, err := s.AddChild(ctx, parent.ID, "child one")
+	if err != nil {
+		t.Fatalf("AddChild: %v", err)
+	}
+	if _, err := s.AddChild(ctx, parent.ID, "child two"); err != nil {
+		t.Fatalf("AddChild: %v", err)
+	}
+	if err := s.SetState(ctx, c1.ID, task.StateDone); err != nil {
+		t.Fatalf("SetState: %v", err)
+	}
+	// A childless task must not appear in the map.
+	if _, err := s.AddTask(ctx, "loner"); err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+
+	counts, err := s.ChildCounts(ctx)
+	if err != nil {
+		t.Fatalf("ChildCounts: %v", err)
+	}
+	if len(counts) != 1 {
+		t.Fatalf("ChildCounts returned %d entries, want 1: %v", len(counts), counts)
+	}
+	if got := counts[parent.ID]; got.Done != 1 || got.Total != 2 {
+		t.Errorf("ChildCounts[%d] = %+v, want {Done:1 Total:2}", parent.ID, got)
+	}
+}
+
+func TestCountInbox(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	if n, err := s.CountInbox(ctx); err != nil || n != 0 {
+		t.Fatalf("CountInbox on empty store = %d, %v; want 0, nil", n, err)
+	}
+	captured, err := s.AddTask(ctx, "one")
+	if err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	if _, err := s.AddTask(ctx, "two"); err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	if err := s.SetState(ctx, captured.ID, task.StateTodo); err != nil {
+		t.Fatalf("SetState: %v", err)
+	}
+
+	if n, err := s.CountInbox(ctx); err != nil || n != 1 {
+		t.Errorf("CountInbox = %d, %v; want 1, nil", n, err)
+	}
+}
+
 func ptr(s string) *string { return &s }
+
+func ptrInt64(n int64) *int64 { return &n }
 
 func TestOpenIsIdempotent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "td.db")
