@@ -12,4 +12,4 @@ generate:
 	$(GOBIN)/sqlc generate
 
 install:
-	go install ./cmd/td
+	go install ./cmd/tend

@@ -11,7 +11,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
-	"github.com/jwstover/td/internal/task"
+	"github.com/jwstover/tend/internal/task"
 )
 
 // listItem adapts a task.Task to the bubbles list.Item interface, carrying

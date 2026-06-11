@@ -5,7 +5,7 @@ import (
 
 	"charm.land/lipgloss/v2"
 
-	"github.com/jwstover/td/internal/task"
+	"github.com/jwstover/tend/internal/task"
 )
 
 // helpEntry is one binding row: the key cap(s) and what they do.

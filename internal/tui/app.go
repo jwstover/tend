@@ -18,7 +18,7 @@ import (
 	"charm.land/glamour/v2"
 	"charm.land/lipgloss/v2"
 
-	"github.com/jwstover/td/internal/task"
+	"github.com/jwstover/tend/internal/task"
 )
 
 // Store is the slice of the persistence layer the TUI needs.
@@ -956,7 +956,7 @@ func (a app) View() tea.View {
 	if !a.loaded {
 		v := tea.NewView(a.loadingFrame())
 		v.AltScreen = true
-		v.WindowTitle = "td"
+		v.WindowTitle = "tend"
 		return v
 	}
 
@@ -1015,15 +1015,15 @@ func (a app) View() tea.View {
 
 	v := tea.NewView(frame)
 	v.AltScreen = true
-	v.WindowTitle = "td"
+	v.WindowTitle = "tend"
 	return v
 }
 
-// headerLine renders `  td  ·  <view>` with the inbox nudge and shown
+// headerLine renders `  tend  ·  <view>` with the inbox nudge and shown
 // count right-aligned.
 func (a app) headerLine() string {
 	s := a.styles
-	left := s.HeaderApp.Render("  td") + s.HeaderSep.Render("  ·  ")
+	left := s.HeaderApp.Render("  tend") + s.HeaderSep.Render("  ·  ")
 	if a.mode == modeTriage {
 		left += s.State[task.StateInbox].Bold(true).Render("triage")
 	} else {

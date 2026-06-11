@@ -1,4 +1,4 @@
-// Command td is the entrypoint: it wires the concrete store into the CLI
+// Command tend is the entrypoint: it wires the concrete store into the CLI
 // and dispatches. Wiring only — behavior lives in internal packages.
 package main
 
@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/jwstover/td/internal/cli"
-	"github.com/jwstover/td/internal/store"
-	"github.com/jwstover/td/internal/tui"
+	"github.com/jwstover/tend/internal/cli"
+	"github.com/jwstover/tend/internal/store"
+	"github.com/jwstover/tend/internal/tui"
 )
 
 func main() {
@@ -25,7 +25,7 @@ func main() {
 		return tui.Run(ctx, s, dbPath)
 	}
 	if err := cli.Execute(open, runTUI); err != nil {
-		fmt.Fprintln(os.Stderr, "td:", err)
+		fmt.Fprintln(os.Stderr, "tend:", err)
 		os.Exit(1)
 	}
 }

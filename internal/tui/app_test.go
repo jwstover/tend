@@ -11,8 +11,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
-	"github.com/jwstover/td/internal/store"
-	"github.com/jwstover/td/internal/task"
+	"github.com/jwstover/tend/internal/store"
+	"github.com/jwstover/tend/internal/task"
 )
 
 // drive applies a message and, like the Bubble Tea runtime, keeps feeding
@@ -67,7 +67,7 @@ func keyPress(r rune) tea.KeyPressMsg {
 func newTestApp(t *testing.T) (tea.Model, *store.Store) {
 	t.Helper()
 	ctx := context.Background()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "td.db"))
+	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "tend.db"))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -353,7 +353,7 @@ func TestTriageInboxZero(t *testing.T) {
 	for _, want := range []string{
 		"inbox zero",
 		"Nothing left to process. The dump is clean.",
-		`td add "…"`,
+		`tend add "…"`,
 		"esc back to list",
 	} {
 		if !strings.Contains(content, want) {
@@ -1086,19 +1086,19 @@ func TestHelpOverlay(t *testing.T) {
 
 func TestLoadingFrameBeforeFirstLoad(t *testing.T) {
 	ctx := context.Background()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "td.db"))
+	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "tend.db"))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(func() { s.Close() })
 
-	var m tea.Model = newApp(ctx, s, "/data/td/td.db")
+	var m tea.Model = newApp(ctx, s, "/data/tend/tend.db")
 	m = drive(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
 	content := ansi.Strip(m.View().Content)
 	if !strings.Contains(content, "loading tasks…") {
 		t.Fatalf("pre-load frame missing the loading line:\n%s", content)
 	}
-	if !strings.Contains(content, "reading /data/td/td.db") {
+	if !strings.Contains(content, "reading /data/tend/tend.db") {
 		t.Errorf("pre-load frame missing the db path:\n%s", content)
 	}
 

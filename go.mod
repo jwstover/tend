@@ -1,4 +1,4 @@
-module github.com/jwstover/td
+module github.com/jwstover/tend
 
 go 1.26.4
 

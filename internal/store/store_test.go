@@ -7,12 +7,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jwstover/td/internal/task"
+	"github.com/jwstover/tend/internal/task"
 )
 
 func newTestStore(t *testing.T) *Store {
 	t.Helper()
-	s, err := Open(context.Background(), filepath.Join(t.TempDir(), "td.db"))
+	s, err := Open(context.Background(), filepath.Join(t.TempDir(), "tend.db"))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -374,7 +374,7 @@ func ptr(s string) *string { return &s }
 func ptrInt64(n int64) *int64 { return &n }
 
 func TestOpenIsIdempotent(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "td.db")
+	path := filepath.Join(t.TempDir(), "tend.db")
 	ctx := context.Background()
 
 	s1, err := Open(ctx, path)

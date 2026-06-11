@@ -9,7 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/jwstover/td/internal/task"
+	"github.com/jwstover/tend/internal/task"
 )
 
 // Store is the slice of the persistence layer the CLI needs.
@@ -36,8 +36,8 @@ func newRootCmd(open StoreFactory, runTUI TUIRunner) *cobra.Command {
 	var dbPath string
 
 	root := &cobra.Command{
-		Use:           "td",
-		Short:         "td is a terminal-native personal task tracker",
+		Use:           "tend",
+		Short:         "tend is a terminal-native personal task tracker",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -45,8 +45,8 @@ func newRootCmd(open StoreFactory, runTUI TUIRunner) *cobra.Command {
 		},
 	}
 	root.PersistentFlags().StringVar(&dbPath, "db", "",
-		"path to the SQLite database (default $TD_DB, then "+
-			"$XDG_DATA_HOME/td/td.db)")
+		"path to the SQLite database (default $TEND_DB, then "+
+			"$XDG_DATA_HOME/tend/tend.db)")
 
 	openHere := func(ctx context.Context) (Store, error) {
 		return open(ctx, resolveDBPath(dbPath))
@@ -56,13 +56,13 @@ func newRootCmd(open StoreFactory, runTUI TUIRunner) *cobra.Command {
 	return root
 }
 
-// resolveDBPath picks the database location: --db flag, then TD_DB, then
+// resolveDBPath picks the database location: --db flag, then TEND_DB, then
 // the XDG data directory.
 func resolveDBPath(flagValue string) string {
 	if flagValue != "" {
 		return flagValue
 	}
-	if env := os.Getenv("TD_DB"); env != "" {
+	if env := os.Getenv("TEND_DB"); env != "" {
 		return env
 	}
 	dataHome := os.Getenv("XDG_DATA_HOME")
@@ -71,9 +71,9 @@ func resolveDBPath(flagValue string) string {
 		if err != nil {
 			// No home directory to anchor to; fall back to the
 			// working directory rather than failing capture.
-			return "td.db"
+			return "tend.db"
 		}
 		dataHome = filepath.Join(home, ".local", "share")
 	}
-	return filepath.Join(dataHome, "td", "td.db")
+	return filepath.Join(dataHome, "tend", "tend.db")
 }
