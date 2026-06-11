@@ -284,12 +284,15 @@ func (d taskDelegate) renderRow(it listItem, selected bool, width int) string {
 		segs = append(segs, seg{"  ", s.Normal})
 	}
 
+	// Priority sits just before the title; blank when unset so titles
+	// stay aligned across rows.
+	segs = append(segs, d.priCell(t.Priority))
+	segs = append(segs, seg{" ", s.Normal})
+
 	// Right meta block, fixed-width columns; absent fields stay blank so
 	// alignment holds across rows.
 	var meta []seg
 	if width >= compactMetaWidth {
-		meta = append(meta, d.priCell(t.Priority))
-		meta = append(meta, seg{" ", s.Normal})
 		meta = append(meta, d.projectCell(t.Project, 10))
 		meta = append(meta, seg{" ", s.Normal})
 		meta = append(meta, d.dueCell(t.Due, 7))
