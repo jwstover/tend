@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.0](https://github.com/jwstover/tend/compare/v0.1.0...v0.1.0) (2026-06-12)
+
+
+### Features
+
+* add link picker when a task has multiple links ([#9](https://github.com/jwstover/tend/issues/9)) ([22da8f0](https://github.com/jwstover/tend/commit/22da8f0e9e0ef19f159cac63df0ea70b0e89ec00))
+
 ## 0.1.0 (2026-06-12)
 
 
