@@ -16,6 +16,22 @@
 
 ---
 
+## 0.1 Commit convention (Conventional Commits)
+
+Releases are automated. Every commit subject **must** follow Conventional Commits:
+
+```
+<type>(<optional scope>): <imperative subject>
+```
+
+- **Types:** `feat` (user-visible feature → minor bump), `fix` (bug fix → patch bump), `refactor`, `docs`, `test`, `chore`, `ci`, `build`, `perf`. Only `feat`, `fix`, and breaking changes appear in the CHANGELOG and trigger a release.
+- **Scopes** (optional, lowercase): `tui`, `cli`, `store`, `task`, `ci`. Omit when a change spans layers.
+- **Breaking changes:** append `!` after the type/scope (`feat(cli)!: …`) or add a `BREAKING CHANGE:` footer. Pre-1.0, these bump the **minor** version, not the major.
+- **Keep the existing body style:** a narrative body explaining the *why*, plus the `Co-Authored-By:` trailer. Conventional Commits only constrains the subject line.
+- **Releases run via release-please** (see §11): merging to `main` updates a release PR with the CHANGELOG and version bump; merging that PR tags and publishes. **Never hand-edit `CHANGELOG.md` or create tags manually.**
+
+---
+
 ## 1. What this is
 
 A fast, keyboard-driven, **terminal-native** personal task/project tracker for a single user who lives in the command line. Inspired by `webstonehq/tuxedo` (a todo.txt TUI) but with a real data model: long-form descriptions, sub-tasks, and a custom workflow.
@@ -247,3 +263,21 @@ Anything past Gate 3 is a *wanted* feature — which is exactly when to be suspi
 - Project hierarchy beyond a single flat `project` string
 - Themes, densities, saved searches
 - Anything requiring a network call
+
+---
+
+## 11. Versioning & releases
+
+Fully automated; no manual tagging. The flow:
+
+1. **Commit** to `main` using Conventional Commits (§0.1).
+2. **release-please** (`.github/workflows/release.yml`) maintains an open `chore(main): release X.Y.Z` PR with the generated `CHANGELOG.md` and version bump. It owns the changelog and the GitHub release notes — don't touch them by hand.
+3. **Merge that PR** to cut a release: release-please creates the `vX.Y.Z` tag and GitHub release, and **GoReleaser** (gated on `release_created` in the same workflow) cross-compiles static binaries (darwin/linux × amd64/arm64, `CGO_ENABLED=0`) and attaches the archives + `checksums.txt`.
+
+**Versioning rules** (pre-1.0, set in `release-please-config.json`): `feat` → minor, `fix` → patch, breaking → minor.
+
+**Version reporting:** `internal/version` exposes `String()`. It returns the ldflags-stamped value in release builds, falling back to `runtime/debug` build info so `go install …@vX.Y.Z` and local builds still report a sensible version. Surfaced via `tend version` and `tend --version` (cobra's `Version` field, wired in `internal/cli/root.go`).
+
+**Local checks:** `make release-check` (validates `.goreleaser.yaml`) and `make snapshot` (builds artifacts into `dist/` without tagging or publishing).
+
+> One-time follow-up: after `v0.1.0` ships, remove `"release-as": "0.1.0"` from `release-please-config.json` (a `chore:` commit) so version inference takes over.

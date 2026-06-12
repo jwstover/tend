@@ -1,6 +1,6 @@
 GOBIN := $(shell go env GOPATH)/bin
 
-.PHONY: build test lint generate install
+.PHONY: build test lint generate install snapshot release-check
 
 build:
 	go build ./...
@@ -16,3 +16,9 @@ generate:
 
 install:
 	go install ./cmd/tend
+
+snapshot:
+	goreleaser release --snapshot --clean
+
+release-check:
+	goreleaser check
