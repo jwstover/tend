@@ -1172,3 +1172,89 @@ func TestDetailPaneShowsBodyAndSubtasks(t *testing.T) {
 		}
 	}
 }
+
+// twoLinkApp returns an app with one selected task whose body has two links.
+func twoLinkApp(t *testing.T) tea.Model {
+	t.Helper()
+	ctx := context.Background()
+	m, s := newTestApp(t)
+	parent, err := s.AddTask(ctx, "parent task")
+	if err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	body := "see https://example.com/one and https://example.com/two"
+	if err := s.SetBody(ctx, parent.ID, body); err != nil {
+		t.Fatalf("SetBody: %v", err)
+	}
+	return drive(t, m, refreshMsg{})
+}
+
+func TestOpenURLPickerMultipleLinks(t *testing.T) {
+	m := twoLinkApp(t)
+
+	// `o` on a task with 2+ links opens the picker, listing every URL.
+	m = drive(t, m, keyPress('o'))
+	if !m.(app).urlPickerOpen {
+		t.Fatal("picker not open after o with multiple links")
+	}
+	content := ansi.Strip(m.View().Content)
+	for _, want := range []string{"open link", "https://example.com/one", "https://example.com/two"} {
+		if !strings.Contains(content, want) {
+			t.Errorf("picker missing %q:\n%s", want, content)
+		}
+	}
+
+	// ↓ moves the selection; esc dismisses without opening anything.
+	m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyDown})
+	if sel := m.(app).urlPickerSel; sel != 1 {
+		t.Errorf("selection after ↓ = %d, want 1", sel)
+	}
+	m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyEscape})
+	if m.(app).urlPickerOpen {
+		t.Error("picker still open after esc")
+	}
+}
+
+func TestURLPickerDigitOpens(t *testing.T) {
+	m := twoLinkApp(t)
+	m = drive(t, m, keyPress('o'))
+
+	// Typing the index opens that link and closes the picker. Step once so
+	// the resulting open command isn't run (it shells out to the OS opener).
+	m2, cmd := m.Update(keyPress('2'))
+	if m2.(app).urlPickerOpen {
+		t.Error("picker still open after typing an index")
+	}
+	if cmd == nil {
+		t.Error("typing an index did not produce an open command")
+	}
+
+	// An out-of-range digit is ignored: the picker stays open.
+	m3, _ := m.Update(keyPress('9'))
+	if !m3.(app).urlPickerOpen {
+		t.Error("picker closed on an out-of-range digit")
+	}
+}
+
+func TestOpenURLSingleLinkSkipsPicker(t *testing.T) {
+	ctx := context.Background()
+	m, s := newTestApp(t)
+	parent, err := s.AddTask(ctx, "parent task")
+	if err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	if err := s.SetBody(ctx, parent.ID, "see https://example.com/only"); err != nil {
+		t.Fatalf("SetBody: %v", err)
+	}
+	m = drive(t, m, refreshMsg{})
+
+	// One link opens directly — no picker. Step once so the open command
+	// (which shells out) isn't run.
+	m2, cmd := m.Update(keyPress('o'))
+	if m2.(app).urlPickerOpen {
+		t.Error("picker opened for a single link")
+	}
+	if cmd == nil {
+		t.Error("single link did not produce an open command")
+	}
+}

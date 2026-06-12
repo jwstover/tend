@@ -59,7 +59,7 @@ func defaultKeyMap() keyMap {
 		Help:         key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
 		EditBody:     key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "edit body")),
 		LogEntry:     key.NewBinding(key.WithKeys("U"), key.WithHelp("U", "log entry")),
-		OpenURL:      key.NewBinding(key.WithKeys("o"), key.WithHelp("o", "open link")),
+		OpenURL:      key.NewBinding(key.WithKeys("o"), key.WithHelp("o", "open link(s)")),
 		OpenAllURLs:  key.NewBinding(key.WithKeys("O"), key.WithHelp("O", "open all links")),
 		ChangeState:  key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "change state")),
 

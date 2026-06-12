@@ -152,6 +152,11 @@ type app struct {
 	paletteQuery string
 	paletteSel   int
 
+	// URL picker overlay: choose one link from a task with multiple links.
+	urlPickerOpen bool
+	urlPickerURLs []string
+	urlPickerSel  int
+
 	helpOpen bool // `?` key-reference overlay
 
 	statePending    bool // `c` pressed; next key picks the new state
@@ -277,6 +282,11 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	a.status = flash{}
+
+	// An open URL picker swallows all keys.
+	if a.urlPickerOpen {
+		return a.handleURLPickerKey(msg)
+	}
 
 	// An open palette swallows all keys.
 	if a.paletteOpen {
@@ -492,10 +502,15 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	case key.Matches(msg, a.keys.OpenURL):
 		if t, ok := a.selected(); ok {
-			if urls := extractURLs(t.BodyMD); len(urls) > 0 {
+			urls := extractURLs(t.BodyMD)
+			switch {
+			case len(urls) == 0:
+				a.status = flash{text: "no links in body"}
+			case len(urls) == 1:
 				return a, openURLCmd(urls[0])
+			default:
+				a.openURLPicker(urls)
 			}
-			a.status = flash{text: "no links in body"}
 		}
 		return a, nil
 
@@ -996,10 +1011,13 @@ func (a app) View() tea.View {
 	// Palette and help splice in just above the footer, over the bottom
 	// body rows. A panel taller than the screen loses its top rows, like
 	// the design's splice.
-	if a.paletteOpen || a.helpOpen {
+	if a.paletteOpen || a.helpOpen || a.urlPickerOpen {
 		box := a.paletteView()
-		if a.helpOpen {
+		switch {
+		case a.helpOpen:
 			box = a.helpView()
+		case a.urlPickerOpen:
+			box = a.urlPickerView()
 		}
 		rows := strings.Split(box, "\n")
 		if maxRows := max(a.height-1, 1); len(rows) > maxRows {
