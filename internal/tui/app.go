@@ -35,6 +35,7 @@ type Store interface {
 	SetPriority(ctx context.Context, id int64, p *int64) error
 	SetDue(ctx context.Context, id int64, due *string) error
 	SetBody(ctx context.Context, id int64, body string) error
+	DeleteTask(ctx context.Context, id int64) error
 }
 
 // Run starts the TUI and blocks until it exits. dbPath is display-only
@@ -161,6 +162,7 @@ type app struct {
 
 	statePending    bool // `c` pressed; next key picks the new state
 	priorityPending bool // `p` pressed; next key picks the new priority
+	deletePending   bool // first `d` pressed; a second `d` confirms the delete
 
 	loaded bool   // first tasksLoadedMsg arrived; until then, loading frame
 	dbPath string // shown on the loading frame; "" hides the line
@@ -365,6 +367,19 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return a, nil
 	}
 
+	// A pending `d` chord consumes the next key: a second `d` deletes the
+	// selection, anything else cancels.
+	if a.deletePending {
+		a.deletePending = false
+		a.resize()
+		if key.Matches(msg, a.keys.Delete) {
+			if t, selected := a.selected(); selected {
+				return a, a.deleteTask(t)
+			}
+		}
+		return a, nil
+	}
+
 	switch {
 	case key.Matches(msg, a.keys.Quit):
 		return a, tea.Quit
@@ -478,6 +493,13 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, a.keys.ChangePriority):
 		if _, ok := a.selected(); ok {
 			a.priorityPending = true
+			a.resize()
+		}
+		return a, nil
+
+	case key.Matches(msg, a.keys.Delete) && a.mode == modeList:
+		if _, ok := a.selected(); ok {
+			a.deletePending = true
 			a.resize()
 		}
 		return a, nil
@@ -628,6 +650,16 @@ func (a app) priorityPanel() string {
 	return renderKeyPanel(a.styles, a.width, "priority", entries)
 }
 
+// deletePanel renders the which-key panel for the pending `d` chord: a
+// second `d` deletes, anything else cancels.
+func (a app) deletePanel() string {
+	entries := []panelEntry{
+		{key: "d", desc: "delete", keyStyle: a.styles.State[task.StateDone]},
+		{key: "esc", desc: "cancel", keyStyle: a.styles.Dimmed},
+	}
+	return renderKeyPanel(a.styles, a.width, "delete", entries)
+}
+
 func (a app) setPriority(t task.Task, p *int64) tea.Cmd {
 	text := fmt.Sprintf("#%d priority cleared", t.ID)
 	if p != nil {
@@ -635,6 +667,19 @@ func (a app) setPriority(t task.Task, p *int64) tea.Cmd {
 	}
 	return a.mutate(flash{kind: flashEdit, text: text}, func() error {
 		return a.store.SetPriority(a.ctx, t.ID, p)
+	})
+}
+
+func (a app) deleteTask(t task.Task) tea.Cmd {
+	text := fmt.Sprintf("#%d deleted", t.ID)
+	if t.ParentID == nil {
+		// Top-level deletes take their sub-tasks with them (ON DELETE
+		// CASCADE); drop the stale branch from the session caches.
+		delete(a.expanded, t.ID)
+		delete(a.childCache, t.ID)
+	}
+	return a.mutate(flash{kind: flashDone, text: text}, func() error {
+		return a.store.DeleteTask(a.ctx, t.ID)
 	})
 }
 
@@ -801,6 +846,9 @@ func (a *app) resize() {
 	}
 	if a.priorityPending {
 		bottomHeight = max(lipgloss.Height(a.priorityPanel()), 1)
+	}
+	if a.deletePending {
+		bottomHeight = max(lipgloss.Height(a.deletePanel()), 1)
 	}
 	a.bodyHeight = max(a.height-chromeTop-bottomHeight, 1)
 	listWidth, detailWidth, _ := a.splitWidths()
@@ -1094,6 +1142,9 @@ func (a app) bottomChrome(splitAt int) string {
 	}
 	if a.priorityPending {
 		return a.priorityPanel()
+	}
+	if a.deletePending {
+		return a.deletePanel()
 	}
 	return a.ruleLine(splitAt, a.styles.Glyphs.TeeUp) + "\n" + a.footer()
 }

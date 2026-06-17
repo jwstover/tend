@@ -13,6 +13,7 @@ type Querier interface {
 	CountInboxTasks(ctx context.Context) (int64, error)
 	CreateChildTask(ctx context.Context, arg CreateChildTaskParams) (Task, error)
 	CreateTask(ctx context.Context, title string) (Task, error)
+	DeleteTask(ctx context.Context, id int64) error
 	GetTask(ctx context.Context, id int64) (Task, error)
 	ListChildCounts(ctx context.Context) ([]ListChildCountsRow, error)
 	ListChildTasks(ctx context.Context, parentID sql.NullInt64) ([]Task, error)
