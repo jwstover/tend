@@ -231,6 +231,15 @@ func (s *Store) SetBody(ctx context.Context, id int64, body string) error {
 	return nil
 }
 
+// DeleteTask removes a task. Its sub-tasks cascade away with it (the
+// parent_id foreign key is ON DELETE CASCADE).
+func (s *Store) DeleteTask(ctx context.Context, id int64) error {
+	if err := s.q.DeleteTask(ctx, id); err != nil {
+		return fmt.Errorf("deleting task %d: %w", id, err)
+	}
+	return nil
+}
+
 // GetTask loads a single task by id.
 func (s *Store) GetTask(ctx context.Context, id int64) (task.Task, error) {
 	row, err := s.q.GetTask(ctx, id)

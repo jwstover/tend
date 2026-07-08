@@ -59,6 +59,14 @@ func (a app) paletteCommands() []paletteCommand {
 				a.helpOpen = true
 				return a, nil
 			}},
+		{icon: "✗", label: "Delete selected task", hint: "dd", aliases: []string{"delete", "rm"},
+			act: func(a app) (tea.Model, tea.Cmd) {
+				if t, ok := a.selected(); ok {
+					return a, a.deleteTask(t)
+				}
+				a.status = flash{text: "nothing selected"}
+				return a, nil
+			}},
 		{icon: "✗", label: "Quit", hint: "q", aliases: []string{"q", "quit"},
 			act: func(a app) (tea.Model, tea.Cmd) { return a, tea.Quit }},
 	}

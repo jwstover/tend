@@ -79,3 +79,7 @@ UPDATE tasks
 SET body_md    = ?,
     updated_at = datetime('now')
 WHERE id = ?;
+
+-- name: DeleteTask :exec
+DELETE FROM tasks
+WHERE id = ?;

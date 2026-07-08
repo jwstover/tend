@@ -19,6 +19,7 @@ type keyMap struct {
 	OpenURL      key.Binding
 	OpenAllURLs  key.Binding
 	ChangeState  key.Binding
+	Delete       key.Binding // first `d` of the `dd` delete chord
 
 	// Tree expansion in the list view.
 	ExpandToggle key.Binding // ⏎/Tab flips a branch (⏎ falls back to detail on leaves)
@@ -62,6 +63,7 @@ func defaultKeyMap() keyMap {
 		OpenURL:      key.NewBinding(key.WithKeys("o"), key.WithHelp("o", "open link(s)")),
 		OpenAllURLs:  key.NewBinding(key.WithKeys("O"), key.WithHelp("O", "open all links")),
 		ChangeState:  key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "change state")),
+		Delete:       key.NewBinding(key.WithKeys("d"), key.WithHelp("dd", "delete")),
 
 		ExpandToggle: key.NewBinding(key.WithKeys("enter", "tab"), key.WithHelp("⏎", "expand")),
 		ExpandOpen:   key.NewBinding(key.WithKeys("l", "right"), key.WithHelp("l", "expand")),
