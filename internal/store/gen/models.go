@@ -8,6 +8,13 @@ import (
 	"database/sql"
 )
 
+type LogEntry struct {
+	ID        int64
+	TaskID    sql.NullInt64
+	Body      string
+	CreatedAt string
+}
+
 type State struct {
 	Name            string
 	SortOrder       int64
@@ -28,4 +35,14 @@ type Task struct {
 	CreatedAt   string
 	UpdatedAt   string
 	CompletedAt sql.NullString
+}
+
+type TaskEvent struct {
+	ID        int64
+	TaskID    int64
+	TaskTitle string
+	Kind      string
+	OldValue  sql.NullString
+	NewValue  sql.NullString
+	CreatedAt string
 }

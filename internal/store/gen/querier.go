@@ -12,13 +12,22 @@ import (
 type Querier interface {
 	CountInboxTasks(ctx context.Context) (int64, error)
 	CreateChildTask(ctx context.Context, arg CreateChildTaskParams) (Task, error)
+	CreateLogEntry(ctx context.Context, arg CreateLogEntryParams) (LogEntry, error)
 	CreateTask(ctx context.Context, title string) (Task, error)
 	DeleteTask(ctx context.Context, id int64) error
 	GetTask(ctx context.Context, id int64) (Task, error)
 	ListChildCounts(ctx context.Context) ([]ListChildCountsRow, error)
 	ListChildTasks(ctx context.Context, parentID sql.NullInt64) ([]Task, error)
+	ListEventsBetween(ctx context.Context, arg ListEventsBetweenParams) ([]TaskEvent, error)
 	ListInboxTasks(ctx context.Context) ([]Task, error)
 	ListLiveTasks(ctx context.Context) ([]Task, error)
+	// Like ListLiveTasks but also surfaces completed (done) tasks, for when the
+	// list view has the completed section toggled on.
+	ListLiveWithCompletedTasks(ctx context.Context) ([]Task, error)
+	// The task title comes along for display; COALESCE keeps the column
+	// non-null when the note is freestanding or its task was deleted.
+	ListLogEntriesBetween(ctx context.Context, arg ListLogEntriesBetweenParams) ([]ListLogEntriesBetweenRow, error)
+	ListLogEntriesForTask(ctx context.Context, taskID sql.NullInt64) ([]LogEntry, error)
 	SetTaskBody(ctx context.Context, arg SetTaskBodyParams) error
 	SetTaskDue(ctx context.Context, arg SetTaskDueParams) error
 	SetTaskPriority(ctx context.Context, arg SetTaskPriorityParams) error

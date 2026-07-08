@@ -186,6 +186,9 @@ type Styles struct {
 	CardBorder   lipgloss.Style // the capture card's box — border token
 	InboxZero    lipgloss.Style // "inbox zero" — complete green bold
 
+	// Standup view.
+	DayHeading lipgloss.Style // "Today · Tue Jul 7" day sections — green bold (owner's pick)
+
 	// Shared text levels + per-state/priority color maps.
 	Normal   lipgloss.Style
 	Dimmed   lipgloss.Style // fgDim
@@ -259,6 +262,8 @@ func newStyles(isDark bool) Styles {
 		ProgressRest: fg(p.Faint),
 		CardBorder:   fg(p.Border),
 		InboxZero:    fg(p.Complete).Bold(true),
+
+		DayHeading: fg(p.Complete).Bold(true),
 
 		Normal: lipgloss.NewStyle(),
 		Dimmed: fg(p.FgDim),

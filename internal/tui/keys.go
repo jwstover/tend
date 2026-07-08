@@ -10,12 +10,16 @@ type keyMap struct {
 	Cancel       key.Binding
 	ToggleDetail key.Binding
 	Triage       key.Binding
+	Standup      key.Binding
 	QuickAdd     key.Binding
 	AddSub       key.Binding
 	Palette      key.Binding
 	Help         key.Binding
 	EditBody     key.Binding
-	LogEntry     key.Binding
+	LogEntry     key.Binding // note attached to the selected task
+	Note         key.Binding // freestanding standup note, from anywhere
+	Yank         key.Binding // copy the standup markdown (standup view)
+	SortToggle   key.Binding // flip grouped/chronological notes (standup view)
 	OpenURL      key.Binding
 	OpenAllURLs  key.Binding
 	ChangeState  key.Binding
@@ -26,6 +30,8 @@ type keyMap struct {
 	ExpandOpen   key.Binding
 	ExpandClose  key.Binding
 	ToggleDone   key.Binding // x/space on the selected node
+
+	ToggleCompleted key.Binding // C shows/hides the completed (done) section
 
 	ChangePriority key.Binding
 
@@ -54,12 +60,16 @@ func defaultKeyMap() keyMap {
 		Cancel:       key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "cancel")),
 		ToggleDetail: key.NewBinding(key.WithKeys("]"), key.WithHelp("]", "detail")),
 		Triage:       key.NewBinding(key.WithKeys("i"), key.WithHelp("i", "triage")),
+		Standup:      key.NewBinding(key.WithKeys("S"), key.WithHelp("S", "standup")),
 		QuickAdd:     key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "add")),
 		AddSub:       key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "sub-task")),
 		Palette:      key.NewBinding(key.WithKeys(":", "ctrl+p"), key.WithHelp(":", "palette")),
 		Help:         key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
 		EditBody:     key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "edit body")),
-		LogEntry:     key.NewBinding(key.WithKeys("U"), key.WithHelp("U", "log entry")),
+		LogEntry:     key.NewBinding(key.WithKeys("U"), key.WithHelp("U", "note on task")),
+		Note:         key.NewBinding(key.WithKeys("N"), key.WithHelp("N", "note")),
+		Yank:         key.NewBinding(key.WithKeys("y"), key.WithHelp("y", "yank standup")),
+		SortToggle:   key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "sort")),
 		OpenURL:      key.NewBinding(key.WithKeys("o"), key.WithHelp("o", "open link(s)")),
 		OpenAllURLs:  key.NewBinding(key.WithKeys("O"), key.WithHelp("O", "open all links")),
 		ChangeState:  key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "change state")),
@@ -69,6 +79,8 @@ func defaultKeyMap() keyMap {
 		ExpandOpen:   key.NewBinding(key.WithKeys("l", "right"), key.WithHelp("l", "expand")),
 		ExpandClose:  key.NewBinding(key.WithKeys("h", "left"), key.WithHelp("h", "collapse")),
 		ToggleDone:   key.NewBinding(key.WithKeys("x", "space"), key.WithHelp("x", "done")),
+
+		ToggleCompleted: key.NewBinding(key.WithKeys("C"), key.WithHelp("C", "completed")),
 
 		ChangePriority: key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "priority")),
 

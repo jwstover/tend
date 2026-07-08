@@ -12,6 +12,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/glamour/v2"
 	glamourstyles "charm.land/glamour/v2/styles"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/jwstover/tend/internal/task"
 )
@@ -30,9 +31,11 @@ func newBodyRenderer(width int) (*glamour.TermRenderer, error) {
 
 // renderDetail builds the full detail pane content: a compact metadata
 // header, the glamour-rendered body, the sub-task checklist with progress,
-// and the URLs detected in the body. selectedID highlights the checklist
-// row of the sub-task under the list cursor (0 = none).
-func renderDetail(t task.Task, children []task.Task, renderer *glamour.TermRenderer, styles Styles, selectedID int64) string {
+// the URLs detected in the body, and the task's note log. selectedID
+// highlights the checklist row of the sub-task under the list cursor
+// (0 = none); width wraps the log entries to the pane.
+func renderDetail(t task.Task, children []task.Task, log []task.LogEntry,
+	renderer *glamour.TermRenderer, styles Styles, selectedID int64, width int) string {
 	g := styles.Glyphs
 	var b strings.Builder
 
@@ -75,7 +78,7 @@ func renderDetail(t task.Task, children []task.Task, renderer *glamour.TermRende
 		b.WriteString("\n" + t.BodyMD + "\n")
 	}
 
-	if urls := extractURLs(t.BodyMD); len(urls) > 0 {
+	if urls := taskURLs(t, log); len(urls) > 0 {
 		noun := "links"
 		if len(urls) == 1 {
 			noun = "link"
@@ -119,6 +122,22 @@ func renderDetail(t task.Task, children []task.Task, renderer *glamour.TermRende
 		}
 	}
 
+	if len(log) > 0 {
+		b.WriteString("\n" + "  " + styles.SubHeader.Render("LOG") + "  " +
+			styles.Muted.Render(fmt.Sprintf("%d", len(log))) + "\n")
+		// "Jan _2 15:04" is fixed-width, so entries align and wrapped
+		// continuation lines hang under the text, not the timestamp.
+		const tsWidth = 12
+		for _, n := range log {
+			ts := n.CreatedAt.Local().Format("Jan _2 15:04")
+			wrapped := strings.Split(ansi.Wrap(n.Body, max(width-tsWidth-6, 20), ""), "\n")
+			b.WriteString("  " + styles.DetailFaint.Render(ts) + "  " + wrapped[0] + "\n")
+			for _, l := range wrapped[1:] {
+				b.WriteString(strings.Repeat(" ", tsWidth+4) + l + "\n")
+			}
+		}
+	}
+
 	return b.String()
 }
 
@@ -138,6 +157,17 @@ func relTime(t, now time.Time) string {
 	default:
 		return t.Format("Jan 2")
 	}
+}
+
+// taskURLs collects the unique URLs across a task's body and its log
+// entries: body links first, then log links in entry order.
+func taskURLs(t task.Task, log []task.LogEntry) []string {
+	parts := make([]string, 0, len(log)+1)
+	parts = append(parts, t.BodyMD)
+	for _, n := range log {
+		parts = append(parts, n.Body)
+	}
+	return extractURLs(strings.Join(parts, "\n"))
 }
 
 var urlRe = regexp.MustCompile(`https?://[^\s<>()\[\]"']+`)

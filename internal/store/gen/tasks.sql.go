@@ -288,6 +288,54 @@ func (q *Queries) ListLiveTasks(ctx context.Context) ([]Task, error) {
 	return items, nil
 }
 
+const listLiveWithCompletedTasks = `-- name: ListLiveWithCompletedTasks :many
+SELECT t.id, t.title, t.body_md, t.state, t.parent_id, t.project, t.priority, t.due, t.snooze_until, t.created_at, t.updated_at, t.completed_at
+FROM tasks t
+JOIN states s ON s.name = t.state
+WHERE (s.is_terminal = 0 OR t.state = 'done')
+  AND s.hidden_by_default = 0
+  AND (t.snooze_until IS NULL OR t.snooze_until <= date('now'))
+ORDER BY s.sort_order, t.priority IS NULL, t.priority, t.id
+`
+
+// Like ListLiveTasks but also surfaces completed (done) tasks, for when the
+// list view has the completed section toggled on.
+func (q *Queries) ListLiveWithCompletedTasks(ctx context.Context) ([]Task, error) {
+	rows, err := q.db.QueryContext(ctx, listLiveWithCompletedTasks)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Task{}
+	for rows.Next() {
+		var i Task
+		if err := rows.Scan(
+			&i.ID,
+			&i.Title,
+			&i.BodyMd,
+			&i.State,
+			&i.ParentID,
+			&i.Project,
+			&i.Priority,
+			&i.Due,
+			&i.SnoozeUntil,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.CompletedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const setTaskBody = `-- name: SetTaskBody :exec
 UPDATE tasks
 SET body_md    = ?,

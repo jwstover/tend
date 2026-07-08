@@ -26,7 +26,8 @@ func helpGroups() []helpGroup {
 			{"⏎ / tab", "expand / collapse children"},
 			{"l / h", "expand / collapse branch"},
 			{"]", "toggle detail pane"},
-			{"o / O", "open link(s) in body"},
+			{"C", "show / hide completed"},
+			{"o / O", "open link(s) in body + log"},
 		}},
 		{"CAPTURE & FIND", []helpEntry{
 			{"n", "quick-add to inbox"},
@@ -43,7 +44,13 @@ func helpGroups() []helpGroup {
 			{"P", "set project"},
 			{"u", "set due (triage)"},
 			{"e", "edit body in $EDITOR"},
-			{"U", "add log entry"},
+		}},
+		{"STANDUP", []helpEntry{
+			{"S", "open the standup view"},
+			{"N / U", "note / note on task"},
+			{"h / l", "shift window (standup)"},
+			{"s", "group by task / time (standup)"},
+			{"y", "yank markdown (standup)"},
 		}},
 	}
 }
