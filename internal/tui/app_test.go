@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -140,6 +141,47 @@ func TestListGroupsTasksByState(t *testing.T) {
 	m = drive(t, m, keyPress('k'))
 	if sel, ok := m.(app).selected(); !ok || sel.Title != "start me" {
 		t.Errorf("selection after k = %+v, want start me", sel)
+	}
+}
+
+func TestToggleCompletedVisibility(t *testing.T) {
+	ctx := context.Background()
+	m, s := newTestApp(t)
+
+	done, err := s.AddTask(ctx, "finished thing")
+	if err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	if err := s.SetState(ctx, done.ID, task.StateDone); err != nil {
+		t.Fatalf("SetState: %v", err)
+	}
+	if _, err := s.AddTask(ctx, "pending thing"); err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+
+	m = drive(t, m, refreshMsg{})
+	content := ansi.Strip(m.View().Content)
+	if strings.Contains(content, "finished thing") {
+		t.Fatalf("completed task should be hidden by default:\n%s", content)
+	}
+	if !strings.Contains(content, "pending thing") {
+		t.Fatalf("non-completed task should show:\n%s", content)
+	}
+
+	// C reveals the completed section without dropping other tasks.
+	m = drive(t, m, keyPress('C'))
+	content = ansi.Strip(m.View().Content)
+	if !strings.Contains(content, "finished thing") {
+		t.Errorf("completed task should appear after C:\n%s", content)
+	}
+	if !strings.Contains(content, "pending thing") {
+		t.Errorf("non-completed task should still show:\n%s", content)
+	}
+
+	// C again hides it.
+	m = drive(t, m, keyPress('C'))
+	if strings.Contains(ansi.Strip(m.View().Content), "finished thing") {
+		t.Errorf("completed task should hide after second C:\n%s", ansi.Strip(m.View().Content))
 	}
 }
 
@@ -548,27 +590,31 @@ func TestLogEntrySaves(t *testing.T) {
 	if m.(app).modal.Active() {
 		t.Error("modal still active after submit")
 	}
+	notes := allLogEntries(t, s)
+	if len(notes) != 1 {
+		t.Fatalf("log entries = %+v, want exactly one", notes)
+	}
+	if notes[0].TaskID == nil || *notes[0].TaskID != captured.ID {
+		t.Errorf("note TaskID = %v, want attached to #%d", notes[0].TaskID, captured.ID)
+	}
+	if notes[0].Body != "first line\nsecond line" {
+		t.Errorf("note body = %q, want the multi-line entry", notes[0].Body)
+	}
+	// Notes are their own table now; the task body stays untouched.
 	got, err := s.GetTask(ctx, captured.ID)
 	if err != nil {
 		t.Fatalf("GetTask: %v", err)
 	}
-	if !strings.HasPrefix(got.BodyMD, "## 20") {
-		t.Errorf("body missing timestamp heading:\n%s", got.BodyMD)
-	}
-	if !strings.Contains(got.BodyMD, "first line\nsecond line") {
-		t.Errorf("body missing multi-line entry:\n%s", got.BodyMD)
+	if got.BodyMD != "" {
+		t.Errorf("body mutated by note capture:\n%s", got.BodyMD)
 	}
 }
 
-func TestLogEntryPrependsToExistingBody(t *testing.T) {
+func TestLogEntryAltEnterSubmits(t *testing.T) {
 	ctx := context.Background()
 	m, s := newTestApp(t)
-	captured, err := s.AddTask(ctx, "log me")
-	if err != nil {
+	if _, err := s.AddTask(ctx, "log me"); err != nil {
 		t.Fatalf("AddTask: %v", err)
-	}
-	if err := s.SetBody(ctx, captured.ID, "old content"); err != nil {
-		t.Fatalf("SetBody: %v", err)
 	}
 	m = drive(t, m, refreshMsg{})
 
@@ -578,17 +624,21 @@ func TestLogEntryPrependsToExistingBody(t *testing.T) {
 	}
 	_ = drive(t, m, tea.KeyPressMsg{Code: tea.KeyEnter, Mod: tea.ModAlt}) // alt+enter also submits
 
-	got, err := s.GetTask(ctx, captured.ID)
+	notes := allLogEntries(t, s)
+	if len(notes) != 1 || notes[0].Body != "new note" {
+		t.Errorf("log entries = %+v, want the alt+enter note", notes)
+	}
+}
+
+// allLogEntries is a test helper: every note from the epoch to well past now.
+func allLogEntries(t *testing.T, s *store.Store) []task.LogEntry {
+	t.Helper()
+	notes, err := s.ListLogEntries(context.Background(),
+		time.Unix(0, 0), time.Now().Add(time.Hour))
 	if err != nil {
-		t.Fatalf("GetTask: %v", err)
+		t.Fatalf("ListLogEntries: %v", err)
 	}
-	if !strings.HasPrefix(got.BodyMD, "## ") {
-		t.Errorf("body should start with the new entry's heading:\n%s", got.BodyMD)
-	}
-	note, old := strings.Index(got.BodyMD, "new note"), strings.Index(got.BodyMD, "old content")
-	if note == -1 || old == -1 || note > old {
-		t.Errorf("new entry not prepended (note=%d old=%d):\n%s", note, old, got.BodyMD)
-	}
+	return notes
 }
 
 func TestLogEntryEscCancels(t *testing.T) {
@@ -609,12 +659,11 @@ func TestLogEntryEscCancels(t *testing.T) {
 	if m.(app).modal.Active() {
 		t.Error("modal still active after esc")
 	}
-	got, err := s.GetTask(ctx, captured.ID)
-	if err != nil {
+	if _, err := s.GetTask(ctx, captured.ID); err != nil {
 		t.Fatalf("GetTask: %v", err)
 	}
-	if got.BodyMD != "" {
-		t.Errorf("body mutated by cancelled modal:\n%s", got.BodyMD)
+	if notes := allLogEntries(t, s); len(notes) != 0 {
+		t.Errorf("cancelled modal wrote a note: %+v", notes)
 	}
 }
 
@@ -633,12 +682,11 @@ func TestLogEntryEmptyIsNoop(t *testing.T) {
 	if m.(app).modal.Active() {
 		t.Error("modal still active after empty submit")
 	}
-	got, err := s.GetTask(ctx, captured.ID)
-	if err != nil {
+	if _, err := s.GetTask(ctx, captured.ID); err != nil {
 		t.Fatalf("GetTask: %v", err)
 	}
-	if got.BodyMD != "" {
-		t.Errorf("body mutated by empty entry:\n%s", got.BodyMD)
+	if notes := allLogEntries(t, s); len(notes) != 0 {
+		t.Errorf("empty submit wrote a note: %+v", notes)
 	}
 }
 
@@ -652,7 +700,7 @@ func TestLogEntryModalRenders(t *testing.T) {
 
 	m = drive(t, m, keyPress('U'))
 	content := ansi.Strip(m.View().Content)
-	if !strings.Contains(content, "log — #") {
+	if !strings.Contains(content, "note — #") {
 		t.Errorf("view missing modal title:\n%s", content)
 	}
 	if !strings.Contains(content, "esc cancel") {
@@ -667,7 +715,7 @@ func TestLogEntryModalRenders(t *testing.T) {
 	lines := strings.Split(content, "\n")
 	titleLine := -1
 	for i, l := range lines {
-		if strings.Contains(l, "log — #") {
+		if strings.Contains(l, "note — #") {
 			titleLine = i
 			break
 		}
@@ -1054,12 +1102,15 @@ func TestHelpOverlay(t *testing.T) {
 		t.Errorf("footer missing the help hint:\n%s", ansi.Strip(m.View().Content))
 	}
 
+	// The full reference outgrew the default 30-row test window (the
+	// splice drops top rows); give it room so every group is visible.
+	m = drive(t, m, tea.WindowSizeMsg{Width: 100, Height: 45})
 	m = drive(t, m, keyPress('?'))
 	if !m.(app).helpOpen {
 		t.Fatal("help not open after ?")
 	}
 	content := ansi.Strip(m.View().Content)
-	for _, want := range []string{"NAVIGATE", "CAPTURE & FIND", "PROCESS",
+	for _, want := range []string{"NAVIGATE", "CAPTURE & FIND", "PROCESS", "STANDUP",
 		"command palette", "quick-add to inbox", "change state (chord)", "esc close"} {
 		if !strings.Contains(content, want) {
 			t.Errorf("help overlay missing %q:\n%s", want, content)
@@ -1248,13 +1299,269 @@ func TestOpenURLSingleLinkSkipsPicker(t *testing.T) {
 	}
 	m = drive(t, m, refreshMsg{})
 
-	// One link opens directly — no picker. Step once so the open command
-	// (which shells out) isn't run.
+	// One link opens directly — no picker. `o` resolves the task's links
+	// off the update loop; feed the resolved message back by hand and stop
+	// there, so the open command (which shells out) isn't run.
 	m2, cmd := m.Update(keyPress('o'))
-	if m2.(app).urlPickerOpen {
+	if cmd == nil {
+		t.Fatal("o did not produce a resolve command")
+	}
+	m3, cmd := m2.Update(cmd())
+	if m3.(app).urlPickerOpen {
 		t.Error("picker opened for a single link")
 	}
 	if cmd == nil {
 		t.Error("single link did not produce an open command")
+	}
+}
+
+func TestOpenURLIncludesLogEntryLinks(t *testing.T) {
+	ctx := context.Background()
+	m, s := newTestApp(t)
+	parent, err := s.AddTask(ctx, "parent task")
+	if err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	if err := s.SetBody(ctx, parent.ID, "see https://example.com/body"); err != nil {
+		t.Fatalf("SetBody: %v", err)
+	}
+	if _, err := s.AddLogEntry(ctx, &parent.ID, "filed https://example.com/from-log"); err != nil {
+		t.Fatalf("AddLogEntry: %v", err)
+	}
+	m = drive(t, m, refreshMsg{})
+
+	// The detail pane's link list counts the log entry's URL too.
+	m = drive(t, m, keyPress(']'))
+	content := ansi.Strip(m.View().Content)
+	if !strings.Contains(content, "2 links detected") {
+		t.Errorf("detail pane missing log link in link list:\n%s", content)
+	}
+
+	// `o` offers both links: body first, then the log entry's.
+	m = drive(t, m, keyPress('o'))
+	if !m.(app).urlPickerOpen {
+		t.Fatal("picker not open when body and log each hold a link")
+	}
+	want := []string{"https://example.com/body", "https://example.com/from-log"}
+	if got := m.(app).urlPickerURLs; !slices.Equal(got, want) {
+		t.Errorf("picker URLs = %v, want %v", got, want)
+	}
+}
+
+func TestStandupViewRendersNotesAndReport(t *testing.T) {
+	ctx := context.Background()
+	m, s := newTestApp(t)
+	captured, err := s.AddTask(ctx, "ship the feature")
+	if err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	if err := s.SetState(ctx, captured.ID, task.StateDone); err != nil {
+		t.Fatalf("SetState: %v", err)
+	}
+	if _, err := s.AddLogEntry(ctx, nil, "paired with sam"); err != nil {
+		t.Fatalf("AddLogEntry: %v", err)
+	}
+	m = drive(t, m, refreshMsg{})
+
+	m = drive(t, m, keyPress('S'))
+	if m.(app).mode != modeStandup {
+		t.Fatal("S did not enter the standup view")
+	}
+	content := ansi.Strip(m.View().Content)
+	for _, want := range []string{"standup", "NOTES", "REPORT",
+		"paired with sam", "ship the feature", "Today", "Blockers"} {
+		if !strings.Contains(content, want) {
+			t.Errorf("standup view missing %q:\n%s", want, content)
+		}
+	}
+
+	// esc returns to the list.
+	m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyEscape})
+	if m.(app).mode != modeList {
+		t.Error("esc did not leave the standup view")
+	}
+}
+
+func TestStandupNoteCapture(t *testing.T) {
+	m, s := newTestApp(t)
+
+	m = drive(t, m, keyPress('S'))
+	m = drive(t, m, keyPress('n')) // in standup, add means note
+	for _, r := range "quick thought" {
+		m = drive(t, m, keyPress(r))
+	}
+	m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyEnter, Mod: tea.ModCtrl})
+
+	notes := allLogEntries(t, s)
+	if len(notes) != 1 || notes[0].Body != "quick thought" {
+		t.Fatalf("log entries = %+v, want the captured note", notes)
+	}
+	if notes[0].TaskID != nil {
+		t.Errorf("note TaskID = %v, want freestanding (nil)", notes[0].TaskID)
+	}
+	// The refresh lands it in the notes pane immediately.
+	if !strings.Contains(ansi.Strip(m.View().Content), "quick thought") {
+		t.Errorf("captured note not visible in the pane:\n%s", ansi.Strip(m.View().Content))
+	}
+}
+
+func TestGlobalNoteKey(t *testing.T) {
+	m, s := newTestApp(t)
+
+	// N captures a freestanding note without leaving the list view.
+	m = drive(t, m, keyPress('N'))
+	for _, r := range "from the list" {
+		m = drive(t, m, keyPress(r))
+	}
+	m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyEnter, Mod: tea.ModCtrl})
+
+	if m.(app).mode != modeList {
+		t.Error("note capture should not change modes")
+	}
+	notes := allLogEntries(t, s)
+	if len(notes) != 1 || notes[0].Body != "from the list" || notes[0].TaskID != nil {
+		t.Fatalf("log entries = %+v, want one freestanding note", notes)
+	}
+}
+
+func TestStandupWindowPaging(t *testing.T) {
+	m, _ := newTestApp(t)
+	m = drive(t, m, keyPress('S'))
+	start := m.(app).standupSince
+
+	m = drive(t, m, keyPress('h'))
+	if got := m.(app).standupSince; !got.Equal(start.AddDate(0, 0, -1)) {
+		t.Errorf("since after h = %v, want a day before %v", got, start)
+	}
+	m = drive(t, m, keyPress('l'))
+	if got := m.(app).standupSince; !got.Equal(start) {
+		t.Errorf("since after h,l = %v, want back at %v", got, start)
+	}
+
+	// l never pushes the window past today's local midnight.
+	for range 10 {
+		m = drive(t, m, keyPress('l'))
+	}
+	now := time.Now()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	if got := m.(app).standupSince; !got.Equal(today) {
+		t.Errorf("since after many l = %v, want clamped to %v", got, today)
+	}
+}
+
+func TestDetailPaneShowsTaskLog(t *testing.T) {
+	ctx := context.Background()
+	m, s := newTestApp(t)
+	captured, err := s.AddTask(ctx, "task with history")
+	if err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	if _, err := s.AddLogEntry(ctx, &captured.ID, "earlier note"); err != nil {
+		t.Fatalf("AddLogEntry: %v", err)
+	}
+	m = drive(t, m, refreshMsg{})
+
+	m = drive(t, m, keyPress(']'))
+	content := ansi.Strip(m.View().Content)
+	if !strings.Contains(content, "LOG") {
+		t.Errorf("detail pane missing the LOG section:\n%s", content)
+	}
+	if !strings.Contains(content, "earlier note") {
+		t.Errorf("detail pane missing the seeded note:\n%s", content)
+	}
+
+	// A note captured with U lands in the open pane via the refresh.
+	m = drive(t, m, keyPress('U'))
+	for _, r := range "fresh note" {
+		m = drive(t, m, keyPress(r))
+	}
+	m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyEnter, Mod: tea.ModCtrl})
+	content = ansi.Strip(m.View().Content)
+	if !strings.Contains(content, "fresh note") {
+		t.Errorf("captured note not visible in the detail pane:\n%s", content)
+	}
+	// Newest first.
+	if strings.Index(content, "fresh note") > strings.Index(content, "earlier note") {
+		t.Errorf("log entries not newest-first:\n%s", content)
+	}
+}
+
+func TestStandupNotesGroupedByTaskWithToggle(t *testing.T) {
+	ctx := context.Background()
+	m, s := newTestApp(t)
+	captured, err := s.AddTask(ctx, "ship the retry fix")
+	if err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	if _, err := s.AddLogEntry(ctx, &captured.ID, "still flaky on CI"); err != nil {
+		t.Fatalf("AddLogEntry: %v", err)
+	}
+	if _, err := s.AddLogEntry(ctx, nil, "paired with sam"); err != nil {
+		t.Fatalf("AddLogEntry: %v", err)
+	}
+
+	m = drive(t, m, keyPress('S'))
+	content := ansi.Strip(m.View().Content)
+	// Grouped by default: the task title heads its notes, freestanding
+	// notes sit under "general", and no bare day header shows.
+	if !strings.Contains(content, "ship the retry fix") {
+		t.Errorf("grouped notes missing the task title:\n%s", content)
+	}
+	if !strings.Contains(content, "general") {
+		t.Errorf("grouped notes missing the freestanding group:\n%s", content)
+	}
+	title := strings.Index(content, "ship the retry fix")
+	body := strings.Index(content, "still flaky on CI")
+	if title == -1 || body == -1 || title > body {
+		t.Errorf("note body should follow its task header:\n%s", content)
+	}
+
+	// s flips to the flat chronology: day headers appear.
+	m = drive(t, m, keyPress('s'))
+	if !m.(app).standupChrono {
+		t.Fatal("s did not switch to chronological order")
+	}
+	content = ansi.Strip(m.View().Content)
+	dayHeader := time.Now().Format("Mon Jan 2")
+	if !strings.Contains(content, dayHeader) {
+		t.Errorf("chronological notes missing the %q day header:\n%s", dayHeader, content)
+	}
+	if !strings.Contains(content, "ship the retry fix: ") {
+		t.Errorf("chronological entry missing its task-title prefix:\n%s", content)
+	}
+
+	// s again returns to grouped.
+	m = drive(t, m, keyPress('s'))
+	if m.(app).standupChrono {
+		t.Error("second s did not return to grouped order")
+	}
+}
+
+func TestStandupNotesSplitByDay(t *testing.T) {
+	m, _ := newTestApp(t)
+	m = drive(t, m, keyPress('S'))
+
+	// Inject a two-day window directly; AddLogEntry always stamps now.
+	id := int64(7)
+	yesterday := time.Now().AddDate(0, 0, -1)
+	m = drive(t, m, standupLoadedMsg{notes: []task.LogEntry{
+		{TaskID: &id, TaskTitle: "ship it", Body: "note from yesterday", CreatedAt: yesterday},
+		{TaskID: &id, TaskTitle: "ship it", Body: "note from today", CreatedAt: time.Now()},
+	}})
+
+	content := ansi.Strip(m.View().Content)
+	yHeader := strings.Index(content, "Yesterday · "+yesterday.Format("Mon Jan 2"))
+	tHeader := strings.Index(content, "Today · "+time.Now().Format("Mon Jan 2"))
+	if yHeader == -1 || tHeader == -1 || yHeader > tHeader {
+		t.Fatalf("day sections missing or out of order:\n%s", content)
+	}
+	yNote := strings.Index(content, "note from yesterday")
+	tNote := strings.Index(content, "note from today")
+	if yHeader >= yNote || yNote >= tHeader || tHeader >= tNote {
+		t.Errorf("notes not under their day headers:\n%s", content)
+	}
+	// The task group repeats per day rather than pooling both notes.
+	if strings.Count(content, "ship it") != 2 {
+		t.Errorf("task header should appear once per day:\n%s", content)
 	}
 }

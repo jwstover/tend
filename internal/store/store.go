@@ -105,6 +105,16 @@ func (s *Store) ListLive(ctx context.Context) ([]task.Task, error) {
 	return toDomainSlice(rows)
 }
 
+// ListLiveWithCompleted is ListLive plus the completed (done) tasks, for
+// when the list view has the completed section toggled on.
+func (s *Store) ListLiveWithCompleted(ctx context.Context) ([]task.Task, error) {
+	rows, err := s.q.ListLiveWithCompletedTasks(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("listing live tasks with completed: %w", err)
+	}
+	return toDomainSlice(rows)
+}
+
 // AddChild captures a sub-task under an existing task.
 func (s *Store) AddChild(ctx context.Context, parentID int64, title string) (task.Task, error) {
 	t, err := task.NormalizeTitle(title)
@@ -240,6 +250,87 @@ func (s *Store) DeleteTask(ctx context.Context, id int64) error {
 	return nil
 }
 
+// AddLogEntry captures a standup note, optionally attached to a task.
+func (s *Store) AddLogEntry(ctx context.Context, taskID *int64, body string) (task.LogEntry, error) {
+	b, err := task.NormalizeNote(body)
+	if err != nil {
+		return task.LogEntry{}, err
+	}
+	row, err := s.q.CreateLogEntry(ctx, gen.CreateLogEntryParams{
+		TaskID: toNullInt64(taskID),
+		Body:   b,
+	})
+	if err != nil {
+		return task.LogEntry{}, fmt.Errorf("inserting log entry: %w", err)
+	}
+	return logToDomain(row)
+}
+
+// ListTaskLog returns every note attached to a task, newest first —
+// the per-task history the detail pane shows.
+func (s *Store) ListTaskLog(ctx context.Context, taskID int64) ([]task.LogEntry, error) {
+	rows, err := s.q.ListLogEntriesForTask(ctx, sql.NullInt64{Int64: taskID, Valid: true})
+	if err != nil {
+		return nil, fmt.Errorf("listing log for task %d: %w", taskID, err)
+	}
+	notes := make([]task.LogEntry, 0, len(rows))
+	for _, row := range rows {
+		n, err := logToDomain(row)
+		if err != nil {
+			return nil, err
+		}
+		notes = append(notes, n)
+	}
+	return notes, nil
+}
+
+// ListLogEntries returns the standup notes captured in [from, to],
+// oldest first. Bounds convert like ListEvents.
+func (s *Store) ListLogEntries(ctx context.Context, from, to time.Time) ([]task.LogEntry, error) {
+	rows, err := s.q.ListLogEntriesBetween(ctx, gen.ListLogEntriesBetweenParams{
+		StartAt: from.UTC().Format(sqliteTimeLayout),
+		EndAt:   to.UTC().Format(sqliteTimeLayout),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("listing log entries: %w", err)
+	}
+	notes := make([]task.LogEntry, 0, len(rows))
+	for _, row := range rows {
+		n, err := logToDomain(gen.LogEntry{
+			ID: row.ID, TaskID: row.TaskID, Body: row.Body, CreatedAt: row.CreatedAt,
+		})
+		if err != nil {
+			return nil, err
+		}
+		n.TaskTitle = row.TaskTitle
+		notes = append(notes, n)
+	}
+	return notes, nil
+}
+
+// ListEvents returns the activity-log events recorded in [from, to],
+// oldest first. Bounds are converted to the UTC layout the DB stores;
+// the end is inclusive because timestamps have second granularity and
+// an event written in the same second as the query must not be lost.
+func (s *Store) ListEvents(ctx context.Context, from, to time.Time) ([]task.Event, error) {
+	rows, err := s.q.ListEventsBetween(ctx, gen.ListEventsBetweenParams{
+		StartAt: from.UTC().Format(sqliteTimeLayout),
+		EndAt:   to.UTC().Format(sqliteTimeLayout),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("listing events: %w", err)
+	}
+	events := make([]task.Event, 0, len(rows))
+	for _, row := range rows {
+		ev, err := eventToDomain(row)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, ev)
+	}
+	return events, nil
+}
+
 // GetTask loads a single task by id.
 func (s *Store) GetTask(ctx context.Context, id int64) (task.Task, error) {
 	row, err := s.q.GetTask(ctx, id)
@@ -291,6 +382,35 @@ func toDomain(row gen.Task) (task.Task, error) {
 		CreatedAt:   created,
 		UpdatedAt:   updated,
 		CompletedAt: completed,
+	}, nil
+}
+
+func logToDomain(row gen.LogEntry) (task.LogEntry, error) {
+	created, err := parseTime(row.CreatedAt)
+	if err != nil {
+		return task.LogEntry{}, fmt.Errorf("log entry %d created_at: %w", row.ID, err)
+	}
+	return task.LogEntry{
+		ID:        row.ID,
+		TaskID:    nullInt64(row.TaskID),
+		Body:      row.Body,
+		CreatedAt: created,
+	}, nil
+}
+
+func eventToDomain(row gen.TaskEvent) (task.Event, error) {
+	created, err := parseTime(row.CreatedAt)
+	if err != nil {
+		return task.Event{}, fmt.Errorf("event %d created_at: %w", row.ID, err)
+	}
+	return task.Event{
+		ID:        row.ID,
+		TaskID:    row.TaskID,
+		TaskTitle: row.TaskTitle,
+		Kind:      task.EventKind(row.Kind),
+		Old:       nullString(row.OldValue),
+		New:       nullString(row.NewValue),
+		CreatedAt: created,
 	}, nil
 }
 

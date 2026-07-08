@@ -39,6 +39,15 @@ func (a app) paletteCommands() []paletteCommand {
 			act: func(a app) (tea.Model, tea.Cmd) {
 				return a, a.openPrompt(promptAdd, "add: ", 0)
 			}},
+		{icon: "▤", label: "Standup view", hint: "S", aliases: []string{"standup", "log"},
+			act: func(a app) (tea.Model, tea.Cmd) {
+				a.startStandup()
+				return a, a.loadStandup()
+			}},
+		{icon: "✎", label: "Capture a note", hint: "N", aliases: []string{"note"},
+			act: func(a app) (tea.Model, tea.Cmd) {
+				return a, a.modal.Open(modalLog, true, "note", 0, "")
+			}},
 		{icon: "⌕", label: "Search the list", hint: "/",
 			act: func(a app) (tea.Model, tea.Cmd) {
 				var cmd tea.Cmd

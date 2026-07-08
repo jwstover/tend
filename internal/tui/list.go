@@ -238,10 +238,16 @@ func (d taskDelegate) renderHeading(sec sectionItem, width int) string {
 	count := fmt.Sprintf("%d", sec.count)
 	used := 2 + runeWidth(g.State[sec.state]) + 1 + len(label) + 2 + 1 + len(count)
 	fill := max(width-used, 0)
+	// The done section celebrates with complete-green; every other heading
+	// wears its state color.
+	headStyle := d.styles.State[sec.state]
+	if sec.state == task.StateDone {
+		headStyle = d.styles.CheckDone
+	}
 	var b strings.Builder
 	b.WriteString("  ")
-	b.WriteString(d.styles.State[sec.state].Render(g.State[sec.state] + " "))
-	b.WriteString(d.styles.State[sec.state].Bold(true).Render(label))
+	b.WriteString(headStyle.Render(g.State[sec.state] + " "))
+	b.WriteString(headStyle.Bold(true).Render(label))
 	b.WriteString("  ")
 	b.WriteString(d.styles.GroupRule.Render(strings.Repeat(g.RuleH, fill)))
 	b.WriteString(" ")

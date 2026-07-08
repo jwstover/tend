@@ -400,3 +400,251 @@ func TestOpenIsIdempotent(t *testing.T) {
 		t.Fatalf("ListLive after reopen = %+v, want the one persisted task", got)
 	}
 }
+
+// eventsSince is a test helper: all events from the epoch to well past now.
+func eventsSince(t *testing.T, s *Store) []task.Event {
+	t.Helper()
+	events, err := s.ListEvents(context.Background(),
+		time.Unix(0, 0), time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("ListEvents: %v", err)
+	}
+	return events
+}
+
+func TestEventTriggers(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	created, err := s.AddTask(ctx, "log me")
+	if err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+
+	events := eventsSince(t, s)
+	if len(events) != 1 {
+		t.Fatalf("after AddTask got %d events, want 1: %+v", len(events), events)
+	}
+	ev := events[0]
+	if ev.Kind != task.EventCreated || ev.TaskID != created.ID || ev.TaskTitle != "log me" {
+		t.Errorf("created event = %+v", ev)
+	}
+	if ev.New == nil || *ev.New != string(task.StateInbox) {
+		t.Errorf("created event New = %v, want inbox", ev.New)
+	}
+
+	if err := s.SetState(ctx, created.ID, task.StateDoing); err != nil {
+		t.Fatalf("SetState: %v", err)
+	}
+	events = eventsSince(t, s)
+	if len(events) != 2 {
+		t.Fatalf("after SetState got %d events, want 2: %+v", len(events), events)
+	}
+	ev = events[1]
+	if ev.Kind != task.EventState {
+		t.Errorf("Kind = %q, want state", ev.Kind)
+	}
+	if ev.Old == nil || *ev.Old != string(task.StateInbox) || ev.New == nil || *ev.New != string(task.StateDoing) {
+		t.Errorf("state event = old %v new %v, want inbox -> doing", ev.Old, ev.New)
+	}
+
+	// Re-setting the same state must not write a no-op event.
+	if err := s.SetState(ctx, created.ID, task.StateDoing); err != nil {
+		t.Fatalf("SetState (no-op): %v", err)
+	}
+	if events = eventsSince(t, s); len(events) != 2 {
+		t.Fatalf("no-op SetState wrote an event: %+v", events)
+	}
+
+	// Metadata changes are deliberately not logged.
+	if err := s.SetProject(ctx, created.ID, ptr("work")); err != nil {
+		t.Fatalf("SetProject: %v", err)
+	}
+	if err := s.SetPriority(ctx, created.ID, ptrInt64(1)); err != nil {
+		t.Fatalf("SetPriority: %v", err)
+	}
+	if events = eventsSince(t, s); len(events) != 2 {
+		t.Fatalf("metadata change wrote an event: %+v", events)
+	}
+}
+
+func TestEventTriggerOnCascadeDelete(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	parent, err := s.AddTask(ctx, "parent")
+	if err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	child, err := s.AddChild(ctx, parent.ID, "child")
+	if err != nil {
+		t.Fatalf("AddChild: %v", err)
+	}
+
+	if err := s.DeleteTask(ctx, parent.ID); err != nil {
+		t.Fatalf("DeleteTask: %v", err)
+	}
+
+	deleted := make(map[int64]task.Event)
+	for _, ev := range eventsSince(t, s) {
+		if ev.Kind == task.EventDeleted {
+			deleted[ev.TaskID] = ev
+		}
+	}
+	if len(deleted) != 2 {
+		t.Fatalf("got %d deleted events, want 2 (parent + cascaded child): %v", len(deleted), deleted)
+	}
+	if ev, ok := deleted[parent.ID]; !ok || ev.TaskTitle != "parent" {
+		t.Errorf("parent deleted event = %+v", ev)
+	}
+	if ev, ok := deleted[child.ID]; !ok || ev.TaskTitle != "child" {
+		t.Errorf("child deleted event = %+v", ev)
+	}
+}
+
+func TestListEventsWindow(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	if _, err := s.AddTask(ctx, "in window"); err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+
+	now := time.Now()
+	got, err := s.ListEvents(ctx, now.Add(-time.Minute), now.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("ListEvents: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("events in window = %d, want 1", len(got))
+	}
+	if got[0].CreatedAt.IsZero() {
+		t.Error("expected CreatedAt to be parsed")
+	}
+
+	// A window entirely in the past sees nothing.
+	got, err = s.ListEvents(ctx, now.Add(-2*time.Hour), now.Add(-time.Hour))
+	if err != nil {
+		t.Fatalf("ListEvents (past): %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("events in past window = %+v, want none", got)
+	}
+}
+
+func TestLogEntries(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	if _, err := s.AddLogEntry(ctx, nil, "   "); !errors.Is(err, task.ErrEmptyNote) {
+		t.Fatalf("AddLogEntry(blank) error = %v, want ErrEmptyNote", err)
+	}
+
+	free, err := s.AddLogEntry(ctx, nil, "  freestanding note ")
+	if err != nil {
+		t.Fatalf("AddLogEntry: %v", err)
+	}
+	if free.Body != "freestanding note" || free.TaskID != nil {
+		t.Errorf("freestanding entry = %+v, want trimmed body and nil TaskID", free)
+	}
+
+	attached, err := s.AddLogEntry(ctx, ptrInt64(42), "attached note")
+	if err != nil {
+		t.Fatalf("AddLogEntry (attached): %v", err)
+	}
+	if attached.TaskID == nil || *attached.TaskID != 42 {
+		t.Errorf("attached entry TaskID = %v, want 42", attached.TaskID)
+	}
+
+	now := time.Now()
+	got, err := s.ListLogEntries(ctx, now.Add(-time.Minute), now.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("ListLogEntries: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("entries in window = %d, want 2", len(got))
+	}
+
+	past, err := s.ListLogEntries(ctx, now.Add(-2*time.Hour), now.Add(-time.Hour))
+	if err != nil {
+		t.Fatalf("ListLogEntries (past): %v", err)
+	}
+	if len(past) != 0 {
+		t.Fatalf("entries in past window = %+v, want none", past)
+	}
+}
+
+func TestListTaskLog(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	if _, err := s.AddLogEntry(ctx, ptrInt64(1), "first on #1"); err != nil {
+		t.Fatalf("AddLogEntry: %v", err)
+	}
+	if _, err := s.AddLogEntry(ctx, ptrInt64(2), "on another task"); err != nil {
+		t.Fatalf("AddLogEntry: %v", err)
+	}
+	if _, err := s.AddLogEntry(ctx, nil, "freestanding"); err != nil {
+		t.Fatalf("AddLogEntry: %v", err)
+	}
+	if _, err := s.AddLogEntry(ctx, ptrInt64(1), "second on #1"); err != nil {
+		t.Fatalf("AddLogEntry: %v", err)
+	}
+
+	got, err := s.ListTaskLog(ctx, 1)
+	if err != nil {
+		t.Fatalf("ListTaskLog: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("ListTaskLog = %+v, want the two #1 notes only", got)
+	}
+	// Newest first: the detail pane leads with the latest note.
+	if got[0].Body != "second on #1" || got[1].Body != "first on #1" {
+		t.Errorf("ListTaskLog order = [%q, %q], want newest first", got[0].Body, got[1].Body)
+	}
+}
+
+func TestListLogEntriesJoinsTaskTitle(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	created, err := s.AddTask(ctx, "ship it")
+	if err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	doomed, err := s.AddTask(ctx, "doomed task")
+	if err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	if _, err := s.AddLogEntry(ctx, &created.ID, "attached"); err != nil {
+		t.Fatalf("AddLogEntry: %v", err)
+	}
+	if _, err := s.AddLogEntry(ctx, &doomed.ID, "orphaned"); err != nil {
+		t.Fatalf("AddLogEntry: %v", err)
+	}
+	if _, err := s.AddLogEntry(ctx, nil, "freestanding"); err != nil {
+		t.Fatalf("AddLogEntry: %v", err)
+	}
+	if err := s.DeleteTask(ctx, doomed.ID); err != nil {
+		t.Fatalf("DeleteTask: %v", err)
+	}
+
+	now := time.Now()
+	got, err := s.ListLogEntries(ctx, now.Add(-time.Minute), now.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("ListLogEntries: %v", err)
+	}
+	titles := make(map[string]string, len(got))
+	for _, n := range got {
+		titles[n.Body] = n.TaskTitle
+	}
+	if titles["attached"] != "ship it" {
+		t.Errorf("attached note title = %q, want joined task title", titles["attached"])
+	}
+	if titles["orphaned"] != "" {
+		t.Errorf("orphaned note title = %q, want empty after task delete", titles["orphaned"])
+	}
+	if titles["freestanding"] != "" {
+		t.Errorf("freestanding note title = %q, want empty", titles["freestanding"])
+	}
+}

@@ -22,6 +22,17 @@ WHERE s.is_terminal = 0
   AND (t.snooze_until IS NULL OR t.snooze_until <= date('now'))
 ORDER BY s.sort_order, t.priority IS NULL, t.priority, t.id;
 
+-- name: ListLiveWithCompletedTasks :many
+-- Like ListLiveTasks but also surfaces completed (done) tasks, for when the
+-- list view has the completed section toggled on.
+SELECT t.*
+FROM tasks t
+JOIN states s ON s.name = t.state
+WHERE (s.is_terminal = 0 OR t.state = 'done')
+  AND s.hidden_by_default = 0
+  AND (t.snooze_until IS NULL OR t.snooze_until <= date('now'))
+ORDER BY s.sort_order, t.priority IS NULL, t.priority, t.id;
+
 -- name: ListInboxTasks :many
 SELECT *
 FROM tasks

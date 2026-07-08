@@ -25,7 +25,12 @@ import (
 type Store interface {
 	AddTask(ctx context.Context, title string) (task.Task, error)
 	AddChild(ctx context.Context, parentID int64, title string) (task.Task, error)
+	AddLogEntry(ctx context.Context, taskID *int64, body string) (task.LogEntry, error)
+	ListLogEntries(ctx context.Context, from, to time.Time) ([]task.LogEntry, error)
+	ListTaskLog(ctx context.Context, taskID int64) ([]task.LogEntry, error)
+	ListEvents(ctx context.Context, from, to time.Time) ([]task.Event, error)
 	ListLive(ctx context.Context) ([]task.Task, error)
+	ListLiveWithCompleted(ctx context.Context) ([]task.Task, error)
 	ListInbox(ctx context.Context) ([]task.Task, error)
 	ListChildren(ctx context.Context, parentID int64) ([]task.Task, error)
 	ChildCounts(ctx context.Context) (map[int64]task.ChildCount, error)
@@ -53,6 +58,7 @@ type viewMode int
 const (
 	modeList viewMode = iota
 	modeTriage
+	modeStandup
 )
 
 type promptKind int
@@ -97,6 +103,12 @@ type (
 	childrenLoadedMsg struct {
 		parentID int64
 		children []task.Task
+		log      []task.LogEntry
+	}
+	standupLoadedMsg struct {
+		notes  []task.LogEntry
+		events []task.Event
+		live   []task.Task
 	}
 	// refreshMsg signals a completed mutation: show status, reload.
 	refreshMsg struct{ status flash }
@@ -107,6 +119,13 @@ type (
 		id   int64
 		path string
 		err  error
+	}
+
+	// urlsResolvedMsg carries a task's collected links (body + log
+	// entries); openAll skips the picker and opens every one.
+	urlsResolvedMsg struct {
+		urls    []string
+		openAll bool
 	}
 )
 
@@ -124,8 +143,9 @@ type app struct {
 	// rebuilt from these whenever any of them changes.
 	tasks      []task.Task
 	counts     map[int64]task.ChildCount
-	expanded   map[int64]bool        // branch disclosure, by task ID, session-scoped
-	childCache map[int64][]task.Task // loaded children per parent
+	expanded   map[int64]bool            // branch disclosure, by task ID, session-scoped
+	childCache map[int64][]task.Task     // loaded children per parent
+	logCache   map[int64][]task.LogEntry // loaded task notes, for the detail pane
 
 	width, height int
 	bodyHeight    int   // rows between the chrome rules, set by resize
@@ -135,6 +155,14 @@ type app struct {
 	// many left the inbox since entering triage. Both reset on entry.
 	triageQueue     []task.Task
 	triageProcessed int
+
+	// Standup session: the reporting-window start (local midnight) and
+	// the loaded window data. The window always ends at now.
+	standupSince  time.Time
+	standupNotes  []task.LogEntry
+	standupEvents []task.Event
+	standupLive   []task.Task
+	standupChrono bool // `s` flips the notes pane to chronological; grouped by task otherwise
 
 	showDetail bool
 	detail     viewport.Model
@@ -160,6 +188,8 @@ type app struct {
 
 	helpOpen bool // `?` key-reference overlay
 
+	showCompleted bool // C toggles whether completed (done) tasks are loaded
+
 	statePending    bool // `c` pressed; next key picks the new state
 	priorityPending bool // `p` pressed; next key picks the new priority
 	deletePending   bool // first `d` pressed; a second `d` confirms the delete
@@ -182,6 +212,7 @@ func newApp(ctx context.Context, s Store, dbPath string) app {
 		list:       newTaskList(styles),
 		expanded:   make(map[int64]bool),
 		childCache: make(map[int64][]task.Task),
+		logCache:   make(map[int64][]task.LogEntry),
 		detail:     viewport.New(),
 		prompt:     textinput.New(),
 		modal:      newModal(),
@@ -226,6 +257,7 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case childrenLoadedMsg:
 		a.childCache[msg.parentID] = msg.children
+		a.logCache[msg.parentID] = msg.log
 		var cmd tea.Cmd
 		if a.mode == modeList {
 			sel, hadSel := a.selectedNode()
@@ -241,8 +273,36 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return a, cmd
 
+	case urlsResolvedMsg:
+		switch {
+		case len(msg.urls) == 0:
+			a.status = flash{text: "no links"}
+			return a, nil
+		case msg.openAll:
+			cmds := make([]tea.Cmd, len(msg.urls))
+			for i, u := range msg.urls {
+				cmds[i] = openURLCmd(u)
+			}
+			return a, tea.Batch(cmds...)
+		case len(msg.urls) == 1:
+			return a, openURLCmd(msg.urls[0])
+		default:
+			a.openURLPicker(msg.urls)
+			return a, nil
+		}
+
+	case standupLoadedMsg:
+		if a.mode != modeStandup {
+			return a, nil
+		}
+		a.standupNotes, a.standupEvents, a.standupLive = msg.notes, msg.events, msg.live
+		return a, nil
+
 	case refreshMsg:
 		a.status = msg.status
+		if a.mode == modeStandup {
+			return a, a.loadStandup()
+		}
 		return a, a.loadTasks(a.mode)
 
 	case statusMsg:
@@ -341,6 +401,12 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return a, cmd
 	}
 
+	// The standup view owns the keyboard: there is no list beneath it to
+	// navigate or mutate, so unhandled keys stop here.
+	if a.mode == modeStandup {
+		return a.handleStandupKey(msg)
+	}
+
 	// A pending `c` chord consumes the next key: a state key applies it,
 	// anything else cancels.
 	if a.statePending {
@@ -411,6 +477,13 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		return a, a.loadTasks(a.mode)
 
+	case key.Matches(msg, a.keys.Standup):
+		a.startStandup()
+		return a, a.loadStandup()
+
+	case key.Matches(msg, a.keys.Note):
+		return a, a.modal.Open(modalLog, true, "note", 0, "")
+
 	case key.Matches(msg, a.keys.ToggleDetail):
 		if a.mode == modeTriage {
 			a.status = flash{text: "no detail pane in triage"}
@@ -466,6 +539,17 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		return a, nil
 
+	case key.Matches(msg, a.keys.ToggleCompleted) && a.mode == modeList:
+		a.showCompleted = !a.showCompleted
+		text := "completed tasks hidden"
+		if a.showCompleted {
+			text = "completed tasks shown"
+		}
+		a.status = flash{text: text}
+		// Completed tasks are a different query, so reload rather than
+		// re-flatten the cached slice; tasksLoadedMsg rebuilds the list.
+		return a, a.loadTasks(a.mode)
+
 	case key.Matches(msg, a.keys.QuickAdd):
 		return a, a.openPrompt(promptAdd, "add: ", 0)
 
@@ -518,36 +602,19 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	case key.Matches(msg, a.keys.LogEntry):
 		if t, ok := a.selected(); ok {
-			return a, a.modal.Open(modalLog, true, fmt.Sprintf("log — #%d", t.ID), t.ID, t.BodyMD)
+			return a, a.modal.Open(modalLog, true, fmt.Sprintf("note — #%d", t.ID), t.ID, "")
 		}
 		return a, nil
 
 	case key.Matches(msg, a.keys.OpenURL):
 		if t, ok := a.selected(); ok {
-			urls := extractURLs(t.BodyMD)
-			switch {
-			case len(urls) == 0:
-				a.status = flash{text: "no links in body"}
-			case len(urls) == 1:
-				return a, openURLCmd(urls[0])
-			default:
-				a.openURLPicker(urls)
-			}
+			return a, a.resolveURLs(t, false)
 		}
 		return a, nil
 
 	case key.Matches(msg, a.keys.OpenAllURLs):
 		if t, ok := a.selected(); ok {
-			urls := extractURLs(t.BodyMD)
-			if len(urls) == 0 {
-				a.status = flash{text: "no links in body"}
-				return a, nil
-			}
-			cmds := make([]tea.Cmd, len(urls))
-			for i, u := range urls {
-				cmds[i] = openURLCmd(u)
-			}
-			return a, tea.Batch(cmds...)
+			return a, a.resolveURLs(t, true)
 		}
 		return a, nil
 	}
@@ -677,6 +744,7 @@ func (a app) deleteTask(t task.Task) tea.Cmd {
 		// CASCADE); drop the stale branch from the session caches.
 		delete(a.expanded, t.ID)
 		delete(a.childCache, t.ID)
+		delete(a.logCache, t.ID)
 	}
 	return a.mutate(flash{kind: flashDone, text: text}, func() error {
 		return a.store.DeleteTask(a.ctx, t.ID)
@@ -814,7 +882,9 @@ func (a *app) renderDetailFor(owner task.Task) {
 	if n, ok := a.selectedNode(); ok && n.t.ID != owner.ID {
 		selID = n.t.ID
 	}
-	a.detail.SetContent(renderDetail(owner, a.childCache[owner.ID], a.renderer, a.styles, selID))
+	_, detailW, _ := a.splitWidths()
+	a.detail.SetContent(renderDetail(owner, a.childCache[owner.ID], a.logCache[owner.ID],
+		a.renderer, a.styles, selID, detailW))
 }
 
 // splitWidths computes the list/detail column widths for the current
@@ -931,7 +1001,7 @@ func (a app) submitPrompt() (tea.Model, tea.Cmd) {
 // submitModal performs the action the open modal was collecting input
 // for; the modal itself only owns presentation and text entry.
 func (a app) submitModal() (tea.Model, tea.Cmd) {
-	kind, target, extra := a.modal.kind, a.modal.target, a.modal.extra
+	kind, target := a.modal.kind, a.modal.target
 	value := a.modal.Value()
 	a.modal.Close()
 
@@ -940,12 +1010,15 @@ func (a app) submitModal() (tea.Model, tea.Cmd) {
 		if value == "" {
 			return a, nil
 		}
-		body := "## " + time.Now().Format("2006-01-02 15:04") + "\n\n" + value + "\n"
-		if old := strings.TrimSpace(extra); old != "" {
-			body += "\n" + old + "\n"
+		var taskID *int64
+		text := "note logged"
+		if target != 0 {
+			taskID = &target
+			text = fmt.Sprintf("note logged on #%d", target)
 		}
-		return a, a.mutate(flash{kind: flashEdit, text: fmt.Sprintf("log added to #%d", target)}, func() error {
-			return a.store.SetBody(a.ctx, target, body)
+		return a, a.mutate(flash{kind: flashAdd, text: text}, func() error {
+			_, err := a.store.AddLogEntry(a.ctx, taskID, value)
+			return err
 		})
 	}
 	return a, nil
@@ -959,9 +1032,12 @@ func (a app) loadTasks(mode viewMode) tea.Cmd {
 			tasks []task.Task
 			err   error
 		)
-		if mode == modeTriage {
+		switch {
+		case mode == modeTriage:
 			tasks, err = a.store.ListInbox(a.ctx)
-		} else {
+		case a.showCompleted:
+			tasks, err = a.store.ListLiveWithCompleted(a.ctx)
+		default:
 			tasks, err = a.store.ListLive(a.ctx)
 		}
 		if err != nil {
@@ -979,13 +1055,30 @@ func (a app) loadTasks(mode viewMode) tea.Cmd {
 	}
 }
 
+// resolveURLs collects a task's links — body plus log entries — off the
+// update loop, since the log may not be cached (the detail pane loads it
+// lazily). The resulting message opens, picks, or flashes.
+func (a app) resolveURLs(t task.Task, openAll bool) tea.Cmd {
+	return func() tea.Msg {
+		log, err := a.store.ListTaskLog(a.ctx, t.ID)
+		if err != nil {
+			return errMsg{err}
+		}
+		return urlsResolvedMsg{urls: taskURLs(t, log), openAll: openAll}
+	}
+}
+
 func (a app) loadChildren(parentID int64) tea.Cmd {
 	return func() tea.Msg {
 		children, err := a.store.ListChildren(a.ctx, parentID)
 		if err != nil {
 			return errMsg{err}
 		}
-		return childrenLoadedMsg{parentID: parentID, children: children}
+		log, err := a.store.ListTaskLog(a.ctx, parentID)
+		if err != nil {
+			return errMsg{err}
+		}
+		return childrenLoadedMsg{parentID: parentID, children: children, log: log}
 	}
 }
 
@@ -1033,6 +1126,9 @@ func (a app) View() tea.View {
 	switch {
 	case a.mode == modeTriage:
 		body = a.triageView()
+	case a.mode == modeStandup:
+		splitAt, _ = a.standupWidths()
+		body = a.standupView()
 	case a.showDetail && full:
 		body = a.detail.View()
 	case a.showDetail:
@@ -1090,14 +1186,19 @@ func (a app) View() tea.View {
 func (a app) headerLine() string {
 	s := a.styles
 	left := s.HeaderApp.Render("  tend") + s.HeaderSep.Render("  ·  ")
-	if a.mode == modeTriage {
+	switch a.mode {
+	case modeTriage:
 		left += s.State[task.StateInbox].Bold(true).Render("triage")
-	} else {
+	case modeStandup:
+		left += s.HeaderView.Render("standup")
+	default:
 		left += s.HeaderView.Render("live")
 	}
 
 	right := ""
 	switch {
+	case a.mode == modeStandup:
+		right = s.CountLabel.Render(task.WindowLabel(a.standupSince, time.Now())) + "  "
 	case a.mode == modeTriage && len(a.triageQueue) > 0:
 		total := a.triageProcessed + len(a.triageQueue)
 		right = s.CountNum.Render(fmt.Sprintf("%d of %d", a.triageProcessed+1, total)) +
@@ -1181,6 +1282,16 @@ func (a app) footer() string {
 		}
 		if len(a.triageQueue) == 0 {
 			hints = [][2]string{{"esc", "back"}, {":", "palette"}, {"q", "quit"}}
+		}
+	}
+	if a.mode == modeStandup {
+		sort := "by time"
+		if a.standupChrono {
+			sort = "by task"
+		}
+		hints = [][2]string{
+			{"n", "note"}, {"y", "yank"}, {"h/l", "window"}, {"s", sort},
+			{"esc", "back"}, {"?", "help"}, {"q", "quit"},
 		}
 	}
 	return a.hintLine(hints)

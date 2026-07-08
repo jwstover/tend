@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -18,6 +19,9 @@ import (
 type Store interface {
 	AddTask(ctx context.Context, title string) (task.Task, error)
 	ListLive(ctx context.Context) ([]task.Task, error)
+	ListEvents(ctx context.Context, from, to time.Time) ([]task.Event, error)
+	AddLogEntry(ctx context.Context, taskID *int64, body string) (task.LogEntry, error)
+	ListLogEntries(ctx context.Context, from, to time.Time) ([]task.LogEntry, error)
 	Close() error
 }
 
@@ -56,6 +60,8 @@ func newRootCmd(open StoreFactory, runTUI TUIRunner) *cobra.Command {
 	}
 	root.AddCommand(newAddCmd(openHere))
 	root.AddCommand(newLsCmd(openHere))
+	root.AddCommand(newStandupCmd(openHere))
+	root.AddCommand(newLogCmd(openHere))
 	root.AddCommand(&cobra.Command{
 		Use:   "version",
 		Short: "Print the tend version",
