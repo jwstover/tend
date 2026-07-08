@@ -1565,3 +1565,62 @@ func TestStandupNotesSplitByDay(t *testing.T) {
 		t.Errorf("task header should appear once per day:\n%s", content)
 	}
 }
+
+func TestQuitKeyClosesViewBeforeQuitting(t *testing.T) {
+	// q backs out of non-default views (standup, detail, triage, help)
+	// and only quits from the bare list.
+	pressQ := func(m tea.Model) (tea.Model, bool) {
+		t.Helper()
+		m, cmd := m.Update(keyPress('q'))
+		for _, msg := range collect(cmd) {
+			if _, ok := msg.(tea.QuitMsg); ok {
+				return m, true
+			}
+			m = drive(t, m, msg)
+		}
+		return m, false
+	}
+
+	m, _ := newTestApp(t)
+
+	m = drive(t, m, keyPress('S'))
+	m, quit := pressQ(m)
+	if quit || m.(app).mode != modeList {
+		t.Errorf("q in standup: quit=%v mode=%v, want back to list", quit, m.(app).mode)
+	}
+
+	m = drive(t, m, keyPress('i'))
+	m, quit = pressQ(m)
+	if quit || m.(app).mode != modeList {
+		t.Errorf("q in triage: quit=%v mode=%v, want back to list", quit, m.(app).mode)
+	}
+
+	m = drive(t, m, keyPress('?'))
+	m, quit = pressQ(m)
+	if quit || m.(app).helpOpen {
+		t.Errorf("q in help: quit=%v helpOpen=%v, want overlay closed", quit, m.(app).helpOpen)
+	}
+
+	m = drive(t, m, keyPress(']'))
+	m, quit = pressQ(m)
+	if quit || m.(app).showDetail {
+		t.Errorf("q with detail open: quit=%v showDetail=%v, want pane closed", quit, m.(app).showDetail)
+	}
+
+	if _, quit = pressQ(m); !quit {
+		t.Errorf("q on the bare list did not quit")
+	}
+
+	// ctrl+c quits from anywhere, even inside a view.
+	m = drive(t, m, keyPress('S'))
+	_, cmd := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	quit = false
+	for _, msg := range collect(cmd) {
+		if _, ok := msg.(tea.QuitMsg); ok {
+			quit = true
+		}
+	}
+	if !quit {
+		t.Errorf("ctrl+c in standup did not quit")
+	}
+}
