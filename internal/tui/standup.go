@@ -26,10 +26,12 @@ func (a *app) startStandup() {
 // is swallowed rather than passed to the list underneath.
 func (a app) handleStandupKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch {
-	case key.Matches(msg, a.keys.Quit):
+	// ctrl+c always quits; `q` closes the view like esc.
+	case key.Matches(msg, a.keys.Quit) && msg.String() != "q":
 		return a, tea.Quit
 
-	case key.Matches(msg, a.keys.Back), key.Matches(msg, a.keys.Standup):
+	case key.Matches(msg, a.keys.Back), key.Matches(msg, a.keys.Standup),
+		key.Matches(msg, a.keys.Quit):
 		a.mode = modeList
 		return a, a.loadTasks(modeList)
 

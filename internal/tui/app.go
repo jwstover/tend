@@ -358,7 +358,7 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// The help overlay swallows all keys; a few of them close it.
 	if a.helpOpen {
 		switch msg.String() {
-		case "esc", "?", "enter":
+		case "esc", "?", "enter", "q":
 			a.helpOpen = false
 		}
 		return a, nil
@@ -448,6 +448,20 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	switch {
 	case key.Matches(msg, a.keys.Quit):
+		// ctrl+c always quits; `q` first backs out of any non-default
+		// view (triage, the detail pane) and only quits from the bare
+		// list.
+		if msg.String() == "q" {
+			if a.mode == modeTriage {
+				a.mode = modeList
+				return a, a.loadTasks(modeList)
+			}
+			if a.showDetail {
+				a.showDetail = false
+				a.resize()
+				return a, nil
+			}
+		}
 		return a, tea.Quit
 
 	case key.Matches(msg, a.keys.Back):
@@ -1281,7 +1295,7 @@ func (a app) footer() string {
 			{"e", "edit"}, {"⏎", "skip"}, {"esc", "back"},
 		}
 		if len(a.triageQueue) == 0 {
-			hints = [][2]string{{"esc", "back"}, {":", "palette"}, {"q", "quit"}}
+			hints = [][2]string{{"esc/q", "back"}, {":", "palette"}}
 		}
 	}
 	if a.mode == modeStandup {
@@ -1291,7 +1305,7 @@ func (a app) footer() string {
 		}
 		hints = [][2]string{
 			{"n", "note"}, {"y", "yank"}, {"h/l", "window"}, {"s", sort},
-			{"esc", "back"}, {"?", "help"}, {"q", "quit"},
+			{"esc/q", "back"}, {"?", "help"},
 		}
 	}
 	return a.hintLine(hints)
