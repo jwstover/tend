@@ -1342,9 +1342,55 @@ func TestOpenURLIncludesLogEntryLinks(t *testing.T) {
 	if !m.(app).urlPickerOpen {
 		t.Fatal("picker not open when body and log each hold a link")
 	}
-	want := []string{"https://example.com/body", "https://example.com/from-log"}
+	want := []link{{url: "https://example.com/body"}, {url: "https://example.com/from-log"}}
 	if got := m.(app).urlPickerURLs; !slices.Equal(got, want) {
 		t.Errorf("picker URLs = %v, want %v", got, want)
+	}
+}
+
+func TestURLPickerShowsMarkdownLinkTitles(t *testing.T) {
+	ctx := context.Background()
+	m, s := newTestApp(t)
+	parent, err := s.AddTask(ctx, "parent task")
+	if err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	body := "see [the spec](https://example.com/spec) and https://example.com/bare"
+	if err := s.SetBody(ctx, parent.ID, body); err != nil {
+		t.Fatalf("SetBody: %v", err)
+	}
+	m = drive(t, m, refreshMsg{})
+
+	// The detail pane's link list shows the markdown title, not its URL;
+	// the bare link still shows as a URL.
+	m = drive(t, m, keyPress(']'))
+	content := ansi.Strip(m.View().Content)
+	for _, want := range []string{"[1] the spec", "[2] https://example.com/bare"} {
+		if !strings.Contains(content, want) {
+			t.Errorf("detail link list missing %q:\n%s", want, content)
+		}
+	}
+	if strings.Contains(content, "[1] https://example.com/spec") {
+		t.Errorf("detail link list shows the titled link's URL instead of its title:\n%s", content)
+	}
+
+	// The picker shows the title too, and opening it targets the URL.
+	m = drive(t, m, keyPress('o'))
+	want := []link{
+		{title: "the spec", url: "https://example.com/spec"},
+		{url: "https://example.com/bare"},
+	}
+	if got := m.(app).urlPickerURLs; !slices.Equal(got, want) {
+		t.Errorf("picker links = %v, want %v", got, want)
+	}
+	// Assert on the picker box alone — the detail pane behind it still
+	// renders the body, URL included.
+	box := ansi.Strip(m.(app).urlPickerView())
+	if !strings.Contains(box, "the spec") {
+		t.Errorf("picker missing markdown link title:\n%s", box)
+	}
+	if strings.Contains(box, "https://example.com/spec") {
+		t.Errorf("picker shows the titled link's URL instead of its title:\n%s", box)
 	}
 }
 

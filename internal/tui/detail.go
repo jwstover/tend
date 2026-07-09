@@ -87,7 +87,7 @@ func renderDetail(t task.Task, children []task.Task, log []task.LogEntry,
 			styles.Muted.Render(fmt.Sprintf("%d %s detected — ", len(urls), noun)) +
 			styles.FooterKey.Render("o") + styles.Muted.Render(" to open") + "\n")
 		for i, u := range urls {
-			b.WriteString("  " + styles.Muted.Render(fmt.Sprintf("[%d] ", i+1)) + styles.Link.Render(u) + "\n")
+			b.WriteString("  " + styles.Muted.Render(fmt.Sprintf("[%d] ", i+1)) + styles.Link.Render(u.label()) + "\n")
 		}
 	}
 
@@ -159,33 +159,60 @@ func relTime(t, now time.Time) string {
 	}
 }
 
-// taskURLs collects the unique URLs across a task's body and its log
+// link is one openable URL plus the display title from a markdown-style
+// [title](url) occurrence; title is empty for bare URLs.
+type link struct {
+	title string
+	url   string
+}
+
+// label is what link lists show: the markdown title when one was given,
+// the URL otherwise.
+func (l link) label() string {
+	if l.title != "" {
+		return l.title
+	}
+	return l.url
+}
+
+// linkRe matches a markdown link (capturing title and URL) or, failing
+// that, a bare URL.
+var linkRe = regexp.MustCompile(`\[([^\]]+)\]\((https?://[^\s()]+)\)|https?://[^\s<>()\[\]"']+`)
+
+// taskURLs collects the unique links across a task's body and its log
 // entries: body links first, then log links in entry order.
-func taskURLs(t task.Task, log []task.LogEntry) []string {
+func taskURLs(t task.Task, log []task.LogEntry) []link {
 	parts := make([]string, 0, len(log)+1)
 	parts = append(parts, t.BodyMD)
 	for _, n := range log {
 		parts = append(parts, n.Body)
 	}
-	return extractURLs(strings.Join(parts, "\n"))
+	return extractLinks(strings.Join(parts, "\n"))
 }
 
-var urlRe = regexp.MustCompile(`https?://[^\s<>()\[\]"']+`)
-
-// extractURLs finds the unique URLs in a markdown body, in order of first
-// appearance. TODO(owner): link-under-cursor selection instead of
-// first/all.
-func extractURLs(md string) []string {
-	seen := map[string]bool{}
-	var urls []string
-	for _, u := range urlRe.FindAllString(md, -1) {
-		u = strings.TrimRight(u, ".,;:")
-		if !seen[u] {
-			seen[u] = true
-			urls = append(urls, u)
+// extractLinks finds the unique links in a markdown body, in order of
+// first appearance. A markdown [title](url) keeps its title; a bare URL
+// has none. Duplicate URLs collapse to one entry, and a titled occurrence
+// backfills the title of an earlier bare one. TODO(owner):
+// link-under-cursor selection instead of first/all.
+func extractLinks(md string) []link {
+	at := map[string]int{}
+	var links []link
+	for _, m := range linkRe.FindAllStringSubmatch(md, -1) {
+		l := link{title: m[1], url: m[2]}
+		if l.url == "" {
+			l.url = strings.TrimRight(m[0], ".,;:")
 		}
+		if i, ok := at[l.url]; ok {
+			if links[i].title == "" {
+				links[i].title = l.title
+			}
+			continue
+		}
+		at[l.url] = len(links)
+		links = append(links, l)
 	}
-	return urls
+	return links
 }
 
 // openURLCmd opens a URL with the OS opener off the update loop.

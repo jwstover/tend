@@ -10,7 +10,7 @@ import (
 
 // openURLPicker arms the link chooser with the task's URLs. Used when a task
 // has more than one link in its body, so `o` can't guess which to open.
-func (a *app) openURLPicker(urls []string) {
+func (a *app) openURLPicker(urls []link) {
 	a.urlPickerOpen, a.urlPickerURLs, a.urlPickerSel = true, urls, 0
 }
 
@@ -31,7 +31,7 @@ func (a app) handleURLPickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if sel >= 0 && sel < len(a.urlPickerURLs) {
 			u := a.urlPickerURLs[sel]
 			a.closeURLPicker()
-			return a, openURLCmd(u)
+			return a, openURLCmd(u.url)
 		}
 		a.closeURLPicker()
 		return a, nil
@@ -52,7 +52,7 @@ func (a app) handleURLPickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if idx := int(msg.Text[0] - '1'); idx < len(a.urlPickerURLs) {
 			u := a.urlPickerURLs[idx]
 			a.closeURLPicker()
-			return a, openURLCmd(u)
+			return a, openURLCmd(u.url)
 		}
 	}
 	return a, nil
@@ -84,9 +84,9 @@ func (a app) urlPickerView() string {
 		var content string
 		if i == sel {
 			content = s.SelBar.Render(g.SelBar+" ") +
-				s.Accent.Render(num) + s.Link.Render(u)
+				s.Accent.Render(num) + s.Link.Render(u.label())
 		} else {
-			content = "  " + s.Muted.Render(num) + s.Dimmed.Render(u)
+			content = "  " + s.Muted.Render(num) + s.Dimmed.Render(u.label())
 		}
 		lines = append(lines, row(content))
 	}

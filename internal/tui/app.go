@@ -124,7 +124,7 @@ type (
 	// urlsResolvedMsg carries a task's collected links (body + log
 	// entries); openAll skips the picker and opens every one.
 	urlsResolvedMsg struct {
-		urls    []string
+		urls    []link
 		openAll bool
 	}
 )
@@ -183,7 +183,7 @@ type app struct {
 
 	// URL picker overlay: choose one link from a task with multiple links.
 	urlPickerOpen bool
-	urlPickerURLs []string
+	urlPickerURLs []link
 	urlPickerSel  int
 
 	helpOpen bool // `?` key-reference overlay
@@ -281,11 +281,11 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case msg.openAll:
 			cmds := make([]tea.Cmd, len(msg.urls))
 			for i, u := range msg.urls {
-				cmds[i] = openURLCmd(u)
+				cmds[i] = openURLCmd(u.url)
 			}
 			return a, tea.Batch(cmds...)
 		case len(msg.urls) == 1:
-			return a, openURLCmd(msg.urls[0])
+			return a, openURLCmd(msg.urls[0].url)
 		default:
 			a.openURLPicker(msg.urls)
 			return a, nil
