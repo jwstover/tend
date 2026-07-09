@@ -18,12 +18,14 @@ import (
 	"charm.land/glamour/v2"
 	"charm.land/lipgloss/v2"
 
+	"github.com/jwstover/tend/internal/jira"
 	"github.com/jwstover/tend/internal/task"
 )
 
 // Store is the slice of the persistence layer the TUI needs.
 type Store interface {
 	AddTask(ctx context.Context, title string) (task.Task, error)
+	AddTaskWithBody(ctx context.Context, title, body string) (task.Task, error)
 	AddChild(ctx context.Context, parentID int64, title string) (task.Task, error)
 	AddLogEntry(ctx context.Context, taskID *int64, body string) (task.LogEntry, error)
 	ListLogEntries(ctx context.Context, from, to time.Time) ([]task.LogEntry, error)
@@ -972,10 +974,7 @@ func (a app) submitPrompt() (tea.Model, tea.Cmd) {
 		if value == "" {
 			return a, nil
 		}
-		return a, a.mutate(flash{kind: flashAdd, text: "captured to inbox: " + value}, func() error {
-			_, err := a.store.AddTask(a.ctx, value)
-			return err
-		})
+		return a, a.captureTask(value)
 	case promptChild:
 		if value == "" {
 			return a, nil
@@ -1097,6 +1096,32 @@ func (a app) loadChildren(parentID int64) tea.Cmd {
 }
 
 // mutate wraps a store mutation: run it, then report status and refresh.
+// captureTask builds the Cmd for a quick-add capture. A pasted Jira
+// issue URL is expanded like `tend add`: key + fetched summary as the
+// title, link in the body. The lookup runs inside the Cmd's goroutine,
+// so a slow or unreachable Jira never blocks the UI, and any lookup
+// failure degrades to the bare key with the reason in the flash.
+func (a app) captureTask(value string) tea.Cmd {
+	iss, ok := jira.ParseIssueURL(value)
+	if !ok {
+		return a.mutate(flash{kind: flashAdd, text: "captured to inbox: " + value}, func() error {
+			_, err := a.store.AddTask(a.ctx, value)
+			return err
+		})
+	}
+	return func() tea.Msg {
+		title, warn := jira.Expand(a.ctx, iss)
+		if _, err := a.store.AddTaskWithBody(a.ctx, title, iss.URL+"\n"); err != nil {
+			return errMsg{err}
+		}
+		text := "captured to inbox: " + title
+		if warn != nil {
+			text = fmt.Sprintf("captured %s (%v)", iss.Key, warn)
+		}
+		return refreshMsg{status: flash{kind: flashAdd, text: text}}
+	}
+}
+
 func (a app) mutate(status flash, fn func() error) tea.Cmd {
 	return func() tea.Msg {
 		if err := fn(); err != nil {

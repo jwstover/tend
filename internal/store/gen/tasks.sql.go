@@ -81,6 +81,37 @@ func (q *Queries) CreateTask(ctx context.Context, title string) (Task, error) {
 	return i, err
 }
 
+const createTaskWithBody = `-- name: CreateTaskWithBody :one
+INSERT INTO tasks (title, body_md)
+VALUES (?, ?)
+RETURNING id, title, body_md, state, parent_id, project, priority, due, snooze_until, created_at, updated_at, completed_at
+`
+
+type CreateTaskWithBodyParams struct {
+	Title  string
+	BodyMd string
+}
+
+func (q *Queries) CreateTaskWithBody(ctx context.Context, arg CreateTaskWithBodyParams) (Task, error) {
+	row := q.db.QueryRowContext(ctx, createTaskWithBody, arg.Title, arg.BodyMd)
+	var i Task
+	err := row.Scan(
+		&i.ID,
+		&i.Title,
+		&i.BodyMd,
+		&i.State,
+		&i.ParentID,
+		&i.Project,
+		&i.Priority,
+		&i.Due,
+		&i.SnoozeUntil,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.CompletedAt,
+	)
+	return i, err
+}
+
 const deleteTask = `-- name: DeleteTask :exec
 DELETE FROM tasks
 WHERE id = ?

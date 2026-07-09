@@ -14,6 +14,7 @@ type Querier interface {
 	CreateChildTask(ctx context.Context, arg CreateChildTaskParams) (Task, error)
 	CreateLogEntry(ctx context.Context, arg CreateLogEntryParams) (LogEntry, error)
 	CreateTask(ctx context.Context, title string) (Task, error)
+	CreateTaskWithBody(ctx context.Context, arg CreateTaskWithBodyParams) (Task, error)
 	DeleteTask(ctx context.Context, id int64) error
 	GetTask(ctx context.Context, id int64) (Task, error)
 	ListChildCounts(ctx context.Context) ([]ListChildCountsRow, error)

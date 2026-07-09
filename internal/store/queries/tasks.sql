@@ -3,6 +3,11 @@ INSERT INTO tasks (title)
 VALUES (?)
 RETURNING *;
 
+-- name: CreateTaskWithBody :one
+INSERT INTO tasks (title, body_md)
+VALUES (?, ?)
+RETURNING *;
+
 -- name: CreateChildTask :one
 INSERT INTO tasks (title, parent_id)
 VALUES (?, ?)
