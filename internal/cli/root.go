@@ -18,6 +18,7 @@ import (
 // Store is the slice of the persistence layer the CLI needs.
 type Store interface {
 	AddTask(ctx context.Context, title string) (task.Task, error)
+	AddTaskWithBody(ctx context.Context, title, body string) (task.Task, error)
 	ListLive(ctx context.Context) ([]task.Task, error)
 	ListEvents(ctx context.Context, from, to time.Time) ([]task.Event, error)
 	AddLogEntry(ctx context.Context, taskID *int64, body string) (task.LogEntry, error)
@@ -59,6 +60,7 @@ func newRootCmd(open StoreFactory, runTUI TUIRunner) *cobra.Command {
 		return open(ctx, resolveDBPath(dbPath))
 	}
 	root.AddCommand(newAddCmd(openHere))
+	root.AddCommand(newAuthCmd())
 	root.AddCommand(newLsCmd(openHere))
 	root.AddCommand(newStandupCmd(openHere))
 	root.AddCommand(newLogCmd(openHere))

@@ -3,6 +3,8 @@ package tui
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -11,7 +13,9 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/zalando/go-keyring"
 
+	"github.com/jwstover/tend/internal/jira"
 	"github.com/jwstover/tend/internal/store"
 	"github.com/jwstover/tend/internal/task"
 )
@@ -61,6 +65,22 @@ func collect(cmd tea.Cmd) []tea.Msg {
 
 func keyPress(r rune) tea.KeyPressMsg {
 	return tea.KeyPressMsg{Code: r, Text: string(r)}
+}
+
+// waitFor polls until check returns true. Mutation Cmds run in
+// goroutines that can outlive collect's wait window on slow runners, so
+// assertions on store state after a capture must wait for the write to
+// land rather than read immediately.
+func waitFor(t *testing.T, what string, check func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if check() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", what)
 }
 
 func newTestApp(t *testing.T) (tea.Model, *store.Store) {
@@ -590,10 +610,11 @@ func TestLogEntrySaves(t *testing.T) {
 	if m.(app).modal.Active() {
 		t.Error("modal still active after submit")
 	}
-	notes := allLogEntries(t, s)
-	if len(notes) != 1 {
-		t.Fatalf("log entries = %+v, want exactly one", notes)
-	}
+	var notes []task.LogEntry
+	waitFor(t, "the log entry to save", func() bool {
+		notes = allLogEntries(t, s)
+		return len(notes) == 1
+	})
 	if notes[0].TaskID == nil || *notes[0].TaskID != captured.ID {
 		t.Errorf("note TaskID = %v, want attached to #%d", notes[0].TaskID, captured.ID)
 	}
@@ -1438,14 +1459,20 @@ func TestStandupNoteCapture(t *testing.T) {
 	}
 	m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyEnter, Mod: tea.ModCtrl})
 
-	notes := allLogEntries(t, s)
-	if len(notes) != 1 || notes[0].Body != "quick thought" {
+	var notes []task.LogEntry
+	waitFor(t, "the note to save", func() bool {
+		notes = allLogEntries(t, s)
+		return len(notes) == 1
+	})
+	if notes[0].Body != "quick thought" {
 		t.Fatalf("log entries = %+v, want the captured note", notes)
 	}
 	if notes[0].TaskID != nil {
 		t.Errorf("note TaskID = %v, want freestanding (nil)", notes[0].TaskID)
 	}
-	// The refresh lands it in the notes pane immediately.
+	// Refresh so the notes pane reflects the capture even when its Cmd
+	// outlived collect's wait window.
+	m = drive(t, m, refreshMsg{})
 	if !strings.Contains(ansi.Strip(m.View().Content), "quick thought") {
 		t.Errorf("captured note not visible in the pane:\n%s", ansi.Strip(m.View().Content))
 	}
@@ -1668,5 +1695,80 @@ func TestQuitKeyClosesViewBeforeQuitting(t *testing.T) {
 	}
 	if !quit {
 		t.Errorf("ctrl+c in standup did not quit")
+	}
+}
+
+// quickAddText opens the quick-add prompt, types text, and submits.
+func quickAddText(t *testing.T, m tea.Model, text string) tea.Model {
+	t.Helper()
+	m = drive(t, m, keyPress('n'))
+	for _, r := range text {
+		m = drive(t, m, keyPress(r))
+	}
+	return drive(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+}
+
+func TestQuickAddJiraURLDegradesWithoutCredentials(t *testing.T) {
+	keyring.MockInit()
+	m, s := newTestApp(t)
+
+	url := "https://example.atlassian.net/browse/PROJ-42"
+	m = quickAddText(t, m, url)
+
+	var live []task.Task
+	waitFor(t, "the capture to land", func() bool {
+		var err error
+		live, err = s.ListLive(context.Background())
+		if err != nil {
+			t.Fatalf("ListLive: %v", err)
+		}
+		return len(live) == 1
+	})
+	if live[0].Title != "PROJ-42" {
+		t.Fatalf("ListLive = %+v, want one task titled with the bare key", live)
+	}
+	if !strings.Contains(live[0].BodyMD, url) {
+		t.Errorf("BodyMD = %q, want it to contain the link", live[0].BodyMD)
+	}
+	m = drive(t, m, refreshMsg{})
+	if !strings.Contains(ansi.Strip(m.View().Content), "PROJ-42") {
+		t.Errorf("view missing captured task:\n%s", ansi.Strip(m.View().Content))
+	}
+}
+
+func TestQuickAddJiraURLFetchesTitle(t *testing.T) {
+	keyring.MockInit()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/rest/api/2/issue/DEV-7" {
+			http.NotFound(w, r)
+			return
+		}
+		fmt.Fprint(w, `{"fields":{"summary":"Fix the flux capacitor"}}`)
+	}))
+	defer srv.Close()
+
+	creds := jira.Credentials{Site: srv.URL, Email: "me@example.com", Token: "tok"}
+	if err := jira.SaveCredentials(creds); err != nil {
+		t.Fatalf("SaveCredentials: %v", err)
+	}
+
+	m, s := newTestApp(t)
+	m = quickAddText(t, m, srv.URL+"/browse/DEV-7")
+
+	var live []task.Task
+	waitFor(t, "the expanded capture to land", func() bool {
+		var err error
+		live, err = s.ListLive(context.Background())
+		if err != nil {
+			t.Fatalf("ListLive: %v", err)
+		}
+		return len(live) == 1
+	})
+	if live[0].Title != "DEV-7: Fix the flux capacitor" {
+		t.Fatalf("ListLive = %+v, want the expanded Jira title", live)
+	}
+	m = drive(t, m, refreshMsg{})
+	if !strings.Contains(ansi.Strip(m.View().Content), "DEV-7: Fix the flux capacitor") {
+		t.Errorf("view missing expanded task:\n%s", ansi.Strip(m.View().Content))
 	}
 }

@@ -95,6 +95,21 @@ func (s *Store) AddTask(ctx context.Context, title string) (task.Task, error) {
 	return toDomain(row)
 }
 
+// AddTaskWithBody captures a task that arrives with context already
+// attached (e.g. an imported Jira ticket): title plus a markdown body,
+// everything else defaulted by the schema.
+func (s *Store) AddTaskWithBody(ctx context.Context, title, body string) (task.Task, error) {
+	t, err := task.NormalizeTitle(title)
+	if err != nil {
+		return task.Task{}, err
+	}
+	row, err := s.q.CreateTaskWithBody(ctx, gen.CreateTaskWithBodyParams{Title: t, BodyMd: body})
+	if err != nil {
+		return task.Task{}, fmt.Errorf("inserting task: %w", err)
+	}
+	return toDomain(row)
+}
+
 // ListLive returns the live view: non-terminal, non-hidden states, and
 // not snoozed into the future.
 func (s *Store) ListLive(ctx context.Context) ([]task.Task, error) {

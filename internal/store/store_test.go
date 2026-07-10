@@ -48,6 +48,29 @@ func TestAddTaskDefaults(t *testing.T) {
 	}
 }
 
+func TestAddTaskWithBody(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	got, err := s.AddTaskWithBody(ctx, " PROJ-1: fix it ", "https://example.atlassian.net/browse/PROJ-1\n")
+	if err != nil {
+		t.Fatalf("AddTaskWithBody: %v", err)
+	}
+	if got.Title != "PROJ-1: fix it" {
+		t.Errorf("Title = %q, want normalized title", got.Title)
+	}
+	if got.BodyMD != "https://example.atlassian.net/browse/PROJ-1\n" {
+		t.Errorf("BodyMD = %q, want the link", got.BodyMD)
+	}
+	if got.State != task.StateInbox {
+		t.Errorf("State = %q, want %q", got.State, task.StateInbox)
+	}
+
+	if _, err := s.AddTaskWithBody(ctx, "   ", "body"); !errors.Is(err, task.ErrEmptyTitle) {
+		t.Errorf("blank title error = %v, want ErrEmptyTitle", err)
+	}
+}
+
 func TestAddTaskRejectsBlankTitle(t *testing.T) {
 	s := newTestStore(t)
 	_, err := s.AddTask(context.Background(), "   ")

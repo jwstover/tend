@@ -97,10 +97,7 @@ func (a app) paletteMatches() []paletteCommand {
 			out = append(out, paletteCommand{
 				icon: "✚", label: `Add task: "` + rest + `"`,
 				act: func(a app) (tea.Model, tea.Cmd) {
-					return a, a.mutate(flash{kind: flashAdd, text: "captured to inbox: " + rest}, func() error {
-						_, err := a.store.AddTask(a.ctx, rest)
-						return err
-					})
+					return a, a.captureTask(rest)
 				},
 			})
 		}
