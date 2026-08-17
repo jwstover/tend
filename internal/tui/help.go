@@ -44,6 +44,7 @@ func helpGroups() []helpGroup {
 			{"P", "set project"},
 			{"u", "set due (triage)"},
 			{"e", "edit body in $EDITOR"},
+			{"r", "launch / resume a Claude session"},
 		}},
 		{"STANDUP", []helpEntry{
 			{"S", "open the standup view"},

@@ -671,3 +671,72 @@ func TestListLogEntriesJoinsTaskTitle(t *testing.T) {
 		t.Errorf("freestanding note title = %q, want empty", titles["freestanding"])
 	}
 }
+
+func TestAgentSessions(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	parent, err := s.AddTask(ctx, "fix the bug")
+	if err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+
+	if empty, err := s.ListSessionsForTask(ctx, parent.ID); err != nil || len(empty) != 0 {
+		t.Fatalf("ListSessionsForTask before any sessions = %+v, %v, want empty", empty, err)
+	}
+
+	first, err := s.CreateSession(ctx, parent.ID, "ext-1", "/tmp/work", parent.Title)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if first.TaskID != parent.ID || first.ExternalID != "ext-1" || first.Cwd != "/tmp/work" || first.Label != parent.Title {
+		t.Errorf("CreateSession result = %+v, want it to echo the inputs", first)
+	}
+
+	second, err := s.CreateSession(ctx, parent.ID, "ext-2", "/tmp/other", parent.Title)
+	if err != nil {
+		t.Fatalf("CreateSession (second): %v", err)
+	}
+
+	got, err := s.ListSessionsForTask(ctx, parent.ID)
+	if err != nil {
+		t.Fatalf("ListSessionsForTask: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("sessions for task = %d, want 2", len(got))
+	}
+	// Newest (most recently active) first; both were just created in the
+	// same instant, so id descending is the tiebreak.
+	if got[0].ID != second.ID || got[1].ID != first.ID {
+		t.Errorf("ListSessionsForTask order = %+v, want newest first", got)
+	}
+
+	if err := s.TouchSession(ctx, first.ID); err != nil {
+		t.Fatalf("TouchSession: %v", err)
+	}
+}
+
+func TestAgentSessionsCascadeDeleteWithTask(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	parent, err := s.AddTask(ctx, "parent")
+	if err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	if _, err := s.CreateSession(ctx, parent.ID, "ext-1", "/tmp/work", parent.Title); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	if err := s.DeleteTask(ctx, parent.ID); err != nil {
+		t.Fatalf("DeleteTask: %v", err)
+	}
+
+	got, err := s.ListSessionsForTask(ctx, parent.ID)
+	if err != nil {
+		t.Fatalf("ListSessionsForTask after delete: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("sessions survived task delete: %+v, want cascaded away", got)
+	}
+}

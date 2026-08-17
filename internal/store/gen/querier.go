@@ -13,6 +13,7 @@ type Querier interface {
 	CountInboxTasks(ctx context.Context) (int64, error)
 	CreateChildTask(ctx context.Context, arg CreateChildTaskParams) (Task, error)
 	CreateLogEntry(ctx context.Context, arg CreateLogEntryParams) (LogEntry, error)
+	CreateSession(ctx context.Context, arg CreateSessionParams) (AgentSession, error)
 	CreateTask(ctx context.Context, title string) (Task, error)
 	CreateTaskWithBody(ctx context.Context, arg CreateTaskWithBodyParams) (Task, error)
 	DeleteTask(ctx context.Context, id int64) error
@@ -29,11 +30,13 @@ type Querier interface {
 	// non-null when the note is freestanding or its task was deleted.
 	ListLogEntriesBetween(ctx context.Context, arg ListLogEntriesBetweenParams) ([]ListLogEntriesBetweenRow, error)
 	ListLogEntriesForTask(ctx context.Context, taskID sql.NullInt64) ([]LogEntry, error)
+	ListSessionsForTask(ctx context.Context, taskID int64) ([]AgentSession, error)
 	SetTaskBody(ctx context.Context, arg SetTaskBodyParams) error
 	SetTaskDue(ctx context.Context, arg SetTaskDueParams) error
 	SetTaskPriority(ctx context.Context, arg SetTaskPriorityParams) error
 	SetTaskProject(ctx context.Context, arg SetTaskProjectParams) error
 	SetTaskState(ctx context.Context, arg SetTaskStateParams) error
+	TouchSession(ctx context.Context, id int64) error
 }
 
 var _ Querier = (*Queries)(nil)

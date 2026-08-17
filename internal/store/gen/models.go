@@ -8,6 +8,16 @@ import (
 	"database/sql"
 )
 
+type AgentSession struct {
+	ID           int64
+	TaskID       int64
+	ExternalID   string
+	Cwd          string
+	Label        string
+	StartedAt    string
+	LastActiveAt string
+}
+
 type LogEntry struct {
 	ID        int64
 	TaskID    sql.NullInt64

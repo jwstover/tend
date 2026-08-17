@@ -346,6 +346,45 @@ func (s *Store) ListEvents(ctx context.Context, from, to time.Time) ([]task.Even
 	return events, nil
 }
 
+// CreateSession records a Claude Code session launched or resumed against
+// a task: the pinned external session id, the directory it ran in, and
+// the task's title snapshotted as the label.
+func (s *Store) CreateSession(ctx context.Context, taskID int64, externalID, cwd, label string) (task.Session, error) {
+	row, err := s.q.CreateSession(ctx, gen.CreateSessionParams{
+		TaskID: taskID, ExternalID: externalID, Cwd: cwd, Label: label,
+	})
+	if err != nil {
+		return task.Session{}, fmt.Errorf("inserting session for task %d: %w", taskID, err)
+	}
+	return sessionToDomain(row)
+}
+
+// ListSessionsForTask returns a task's sessions, most recently active
+// first — the resume picker's source list.
+func (s *Store) ListSessionsForTask(ctx context.Context, taskID int64) ([]task.Session, error) {
+	rows, err := s.q.ListSessionsForTask(ctx, taskID)
+	if err != nil {
+		return nil, fmt.Errorf("listing sessions for task %d: %w", taskID, err)
+	}
+	sessions := make([]task.Session, 0, len(rows))
+	for _, row := range rows {
+		sess, err := sessionToDomain(row)
+		if err != nil {
+			return nil, err
+		}
+		sessions = append(sessions, sess)
+	}
+	return sessions, nil
+}
+
+// TouchSession bumps a session's last-active timestamp after a resume.
+func (s *Store) TouchSession(ctx context.Context, id int64) error {
+	if err := s.q.TouchSession(ctx, id); err != nil {
+		return fmt.Errorf("touching session %d: %w", id, err)
+	}
+	return nil
+}
+
 // GetTask loads a single task by id.
 func (s *Store) GetTask(ctx context.Context, id int64) (task.Task, error) {
 	row, err := s.q.GetTask(ctx, id)
@@ -410,6 +449,26 @@ func logToDomain(row gen.LogEntry) (task.LogEntry, error) {
 		TaskID:    nullInt64(row.TaskID),
 		Body:      row.Body,
 		CreatedAt: created,
+	}, nil
+}
+
+func sessionToDomain(row gen.AgentSession) (task.Session, error) {
+	started, err := parseTime(row.StartedAt)
+	if err != nil {
+		return task.Session{}, fmt.Errorf("session %d started_at: %w", row.ID, err)
+	}
+	lastActive, err := parseTime(row.LastActiveAt)
+	if err != nil {
+		return task.Session{}, fmt.Errorf("session %d last_active_at: %w", row.ID, err)
+	}
+	return task.Session{
+		ID:           row.ID,
+		TaskID:       row.TaskID,
+		ExternalID:   row.ExternalID,
+		Cwd:          row.Cwd,
+		Label:        row.Label,
+		StartedAt:    started,
+		LastActiveAt: lastActive,
 	}, nil
 }
 

@@ -43,6 +43,9 @@ type Store interface {
 	SetDue(ctx context.Context, id int64, due *string) error
 	SetBody(ctx context.Context, id int64, body string) error
 	DeleteTask(ctx context.Context, id int64) error
+	CreateSession(ctx context.Context, taskID int64, externalID, cwd, label string) (task.Session, error)
+	ListSessionsForTask(ctx context.Context, taskID int64) ([]task.Session, error)
+	TouchSession(ctx context.Context, id int64) error
 }
 
 // Run starts the TUI and blocks until it exits. dbPath is display-only
@@ -71,6 +74,7 @@ const (
 	promptChild
 	promptProject
 	promptDue
+	promptSessionCwd
 )
 
 // flashKind picks the glyph + semantic color a footer flash leads with;
@@ -106,6 +110,7 @@ type (
 		parentID int64
 		children []task.Task
 		log      []task.LogEntry
+		sessions []task.Session
 	}
 	standupLoadedMsg struct {
 		notes  []task.LogEntry
@@ -129,6 +134,30 @@ type (
 		urls    []link
 		openAll bool
 	}
+
+	// sessionsForPickerMsg carries a freshly loaded session list for the
+	// `r` picker (see sessions.go); label is the task title, snapshotted
+	// for use as both the picker heading and a new session's -n arg.
+	sessionsForPickerMsg struct {
+		taskID   int64
+		label    string
+		sessions []task.Session
+	}
+	// sessionFinishedMsg reports a launched session's terminal handoff
+	// returning; the store row is only written on a clean exit.
+	sessionFinishedMsg struct {
+		taskID     int64
+		externalID string
+		cwd        string
+		label      string
+		err        error
+	}
+	// sessionResumedMsg reports a resumed session's terminal handoff
+	// returning; last_active_at is only bumped on a clean exit.
+	sessionResumedMsg struct {
+		sessionRowID int64
+		err          error
+	}
 )
 
 type app struct {
@@ -143,11 +172,14 @@ type app struct {
 
 	// Last list-mode load plus tree state; the flattened item slice is
 	// rebuilt from these whenever any of them changes.
-	tasks      []task.Task
-	counts     map[int64]task.ChildCount
-	expanded   map[int64]bool            // branch disclosure, by task ID, session-scoped
-	childCache map[int64][]task.Task     // loaded children per parent
-	logCache   map[int64][]task.LogEntry // loaded task notes, for the detail pane
+	tasks         []task.Task
+	counts        map[int64]task.ChildCount
+	expanded      map[int64]bool            // branch disclosure, by task ID, session-scoped
+	childCache    map[int64][]task.Task     // loaded children per parent
+	logCache      map[int64][]task.LogEntry // loaded task notes, for the detail pane
+	sessionsCache map[int64][]task.Session  // loaded claude sessions per task, for the detail pane
+
+	startCwd string // tend's own working directory at startup; the launch-prompt fallback
 
 	width, height int
 	bodyHeight    int   // rows between the chrome rules, set by resize
@@ -173,9 +205,18 @@ type app struct {
 
 	prompt       textinput.Model
 	promptKind   promptKind
-	promptTarget int64 // task the prompt acts on (project/due/sub-task)
+	promptTarget int64  // task the prompt acts on (project/due/sub-task/session)
+	sessionLabel string // pending session-cwd prompt's -n arg (task title)
 
 	modal modal // centered floating input (log entries)
+
+	// Session picker overlay: choose an existing session to resume, or
+	// launch a new one, for a task.
+	sessionPickerOpen     bool
+	sessionPickerTaskID   int64
+	sessionPickerLabel    string
+	sessionPickerSessions []task.Session
+	sessionPickerSel      int
 
 	// Command palette overlay: a fuzzy-matched command list anchored just
 	// above the footer.
@@ -204,20 +245,23 @@ type app struct {
 
 func newApp(ctx context.Context, s Store, dbPath string) app {
 	styles := DefaultStyles()
+	wd, _ := os.Getwd() // best-effort; "" just falls through to an empty cwd prompt
 	return app{
-		ctx:        ctx,
-		store:      s,
-		dbPath:     dbPath,
-		keys:       defaultKeyMap(),
-		styles:     styles,
-		mode:       modeList,
-		list:       newTaskList(styles),
-		expanded:   make(map[int64]bool),
-		childCache: make(map[int64][]task.Task),
-		logCache:   make(map[int64][]task.LogEntry),
-		detail:     viewport.New(),
-		prompt:     textinput.New(),
-		modal:      newModal(),
+		ctx:           ctx,
+		store:         s,
+		dbPath:        dbPath,
+		keys:          defaultKeyMap(),
+		styles:        styles,
+		mode:          modeList,
+		list:          newTaskList(styles),
+		expanded:      make(map[int64]bool),
+		childCache:    make(map[int64][]task.Task),
+		logCache:      make(map[int64][]task.LogEntry),
+		sessionsCache: make(map[int64][]task.Session),
+		startCwd:      wd,
+		detail:        viewport.New(),
+		prompt:        textinput.New(),
+		modal:         newModal(),
 	}
 }
 
@@ -260,6 +304,7 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case childrenLoadedMsg:
 		a.childCache[msg.parentID] = msg.children
 		a.logCache[msg.parentID] = msg.log
+		a.sessionsCache[msg.parentID] = msg.sessions
 		var cmd tea.Cmd
 		if a.mode == modeList {
 			sel, hadSel := a.selectedNode()
@@ -292,6 +337,28 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.openURLPicker(msg.urls)
 			return a, nil
 		}
+
+	case sessionsForPickerMsg:
+		return a, a.openSessionPicker(msg)
+
+	case sessionFinishedMsg:
+		if msg.err != nil {
+			a.status = flash{text: "claude: " + msg.err.Error(), isErr: true}
+			return a, nil
+		}
+		return a, a.mutate(flash{kind: flashEdit, text: "session recorded"}, func() error {
+			_, err := a.store.CreateSession(a.ctx, msg.taskID, msg.externalID, msg.cwd, msg.label)
+			return err
+		})
+
+	case sessionResumedMsg:
+		if msg.err != nil {
+			a.status = flash{text: "claude: " + msg.err.Error(), isErr: true}
+			return a, nil
+		}
+		return a, a.mutate(flash{kind: flashEdit, text: "session resumed"}, func() error {
+			return a.store.TouchSession(a.ctx, msg.sessionRowID)
+		})
 
 	case standupLoadedMsg:
 		if a.mode != modeStandup {
@@ -350,6 +417,11 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// An open URL picker swallows all keys.
 	if a.urlPickerOpen {
 		return a.handleURLPickerKey(msg)
+	}
+
+	// An open session picker swallows all keys.
+	if a.sessionPickerOpen {
+		return a.handleSessionPickerKey(msg)
 	}
 
 	// An open palette swallows all keys.
@@ -633,6 +705,12 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return a, a.resolveURLs(t, true)
 		}
 		return a, nil
+
+	case key.Matches(msg, a.keys.Sessions):
+		if t, ok := a.selected(); ok {
+			return a, a.loadSessionsForPicker(t)
+		}
+		return a, nil
 	}
 
 	// Triage has no list to navigate; unconsumed keys stop here.
@@ -761,6 +839,7 @@ func (a app) deleteTask(t task.Task) tea.Cmd {
 		delete(a.expanded, t.ID)
 		delete(a.childCache, t.ID)
 		delete(a.logCache, t.ID)
+		delete(a.sessionsCache, t.ID)
 	}
 	return a.mutate(flash{kind: flashDone, text: text}, func() error {
 		return a.store.DeleteTask(a.ctx, t.ID)
@@ -900,7 +979,7 @@ func (a *app) renderDetailFor(owner task.Task) {
 	}
 	_, detailW, _ := a.splitWidths()
 	a.detail.SetContent(renderDetail(owner, a.childCache[owner.ID], a.logCache[owner.ID],
-		a.renderer, a.styles, selID, detailW))
+		a.sessionsCache[owner.ID], a.renderer, a.styles, selID, detailW))
 }
 
 // splitWidths computes the list/detail column widths for the current
@@ -960,12 +1039,13 @@ func (a *app) openPrompt(kind promptKind, label string, target int64) tea.Cmd {
 func (a *app) closePrompt() {
 	a.promptKind = promptNone
 	a.promptTarget = 0
+	a.sessionLabel = ""
 	a.prompt.Reset()
 	a.prompt.Blur()
 }
 
 func (a app) submitPrompt() (tea.Model, tea.Cmd) {
-	kind, target := a.promptKind, a.promptTarget
+	kind, target, label := a.promptKind, a.promptTarget, a.sessionLabel
 	value := strings.TrimSpace(a.prompt.Value())
 	a.closePrompt()
 
@@ -1007,6 +1087,11 @@ func (a app) submitPrompt() (tea.Model, tea.Cmd) {
 		return a, a.mutate(flash{kind: flashEdit, text: text}, func() error {
 			return a.store.SetDue(a.ctx, target, d)
 		})
+	case promptSessionCwd:
+		if value == "" {
+			return a, nil
+		}
+		return a, launchSessionCmd(target, value, label)
 	}
 	return a, nil
 }
@@ -1091,7 +1176,11 @@ func (a app) loadChildren(parentID int64) tea.Cmd {
 		if err != nil {
 			return errMsg{err}
 		}
-		return childrenLoadedMsg{parentID: parentID, children: children, log: log}
+		sessions, err := a.store.ListSessionsForTask(a.ctx, parentID)
+		if err != nil {
+			return errMsg{err}
+		}
+		return childrenLoadedMsg{parentID: parentID, children: children, log: log, sessions: sessions}
 	}
 }
 
@@ -1194,13 +1283,15 @@ func (a app) View() tea.View {
 	// Palette and help splice in just above the footer, over the bottom
 	// body rows. A panel taller than the screen loses its top rows, like
 	// the design's splice.
-	if a.paletteOpen || a.helpOpen || a.urlPickerOpen {
+	if a.paletteOpen || a.helpOpen || a.urlPickerOpen || a.sessionPickerOpen {
 		box := a.paletteView()
 		switch {
 		case a.helpOpen:
 			box = a.helpView()
 		case a.urlPickerOpen:
 			box = a.urlPickerView()
+		case a.sessionPickerOpen:
+			box = a.sessionPickerView()
 		}
 		rows := strings.Split(box, "\n")
 		if maxRows := max(a.height-1, 1); len(rows) > maxRows {

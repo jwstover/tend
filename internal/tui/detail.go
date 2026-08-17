@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
@@ -34,7 +35,7 @@ func newBodyRenderer(width int) (*glamour.TermRenderer, error) {
 // the URLs detected in the body, and the task's note log. selectedID
 // highlights the checklist row of the sub-task under the list cursor
 // (0 = none); width wraps the log entries to the pane.
-func renderDetail(t task.Task, children []task.Task, log []task.LogEntry,
+func renderDetail(t task.Task, children []task.Task, log []task.LogEntry, sessions []task.Session,
 	renderer *glamour.TermRenderer, styles Styles, selectedID int64, width int) string {
 	g := styles.Glyphs
 	var b strings.Builder
@@ -120,6 +121,18 @@ func renderDetail(t task.Task, children []task.Task, log []task.LogEntry,
 					title.Render(c.Title) + "\n")
 			}
 		}
+	}
+
+	if len(sessions) > 0 {
+		b.WriteString("\n" + "  " + styles.SubHeader.Render("SESSIONS") + "  " +
+			styles.Muted.Render(fmt.Sprintf("%d", len(sessions))) + "\n")
+		for i, sess := range sessions {
+			b.WriteString("  " + styles.Muted.Render(fmt.Sprintf("[%d] ", i+1)) +
+				styles.Link.Render(filepath.Base(sess.Cwd)) + "  " +
+				styles.DetailFaint.Render(relTime(sess.LastActiveAt, now)) + "\n")
+		}
+		b.WriteString("  " + styles.Muted.Render("press ") + styles.FooterKey.Render("r") +
+			styles.Muted.Render(" to resume or launch another") + "\n")
 	}
 
 	if len(log) > 0 {
