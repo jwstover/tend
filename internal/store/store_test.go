@@ -274,6 +274,35 @@ func TestSetPriority(t *testing.T) {
 	}
 }
 
+func TestSetTitle(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	created, err := s.AddTask(ctx, "old title")
+	if err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+
+	if err := s.SetTitle(ctx, created.ID, "  new title  "); err != nil {
+		t.Fatalf("SetTitle: %v", err)
+	}
+	got, err := s.GetTask(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if got.Title != "new title" {
+		t.Errorf("Title = %q, want %q (trimmed)", got.Title, "new title")
+	}
+
+	if err := s.SetTitle(ctx, created.ID, "   "); !errors.Is(err, task.ErrEmptyTitle) {
+		t.Errorf("SetTitle(blank) error = %v, want ErrEmptyTitle", err)
+	}
+	got, _ = s.GetTask(ctx, created.ID)
+	if got.Title != "new title" {
+		t.Errorf("blank rename mutated title to %q", got.Title)
+	}
+}
+
 func TestListLiveOrdersByPriorityWithinState(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

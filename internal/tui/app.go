@@ -42,6 +42,7 @@ type Store interface {
 	SetProject(ctx context.Context, id int64, project *string) error
 	SetPriority(ctx context.Context, id int64, p *int64) error
 	SetDue(ctx context.Context, id int64, due *string) error
+	SetTitle(ctx context.Context, id int64, title string) error
 	SetBody(ctx context.Context, id int64, body string) error
 	DeleteTask(ctx context.Context, id int64) error
 	CreateSession(ctx context.Context, taskID int64, externalID, cwd, label, tmuxSession string) (task.Session, error)
@@ -81,6 +82,7 @@ const (
 	promptProject
 	promptDue
 	promptSessionCwd
+	promptRename
 )
 
 // flashKind picks the glyph + semantic color a footer flash leads with;
@@ -854,6 +856,12 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		return a, nil
 
+	case key.Matches(msg, a.keys.Rename):
+		if t, ok := a.selected(); ok {
+			return a, a.openPromptWith(promptRename, fmt.Sprintf("rename #%d: ", t.ID), t.Title, t.ID)
+		}
+		return a, nil
+
 	case key.Matches(msg, a.keys.EditBody):
 		if t, ok := a.selected(); ok {
 			return a, editBodyCmd(t)
@@ -1236,10 +1244,18 @@ func (a *app) resize() {
 // --- prompt ---
 
 func (a *app) openPrompt(kind promptKind, label string, target int64) tea.Cmd {
+	return a.openPromptWith(kind, label, "", target)
+}
+
+// openPromptWith is openPrompt seeded with an initial value (used by
+// rename, where the field starts on the current title), cursor at the end.
+func (a *app) openPromptWith(kind promptKind, label, value string, target int64) tea.Cmd {
 	a.promptKind = kind
 	a.promptTarget = target
 	a.prompt.Reset()
 	a.prompt.Prompt = label
+	a.prompt.SetValue(value)
+	a.prompt.CursorEnd()
 	return a.prompt.Focus()
 }
 
@@ -1299,6 +1315,14 @@ func (a app) submitPrompt() (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 		return a, launchSessionCmd(target, value, label, a.dbPath)
+	case promptRename:
+		// A blank title is a no-op; renaming to nothing would strand the row.
+		if value == "" {
+			return a, nil
+		}
+		return a, a.mutate(flash{kind: flashEdit, text: fmt.Sprintf("#%d renamed", target)}, func() error {
+			return a.store.SetTitle(a.ctx, target, value)
+		})
 	}
 	return a, nil
 }

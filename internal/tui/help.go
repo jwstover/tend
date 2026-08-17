@@ -43,6 +43,7 @@ func helpGroups() []helpGroup {
 			{"dd", "delete task (chord)"},
 			{"P", "set project"},
 			{"u", "set due (triage)"},
+			{"R", "rename task"},
 			{"e", "edit body in $EDITOR"},
 			{"r", "launch / resume a Claude session"},
 		}},

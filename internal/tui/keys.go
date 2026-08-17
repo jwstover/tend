@@ -13,6 +13,7 @@ type keyMap struct {
 	Standup      key.Binding
 	QuickAdd     key.Binding
 	AddSub       key.Binding
+	Rename       key.Binding
 	Palette      key.Binding
 	Help         key.Binding
 	EditBody     key.Binding
@@ -71,6 +72,7 @@ func defaultKeyMap() keyMap {
 		Standup:      key.NewBinding(key.WithKeys("S"), key.WithHelp("S", "standup")),
 		QuickAdd:     key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "add")),
 		AddSub:       key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "sub-task")),
+		Rename:       key.NewBinding(key.WithKeys("R"), key.WithHelp("R", "rename")),
 		Palette:      key.NewBinding(key.WithKeys(":", "ctrl+p"), key.WithHelp(":", "palette")),
 		Help:         key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
 		EditBody:     key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "edit body")),

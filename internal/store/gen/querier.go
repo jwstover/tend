@@ -43,6 +43,7 @@ type Querier interface {
 	SetTaskPriority(ctx context.Context, arg SetTaskPriorityParams) error
 	SetTaskProject(ctx context.Context, arg SetTaskProjectParams) error
 	SetTaskState(ctx context.Context, arg SetTaskStateParams) error
+	SetTaskTitle(ctx context.Context, arg SetTaskTitleParams) error
 	TouchSession(ctx context.Context, id int64) error
 	UpdateSessionLabel(ctx context.Context, arg UpdateSessionLabelParams) error
 }
