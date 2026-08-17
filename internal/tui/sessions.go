@@ -183,9 +183,13 @@ var runRecap = func(ctx context.Context, cwd, externalID, excerpt string) (strin
 // "I took a break and lost the thread" (docs/agent-sessions-plan.md §5).
 // It runs fully async and off the update loop, exactly like
 // captureTask's Jira lookup, and swallows any failure — claude
-// erroring, timing out, or returning nothing — by returning a nil Msg
-// rather than an error flash: losing an automatic recap isn't something
-// the user needs to act on, unlike a genuine store failure.
+// erroring, timing out, or returning nothing — by wrapping a bare
+// recapDoneMsg{} rather than an error flash: losing an automatic recap
+// isn't something the user needs to act on, unlike a genuine store
+// failure. Every path returns a recapDoneMsg (never a literal nil), so
+// Update's recapDoneMsg case can reliably decrement pendingRecaps and
+// warn before quitting drops a call still in flight (see handleKey's
+// quitPending chord).
 //
 // The same call also drives auto-naming (§5): agent.ParseRecapResponse
 // splits the reply into the recap body and a short label describing what
@@ -211,21 +215,21 @@ func (a app) recapSessionCmd(taskID int64, cwd, externalID string, since *int) t
 		}
 		raw, err := runRecap(a.ctx, cwd, externalID, excerpt)
 		if err != nil || raw == "" {
-			return nil
+			return recapDoneMsg{}
 		}
 		label, body := agent.ParseRecapResponse(raw)
 		if body == "" {
-			return nil
+			return recapDoneMsg{}
 		}
 		if _, err := a.store.AddLogEntry(a.ctx, &taskID, recapNotePrefix+body); err != nil {
-			return errMsg{err}
+			return recapDoneMsg{inner: errMsg{err}}
 		}
 		if label != "" {
 			if err := a.store.UpdateSessionLabel(a.ctx, externalID, label); err != nil {
-				return errMsg{err}
+				return recapDoneMsg{inner: errMsg{err}}
 			}
 		}
-		return refreshMsg{status: flash{kind: flashEdit, text: "session recap logged"}}
+		return recapDoneMsg{inner: refreshMsg{status: flash{kind: flashEdit, text: "session recap logged"}}}
 	}
 }
 

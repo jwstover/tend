@@ -166,6 +166,10 @@ type (
 		since        int
 		err          error
 	}
+	// recapDoneMsg wraps whatever recapSessionCmd produces — including
+	// nil, on a swallowed failure — so pendingRecaps can be decremented
+	// on every completion, not just the ones that surface a Msg.
+	recapDoneMsg struct{ inner tea.Msg }
 )
 
 type app struct {
@@ -244,6 +248,9 @@ type app struct {
 	statePending    bool // `c` pressed; next key picks the new state
 	priorityPending bool // `p` pressed; next key picks the new priority
 	deletePending   bool // first `d` pressed; a second `d` confirms the delete
+	quitPending     bool // `q` pressed while a recap was still running; a second press confirms
+
+	pendingRecaps int // in-flight recapSessionCmd calls; gates the quit confirmation
 
 	loaded bool   // first tasksLoadedMsg arrived; until then, loading frame
 	dbPath string // shown on the loading frame; "" hides the line
@@ -354,6 +361,7 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.status = flash{text: "claude: " + msg.err.Error(), isErr: true}
 			return a, nil
 		}
+		a.pendingRecaps++
 		return a, tea.Batch(
 			a.mutate(flash{kind: flashEdit, text: "session recorded"}, func() error {
 				_, err := a.store.CreateSession(a.ctx, msg.taskID, msg.externalID, msg.cwd, msg.label)
@@ -367,12 +375,20 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.status = flash{text: "claude: " + msg.err.Error(), isErr: true}
 			return a, nil
 		}
+		a.pendingRecaps++
 		return a, tea.Batch(
 			a.mutate(flash{kind: flashEdit, text: "session resumed"}, func() error {
 				return a.store.TouchSession(a.ctx, msg.sessionRowID)
 			}),
 			a.recapSessionCmd(msg.taskID, msg.cwd, msg.externalID, &msg.since),
 		)
+
+	case recapDoneMsg:
+		a.pendingRecaps = max(a.pendingRecaps-1, 0)
+		if msg.inner == nil {
+			return a, nil
+		}
+		return a.Update(msg.inner)
 
 	case standupLoadedMsg:
 		if a.mode != modeStandup {
@@ -534,11 +550,24 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return a, nil
 	}
 
+	// A pending quit confirmation (shown because a session recap or
+	// auto-name was still running in the background) consumes the next
+	// key: `q`/ctrl+c quits anyway, anything else cancels.
+	if a.quitPending {
+		a.quitPending = false
+		a.resize()
+		if key.Matches(msg, a.keys.Quit) {
+			return a, tea.Quit
+		}
+		return a, nil
+	}
+
 	switch {
 	case key.Matches(msg, a.keys.Quit):
 		// ctrl+c always quits; `q` first backs out of any non-default
-		// view (triage, the detail pane) and only quits from the bare
-		// list.
+		// view (triage, the detail pane), then — from the bare list —
+		// warns before dropping an in-flight recap/auto-name instead of
+		// quitting outright.
 		if msg.String() == "q" {
 			if a.mode == modeTriage {
 				a.mode = modeList
@@ -546,6 +575,11 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 			if a.showDetail {
 				a.showDetail = false
+				a.resize()
+				return a, nil
+			}
+			if a.pendingRecaps > 0 {
+				a.quitPending = true
 				a.resize()
 				return a, nil
 			}
@@ -835,6 +869,22 @@ func (a app) deletePanel() string {
 	return renderKeyPanel(a.styles, a.width, "delete", entries)
 }
 
+// quitPanel renders the which-key panel for the pending quit
+// confirmation: shown instead of quitting outright when a session
+// recap/auto-name is still running, since exiting mid-call silently
+// drops it — nothing tracks or resumes it (see recapSessionCmd).
+func (a app) quitPanel() string {
+	title := fmt.Sprintf("%d session recaps still running — quit anyway?", a.pendingRecaps)
+	if a.pendingRecaps == 1 {
+		title = "1 session recap still running — quit anyway?"
+	}
+	entries := []panelEntry{
+		{key: "q", desc: "quit anyway", keyStyle: a.styles.Error},
+		{key: "esc", desc: "cancel", keyStyle: a.styles.Dimmed},
+	}
+	return renderKeyPanel(a.styles, a.width, title, entries)
+}
+
 func (a app) setPriority(t task.Task, p *int64) tea.Cmd {
 	text := fmt.Sprintf("#%d priority cleared", t.ID)
 	if p != nil {
@@ -1028,6 +1078,9 @@ func (a *app) resize() {
 	}
 	if a.deletePending {
 		bottomHeight = max(lipgloss.Height(a.deletePanel()), 1)
+	}
+	if a.quitPending {
+		bottomHeight = max(lipgloss.Height(a.quitPanel()), 1)
 	}
 	a.bodyHeight = max(a.height-chromeTop-bottomHeight, 1)
 	listWidth, detailWidth, _ := a.splitWidths()
@@ -1390,6 +1443,9 @@ func (a app) bottomChrome(splitAt int) string {
 	}
 	if a.deletePending {
 		return a.deletePanel()
+	}
+	if a.quitPending {
+		return a.quitPanel()
 	}
 	return a.ruleLine(splitAt, a.styles.Glyphs.TeeUp) + "\n" + a.footer()
 }

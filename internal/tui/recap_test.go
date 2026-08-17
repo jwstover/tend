@@ -5,6 +5,8 @@ import (
 	"errors"
 	"os"
 	"testing"
+
+	tea "charm.land/bubbletea/v2"
 )
 
 // TestMain disables runRecap by default so no test accidentally shells
@@ -147,6 +149,93 @@ func TestRecapWithoutLabelMarkerLeavesSessionLabelUnchanged(t *testing.T) {
 	}
 	if len(sessions) != 1 || sessions[0].Label != parent.Title {
 		t.Errorf("sessions = %+v, want label unchanged at %q", sessions, parent.Title)
+	}
+}
+
+func TestQuitAsksConfirmationWhileRecapPending(t *testing.T) {
+	stubRecap(t, "did the thing", nil)
+	ctx := context.Background()
+	m, s := newTestApp(t)
+	parent, err := s.AddTask(ctx, "do the thing")
+	if err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	m = drive(t, m, refreshMsg{})
+
+	// Deliberately don't drain the returned Cmd — pendingRecaps is
+	// incremented synchronously in the Update case, before the recap
+	// itself ever runs, so this leaves it "in flight" from the test's
+	// point of view without needing a goroutine/channel dance.
+	m, _ = m.Update(sessionFinishedMsg{taskID: parent.ID, externalID: "ext-1", cwd: "/tmp/work", label: parent.Title})
+	if got := m.(app).pendingRecaps; got != 1 {
+		t.Fatalf("pendingRecaps = %d, want 1", got)
+	}
+
+	quitMsg := func(cmd tea.Cmd) bool {
+		for _, msg := range collect(cmd) {
+			if _, ok := msg.(tea.QuitMsg); ok {
+				return true
+			}
+		}
+		return false
+	}
+
+	// q on the bare list warns instead of quitting outright.
+	var cmd tea.Cmd
+	m, cmd = m.Update(keyPress('q'))
+	if quitMsg(cmd) {
+		t.Errorf("q quit immediately with a recap pending")
+	}
+	if !m.(app).quitPending {
+		t.Errorf("quitPending = false, want true")
+	}
+
+	// Any other key cancels the confirmation without quitting.
+	cancelled, cmd := m.Update(keyPress('x'))
+	if quitMsg(cmd) {
+		t.Errorf("cancelling key quit")
+	}
+	if cancelled.(app).quitPending {
+		t.Errorf("quitPending still true after a cancelling key")
+	}
+
+	// A second q confirms and quits.
+	m, cmd = m.Update(keyPress('q'))
+	if !quitMsg(cmd) {
+		t.Errorf("second q did not quit")
+	}
+}
+
+func TestRecapDoneDecrementsPendingRecaps(t *testing.T) {
+	stubRecap(t, "did the thing", nil)
+	ctx := context.Background()
+	m, s := newTestApp(t)
+	parent, err := s.AddTask(ctx, "do the thing")
+	if err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	m = drive(t, m, refreshMsg{})
+
+	m, _ = m.Update(sessionFinishedMsg{taskID: parent.ID, externalID: "ext-1", cwd: "/tmp/work", label: parent.Title})
+	if got := m.(app).pendingRecaps; got != 1 {
+		t.Fatalf("pendingRecaps = %d, want 1", got)
+	}
+
+	m = drive(t, m, recapDoneMsg{})
+	if got := m.(app).pendingRecaps; got != 0 {
+		t.Errorf("pendingRecaps = %d, want 0 after recapDoneMsg", got)
+	}
+
+	// With nothing pending, q quits straight away again.
+	_, cmd := m.Update(keyPress('q'))
+	quit := false
+	for _, msg := range collect(cmd) {
+		if _, ok := msg.(tea.QuitMsg); ok {
+			quit = true
+		}
+	}
+	if !quit {
+		t.Errorf("q did not quit once pendingRecaps returned to 0")
 	}
 }
 
