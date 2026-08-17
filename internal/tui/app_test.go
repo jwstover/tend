@@ -1639,6 +1639,142 @@ func TestStandupNotesSplitByDay(t *testing.T) {
 	}
 }
 
+func TestStandupScrollPaging(t *testing.T) {
+	ctx := context.Background()
+	m, s := newTestApp(t)
+	for i := 0; i < 40; i++ {
+		if _, err := s.AddLogEntry(ctx, nil, fmt.Sprintf("note %d", i)); err != nil {
+			t.Fatalf("AddLogEntry: %v", err)
+		}
+	}
+
+	m = drive(t, m, keyPress('S'))
+	m = drive(t, m, keyPress('s')) // chronological: one note per line, easy to scroll-test
+
+	content := ansi.Strip(m.View().Content)
+	if !strings.Contains(content, "note 39") {
+		t.Errorf("standup should open scrolled to the newest note:\n%s", content)
+	}
+	if strings.Contains(content, "note 0") {
+		t.Errorf("oldest note should be scrolled out of view initially:\n%s", content)
+	}
+
+	// Page up repeatedly until the oldest note scrolls into view and the
+	// offset clamps at the top.
+	for i := 0; i < 10; i++ {
+		m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyPgUp})
+	}
+	content = ansi.Strip(m.View().Content)
+	if !strings.Contains(content, "note 0") {
+		t.Errorf("paging up should scroll back to the oldest note:\n%s", content)
+	}
+	if got := m.(app).standupScroll; got != 0 {
+		t.Errorf("scroll should clamp at 0, got %d", got)
+	}
+
+	// Page back down to the bottom.
+	for i := 0; i < 10; i++ {
+		m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyPgDown})
+	}
+	content = ansi.Strip(m.View().Content)
+	if !strings.Contains(content, "note 39") {
+		t.Errorf("paging down should scroll back to the newest note:\n%s", content)
+	}
+}
+
+func TestStandupTabTogglesGroupCollapse(t *testing.T) {
+	ctx := context.Background()
+	m, s := newTestApp(t)
+	first, err := s.AddTask(ctx, "first task")
+	if err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	second, err := s.AddTask(ctx, "second task")
+	if err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	if _, err := s.AddLogEntry(ctx, &first.ID, "working on first"); err != nil {
+		t.Fatalf("AddLogEntry: %v", err)
+	}
+	if _, err := s.AddLogEntry(ctx, &second.ID, "working on second"); err != nil {
+		t.Fatalf("AddLogEntry: %v", err)
+	}
+
+	m = drive(t, m, keyPress('S'))
+	content := ansi.Strip(m.View().Content)
+	if !strings.Contains(content, "working on first") || !strings.Contains(content, "working on second") {
+		t.Fatalf("both groups should start expanded:\n%s", content)
+	}
+
+	// Jump-to-latest focuses the last group ("second task"); tab collapses
+	// only that group's log entries.
+	m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyTab})
+	content = ansi.Strip(m.View().Content)
+	if strings.Contains(content, "working on second") {
+		t.Errorf("tab should collapse the focused group's entries:\n%s", content)
+	}
+	if !strings.Contains(content, "working on first") {
+		t.Errorf("the other group should stay expanded:\n%s", content)
+	}
+	if !strings.Contains(content, "hidden") {
+		t.Errorf("a collapsed group should show a hidden-entry count:\n%s", content)
+	}
+
+	// tab again expands it back.
+	m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyTab})
+	content = ansi.Strip(m.View().Content)
+	if !strings.Contains(content, "working on second") {
+		t.Errorf("second tab should re-expand the group:\n%s", content)
+	}
+
+	// Move the cursor up to the first group and collapse that one instead.
+	m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyUp})
+	m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyTab})
+	content = ansi.Strip(m.View().Content)
+	if strings.Contains(content, "working on first") {
+		t.Errorf("tab should now collapse the first group:\n%s", content)
+	}
+	if !strings.Contains(content, "working on second") {
+		t.Errorf("second group should stay expanded once cursor moved off it:\n%s", content)
+	}
+}
+
+func TestStandupToggleRecaps(t *testing.T) {
+	ctx := context.Background()
+	m, s := newTestApp(t)
+	tk, err := s.AddTask(ctx, "some task")
+	if err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	if _, err := s.AddLogEntry(ctx, &tk.ID, "manual note"); err != nil {
+		t.Fatalf("AddLogEntry: %v", err)
+	}
+	if _, err := s.AddLogEntry(ctx, &tk.ID, recapNotePrefix+"auto recap"); err != nil {
+		t.Fatalf("AddLogEntry: %v", err)
+	}
+
+	m = drive(t, m, keyPress('S'))
+	content := ansi.Strip(m.View().Content)
+	if !strings.Contains(content, "manual note") || !strings.Contains(content, "auto recap") {
+		t.Fatalf("both notes should show before toggling:\n%s", content)
+	}
+
+	m = drive(t, m, keyPress('C'))
+	content = ansi.Strip(m.View().Content)
+	if strings.Contains(content, "auto recap") {
+		t.Errorf("C should hide the recap note:\n%s", content)
+	}
+	if !strings.Contains(content, "manual note") {
+		t.Errorf("the manual note should stay visible:\n%s", content)
+	}
+
+	m = drive(t, m, keyPress('C'))
+	content = ansi.Strip(m.View().Content)
+	if !strings.Contains(content, "auto recap") {
+		t.Errorf("second C should re-show the recap note:\n%s", content)
+	}
+}
+
 func TestQuitKeyClosesViewBeforeQuitting(t *testing.T) {
 	// q backs out of non-default views (standup, detail, triage, help)
 	// and only quits from the bare list.

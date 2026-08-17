@@ -21,6 +21,7 @@ type keyMap struct {
 	Note         key.Binding // freestanding standup note, from anywhere
 	Yank         key.Binding // copy the standup markdown (standup view)
 	SortToggle   key.Binding // flip grouped/chronological notes (standup view)
+	ToggleRecaps key.Binding // hide/show Claude session recap notes (standup view)
 	OpenURL      key.Binding
 	OpenAllURLs  key.Binding
 	ChangeState  key.Binding
@@ -31,6 +32,12 @@ type keyMap struct {
 	ExpandOpen   key.Binding
 	ExpandClose  key.Binding
 	ToggleDone   key.Binding // x/space on the selected node
+
+	// Pane scrolling (standup view).
+	ScrollUp   key.Binding
+	ScrollDown key.Binding
+	PageUp     key.Binding
+	PageDown   key.Binding
 
 	ToggleCompleted key.Binding // C shows/hides the completed (done) section
 
@@ -72,6 +79,7 @@ func defaultKeyMap() keyMap {
 		Note:         key.NewBinding(key.WithKeys("N"), key.WithHelp("N", "note")),
 		Yank:         key.NewBinding(key.WithKeys("y"), key.WithHelp("y", "yank standup")),
 		SortToggle:   key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "sort")),
+		ToggleRecaps: key.NewBinding(key.WithKeys("C"), key.WithHelp("C", "recaps")),
 		OpenURL:      key.NewBinding(key.WithKeys("o"), key.WithHelp("o", "open link(s)")),
 		OpenAllURLs:  key.NewBinding(key.WithKeys("O"), key.WithHelp("O", "open all links")),
 		ChangeState:  key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "change state")),
@@ -81,6 +89,11 @@ func defaultKeyMap() keyMap {
 		ExpandOpen:   key.NewBinding(key.WithKeys("l", "right"), key.WithHelp("l", "expand")),
 		ExpandClose:  key.NewBinding(key.WithKeys("h", "left"), key.WithHelp("h", "collapse")),
 		ToggleDone:   key.NewBinding(key.WithKeys("x", "space"), key.WithHelp("x", "done")),
+
+		ScrollUp:   key.NewBinding(key.WithKeys("up", "k"), key.WithHelp("k", "scroll up")),
+		ScrollDown: key.NewBinding(key.WithKeys("down", "j"), key.WithHelp("j", "scroll down")),
+		PageUp:     key.NewBinding(key.WithKeys("pgup", "ctrl+u"), key.WithHelp("pgup", "page up")),
+		PageDown:   key.NewBinding(key.WithKeys("pgdown", "ctrl+d"), key.WithHelp("pgdown", "page down")),
 
 		ToggleCompleted: key.NewBinding(key.WithKeys("C"), key.WithHelp("C", "completed")),
 

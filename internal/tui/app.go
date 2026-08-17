@@ -210,6 +210,22 @@ type app struct {
 	standupLive   []task.Task
 	standupChrono bool // `s` flips the notes pane to chronological; grouped by task otherwise
 
+	// standupHideRecaps hides auto-generated Claude session recap notes
+	// (see recapNotePrefix) from the notes pane and the yanked markdown —
+	// `C` toggles it. Persists across window/sort changes like
+	// standupChrono, not reset per-view like the scroll/disclosure state
+	// below.
+	standupHideRecaps bool
+
+	// Standup pane scrolling and per-task log disclosure. standupJumpToLatest
+	// asks the next standupLoadedMsg to snap the scroll to the newest
+	// content — set on entering the view or changing the window/sort, left
+	// alone on a background refresh so reading position isn't yanked away.
+	standupScroll       int
+	standupCursor       int             // focused note-group index, grouped view only
+	standupCollapsed    map[string]bool // collapsed note-group keys, see standupGroupKey
+	standupJumpToLatest bool
+
 	showDetail bool
 	detail     viewport.Model
 	detailID   int64 // owning task currently rendered in the pane; 0 = none
@@ -395,6 +411,14 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 		a.standupNotes, a.standupEvents, a.standupLive = msg.notes, msg.events, msg.live
+		if a.standupJumpToLatest {
+			a.standupCursor = max(len(a.standupGroups())-1, 0)
+			a.standupScroll = a.standupMaxScroll()
+			a.standupJumpToLatest = false
+		} else {
+			a.standupScroll = min(a.standupScroll, a.standupMaxScroll())
+			a.standupCursor = min(a.standupCursor, max(len(a.standupGroups())-1, 0))
+		}
 		return a, nil
 
 	case refreshMsg:
@@ -1489,9 +1513,13 @@ func (a app) footer() string {
 		if a.standupChrono {
 			sort = "by task"
 		}
+		recaps := "hide recaps"
+		if a.standupHideRecaps {
+			recaps = "show recaps"
+		}
 		hints = [][2]string{
-			{"n", "note"}, {"y", "yank"}, {"h/l", "window"}, {"s", sort},
-			{"esc/q", "back"}, {"?", "help"},
+			{"n", "note"}, {"y", "yank"}, {"h/l", "window"}, {"s", sort}, {"C", recaps},
+			{"j/k", "scroll"}, {"tab", "expand"}, {"esc/q", "back"}, {"?", "help"},
 		}
 	}
 	return a.hintLine(hints)
