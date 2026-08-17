@@ -3,7 +3,6 @@ package tui
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -188,6 +187,17 @@ var runRecap = func(ctx context.Context, cwd, externalID, excerpt string) (strin
 // rather than an error flash: losing an automatic recap isn't something
 // the user needs to act on, unlike a genuine store failure.
 //
+// The same call also drives auto-naming (§5): agent.ParseRecapResponse
+// splits the reply into the recap body and a short label describing what
+// the session actually did, and a successfully-parsed label is persisted
+// via Store.UpdateSessionLabel, replacing the static task-title snapshot
+// CreateSession wrote at launch. Keyed by externalID rather than a row
+// id since that's what's in hand for both a freshly launched session
+// (whose row id this func never sees — sessionFinishedMsg's CreateSession
+// call is a sibling in the same tea.Batch, not a dependency of this one)
+// and a resumed one alike. A response that doesn't parse into a label
+// just skips the rename — the recap itself still logs normally.
+//
 // since is nil for a freshly launched session (the whole transcript is
 // new, so the recap is naturally unscoped) and non-nil for a resumed
 // one — the transcript line count at the moment it was resumed
@@ -199,12 +209,21 @@ func (a app) recapSessionCmd(taskID int64, cwd, externalID string, since *int) t
 		if since != nil {
 			excerpt, _ = agent.TranscriptExcerptSince(cwd, externalID, *since)
 		}
-		body, err := runRecap(a.ctx, cwd, externalID, excerpt)
-		if err != nil || body == "" {
+		raw, err := runRecap(a.ctx, cwd, externalID, excerpt)
+		if err != nil || raw == "" {
+			return nil
+		}
+		label, body := agent.ParseRecapResponse(raw)
+		if body == "" {
 			return nil
 		}
 		if _, err := a.store.AddLogEntry(a.ctx, &taskID, recapNotePrefix+body); err != nil {
 			return errMsg{err}
+		}
+		if label != "" {
+			if err := a.store.UpdateSessionLabel(a.ctx, externalID, label); err != nil {
+				return errMsg{err}
+			}
 		}
 		return refreshMsg{status: flash{kind: flashEdit, text: "session recap logged"}}
 	}
@@ -246,9 +265,9 @@ func (a app) sessionPickerView() string {
 		var content string
 		if i+1 == a.sessionPickerSel {
 			content = s.SelBar.Render(g.SelBar+" ") + s.Accent.Render(num) +
-				s.Link.Render(filepath.Base(sess.Cwd)) + "  " + s.Muted.Render(age)
+				s.Link.Render(sess.Label) + "  " + s.Muted.Render(age)
 		} else {
-			content = "  " + s.Muted.Render(num) + s.Dimmed.Render(filepath.Base(sess.Cwd)) +
+			content = "  " + s.Muted.Render(num) + s.Dimmed.Render(sess.Label) +
 				"  " + s.Muted.Render(age)
 		}
 		lines = append(lines, row(content))

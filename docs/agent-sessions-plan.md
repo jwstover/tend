@@ -1,10 +1,12 @@
 # Agent sessions — design & phased plan
 
-> Status: Phase 1 implemented; manual end-to-end test passed (2026-08-17) — this session was
-> itself launched from tend via `r`, confirming session-id pinning, terminal handoff, and
-> transcript resolution work against the real `claude` CLI. This is a project-specific addendum
-> to `AGENTS.md`, not a replacement for it — the layering, conventions, and commit rules in
-> `AGENTS.md` still govern everything built here.
+> Status: Phase 1 implemented and manually confirmed (2026-08-17) — this session was itself
+> launched from tend via `r`, confirming session-id pinning, terminal handoff, and transcript
+> resolution work against the real `claude` CLI. Phase 2's recap logging is also implemented and
+> manually confirmed (2026-08-17); its auto-naming half is implemented and unit-tested but not yet
+> manually confirmed against the real CLI. Phases 3-5 are unstarted. This is a project-specific
+> addendum to `AGENTS.md`, not a replacement for it — the layering, conventions, and commit rules
+> in `AGENTS.md` still govern everything built here.
 
 ## 0. The problem
 
@@ -145,20 +147,15 @@ transcript is that session. Confirms the full loop against the real CLI, not jus
 spike in §1: session-id pinning, `tea.ExecProcess` terminal handoff, and the launched session
 landing in `agent_sessions` and the SESSIONS list.
 
-**Known issue, left as-is for now (2026-08-17):** the SESSIONS section (`detail.go`) and the
-picker (`sessions.go`) both render `filepath.Base(sess.Cwd)` as the row's identity, not
-`sess.Label`. Harmless when a task's sessions run in different directories, but launching every
-session from the same repo (the common case) makes every row read as that repo's directory name
-— surfaced by the manual test above, where every row just said "tend". `Label` is stored
-correctly (the task title, snapshotted at launch) but isn't wired into either view. Considered
-and explicitly declined for now: (a) show `Label` instead — but within one task's own session
-list the title is constant across every row, so it doesn't actually distinguish session 1 from
-session 2 on the same task, which is the case that matters most; (b) add a second launch-time
-prompt for a short free-text label — rejected, not worth the extra keystroke on every launch. See
-§5 for the preferred direction: auto-generate a real per-session name from what the session
-actually did, the same way the recap note gets generated.
+**Known issue (2026-08-17), resolved by auto-naming (§5):** the SESSIONS section (`detail.go`) and
+the picker (`sessions.go`) originally rendered `filepath.Base(sess.Cwd)` as the row's identity, not
+`sess.Label` — harmless when a task's sessions run in different directories, but launching every
+session from the same repo (the common case) made every row read as that repo's directory name,
+surfaced by the manual test above where every row just said "tend". Fixed by switching both views
+to render `sess.Label` directly, now that §5's auto-naming keeps it meaningfully distinct per
+session instead of a static task-title snapshot.
 
-## 5. Phase 2 — continuity (recap logging implemented; auto-naming not started)
+## 5. Phase 2 — continuity (recap logging + auto-naming implemented)
 
 **Deliver:** when a launched or resumed session's `tea.ExecProcess` returns, fire a headless
 follow-up (`claude -p "<one-paragraph recap prompt>" --resume <id>`) and store the result as a
@@ -177,17 +174,25 @@ losing an automatic recap isn't something the user needs to act on. Recap entrie
 notes in the LOG section, with no schema change.
 
 **Acceptance:** ending a session appends a recap note to the task's LOG section without any
-manual step. **Implemented and covered by tests** (`internal/tui/recap_test.go`); pending a manual
-end-to-end confirmation against the real CLI, the same way Phase 1 was verified.
+manual step. **Implemented, covered by tests** (`internal/tui/recap_test.go`), **and manually
+confirmed end-to-end against the real CLI (2026-08-17)**, the same way Phase 1 was verified.
 
-**Auto-naming (folded into this phase, not phase 1):** the same headless follow-up call is also
-the fix for the known display issue in §4 — ask it for a short (few-word) description of what the
-session actually did, alongside the recap paragraph, and store that as `agent_sessions.label`
-instead of the static task-title snapshot. A cheap/fast model (e.g. Haiku) is the right tier for
-this — it's a one-line classification of a transcript, not real work. This is strictly better
-than either option considered and declined in §4: it costs no extra keystrokes (unlike a launch
-prompt) and it actually distinguishes sessions on the same task (unlike reusing the task title),
-because it's derived from the one thing that's genuinely different between them — what happened.
+**Auto-naming — implemented (2026-08-17).** The same headless follow-up call is also the fix for
+the known display issue in §4: `agent.RecapPrompt` now asks for a two-line `LABEL: ...` /
+`RECAP: ...` reply instead of a bare paragraph, and `agent.ParseRecapResponse` splits the two
+apart. A successfully-parsed label is persisted via the new `Store.UpdateSessionLabel` (keyed by
+`external_id`, since that's what `recapSessionCmd` has in hand for both a freshly launched session
+— whose row id it never sees — and a resumed one alike), replacing the static task-title snapshot
+`CreateSession` wrote at launch. `detail.go`'s SESSIONS section and `sessions.go`'s picker now
+render `sess.Label` directly instead of `filepath.Base(sess.Cwd)`. A reply that doesn't parse into
+the two-marker shape falls back to exactly the pre-auto-naming behavior — the whole trimmed
+response logged as the recap, no rename — so a malformed model reply degrades gracefully rather
+than losing the recap outright. This is strictly better than either option considered and declined
+in §4: it costs no extra keystrokes (unlike a launch prompt) and it actually distinguishes sessions
+on the same task (unlike reusing the task title), because it's derived from the one thing that's
+genuinely different between them — what happened. (Not pursued: switching the recap call to a
+cheaper/faster model tier for this classification — `RecapCmd` has no model flag today; worth
+revisiting only if recap latency/cost becomes a real complaint.)
 
 ## 6. Phase 3 — recall (deferred, not designed)
 

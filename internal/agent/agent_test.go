@@ -61,6 +61,59 @@ func TestRecapCmd(t *testing.T) {
 	}
 }
 
+func TestParseRecapResponseWellFormed(t *testing.T) {
+	raw := "LABEL: fixed the flaky test\nRECAP: Tracked down a race in the scheduler and stabilized it. Ready for review."
+	label, recap := ParseRecapResponse(raw)
+	if label != "fixed the flaky test" {
+		t.Errorf("label = %q, want %q", label, "fixed the flaky test")
+	}
+	want := "Tracked down a race in the scheduler and stabilized it. Ready for review."
+	if recap != want {
+		t.Errorf("recap = %q, want %q", recap, want)
+	}
+}
+
+func TestParseRecapResponseIgnoresSurroundingWhitespace(t *testing.T) {
+	raw := "\n\n  LABEL:   fixed the flaky test  \nRECAP:   did the thing  \n\n"
+	label, recap := ParseRecapResponse(raw)
+	if label != "fixed the flaky test" {
+		t.Errorf("label = %q, want %q", label, "fixed the flaky test")
+	}
+	if recap != "did the thing" {
+		t.Errorf("recap = %q, want %q", recap, "did the thing")
+	}
+}
+
+func TestParseRecapResponseFallsBackWithoutMarkers(t *testing.T) {
+	label, recap := ParseRecapResponse("just a plain summary with no markers")
+	if label != "" {
+		t.Errorf("label = %q, want empty", label)
+	}
+	if recap != "just a plain summary with no markers" {
+		t.Errorf("recap = %q, want the whole trimmed response", recap)
+	}
+}
+
+func TestParseRecapResponseFallsBackOnEmptyRecap(t *testing.T) {
+	label, recap := ParseRecapResponse("LABEL: fixed the flaky test\nRECAP:")
+	if label != "" {
+		t.Errorf("label = %q, want empty when RECAP has no content", label)
+	}
+	if recap != "LABEL: fixed the flaky test\nRECAP:" {
+		t.Errorf("recap = %q, want the whole trimmed response as a fallback", recap)
+	}
+}
+
+func TestParseRecapResponseFallsBackOnMarkersOutOfOrder(t *testing.T) {
+	label, recap := ParseRecapResponse("RECAP: did the thing\nLABEL: fixed the flaky test")
+	if label != "" {
+		t.Errorf("label = %q, want empty when markers are out of order", label)
+	}
+	if recap != "RECAP: did the thing\nLABEL: fixed the flaky test" {
+		t.Errorf("recap = %q, want the whole trimmed response as a fallback", recap)
+	}
+}
+
 func TestRecapPromptScoping(t *testing.T) {
 	base := RecapPrompt("")
 	if strings.Contains(base, "Scope the recap") {

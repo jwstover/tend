@@ -13,3 +13,8 @@ ORDER BY last_active_at DESC, id DESC;
 UPDATE agent_sessions
 SET last_active_at = datetime('now')
 WHERE id = ?;
+
+-- name: UpdateSessionLabel :exec
+UPDATE agent_sessions
+SET label = ?
+WHERE external_id = ?;

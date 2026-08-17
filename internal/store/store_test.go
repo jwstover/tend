@@ -716,6 +716,31 @@ func TestAgentSessions(t *testing.T) {
 	}
 }
 
+func TestUpdateSessionLabel(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	parent, err := s.AddTask(ctx, "fix the bug")
+	if err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	if _, err := s.CreateSession(ctx, parent.ID, "ext-1", "/tmp/work", parent.Title); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	if err := s.UpdateSessionLabel(ctx, "ext-1", "fixed the flaky test"); err != nil {
+		t.Fatalf("UpdateSessionLabel: %v", err)
+	}
+
+	got, err := s.ListSessionsForTask(ctx, parent.ID)
+	if err != nil {
+		t.Fatalf("ListSessionsForTask: %v", err)
+	}
+	if len(got) != 1 || got[0].Label != "fixed the flaky test" {
+		t.Errorf("sessions = %+v, want label updated to %q", got, "fixed the flaky test")
+	}
+}
+
 func TestAgentSessionsCascadeDeleteWithTask(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

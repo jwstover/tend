@@ -100,6 +100,56 @@ func TestRecapEmptyOutputSkipsLogEntry(t *testing.T) {
 	}
 }
 
+func TestRecapAutoNamesSessionOnSessionFinished(t *testing.T) {
+	stubRecap(t, "LABEL: fixed the flaky test\nRECAP: did the thing", nil)
+	ctx := context.Background()
+	m, s := newTestApp(t)
+	parent, err := s.AddTask(ctx, "do the thing")
+	if err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	m = drive(t, m, refreshMsg{})
+
+	m = drive(t, m, sessionFinishedMsg{taskID: parent.ID, externalID: "ext-1", cwd: "/tmp/work", label: parent.Title})
+
+	waitFor(t, "recap logged", func() bool {
+		entries, err := s.ListTaskLog(ctx, parent.ID)
+		return err == nil && len(entries) == 1 && entries[0].Body == recapNotePrefix+"did the thing"
+	})
+	sessions, err := s.ListSessionsForTask(ctx, parent.ID)
+	if err != nil {
+		t.Fatalf("ListSessionsForTask: %v", err)
+	}
+	if len(sessions) != 1 || sessions[0].Label != "fixed the flaky test" {
+		t.Errorf("sessions = %+v, want a single session auto-named %q", sessions, "fixed the flaky test")
+	}
+}
+
+func TestRecapWithoutLabelMarkerLeavesSessionLabelUnchanged(t *testing.T) {
+	stubRecap(t, "did the thing", nil)
+	ctx := context.Background()
+	m, s := newTestApp(t)
+	parent, err := s.AddTask(ctx, "do the thing")
+	if err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	m = drive(t, m, refreshMsg{})
+
+	m = drive(t, m, sessionFinishedMsg{taskID: parent.ID, externalID: "ext-1", cwd: "/tmp/work", label: parent.Title})
+
+	waitFor(t, "recap logged", func() bool {
+		entries, err := s.ListTaskLog(ctx, parent.ID)
+		return err == nil && len(entries) == 1
+	})
+	sessions, err := s.ListSessionsForTask(ctx, parent.ID)
+	if err != nil {
+		t.Fatalf("ListSessionsForTask: %v", err)
+	}
+	if len(sessions) != 1 || sessions[0].Label != parent.Title {
+		t.Errorf("sessions = %+v, want label unchanged at %q", sessions, parent.Title)
+	}
+}
+
 func TestRecapFiresOnSessionResumed(t *testing.T) {
 	stubRecap(t, "resumed and finished it", nil)
 	ctx := context.Background()

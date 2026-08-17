@@ -46,6 +46,7 @@ type Store interface {
 	CreateSession(ctx context.Context, taskID int64, externalID, cwd, label string) (task.Session, error)
 	ListSessionsForTask(ctx context.Context, taskID int64) ([]task.Session, error)
 	TouchSession(ctx context.Context, id int64) error
+	UpdateSessionLabel(ctx context.Context, externalID, label string) error
 }
 
 // Run starts the TUI and blocks until it exits. dbPath is display-only

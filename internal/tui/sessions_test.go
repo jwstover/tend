@@ -224,14 +224,14 @@ func TestDetailPaneShowsSessions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AddTask: %v", err)
 	}
-	if _, err := s.CreateSession(ctx, parent.ID, "ext-1", "/home/me/code/my-project", parent.Title); err != nil {
+	if _, err := s.CreateSession(ctx, parent.ID, "ext-1", "/home/me/code/my-project", "fixed the flaky test"); err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
 	m = drive(t, m, refreshMsg{})
 	m = drive(t, m, keyPress(']')) // open detail
 
 	content := ansi.Strip(m.View().Content)
-	for _, want := range []string{"SESSIONS  1", "my-project"} {
+	for _, want := range []string{"SESSIONS  1", "fixed the flaky test"} {
 		if !strings.Contains(content, want) {
 			t.Errorf("detail pane missing %q:\n%s", want, content)
 		}

@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
@@ -128,7 +127,7 @@ func renderDetail(t task.Task, children []task.Task, log []task.LogEntry, sessio
 			styles.Muted.Render(fmt.Sprintf("%d", len(sessions))) + "\n")
 		for i, sess := range sessions {
 			b.WriteString("  " + styles.Muted.Render(fmt.Sprintf("[%d] ", i+1)) +
-				styles.Link.Render(filepath.Base(sess.Cwd)) + "  " +
+				styles.Link.Render(sess.Label) + "  " +
 				styles.DetailFaint.Render(relTime(sess.LastActiveAt, now)) + "\n")
 		}
 		b.WriteString("  " + styles.Muted.Render("press ") + styles.FooterKey.Render("r") +

@@ -52,28 +52,58 @@ func ResumeCmd(cwd, externalID string) *exec.Cmd {
 	return c
 }
 
-// RecapPrompt builds the standup-style recap prompt asked of a resumed
-// session, suitable for a task's log entry — the headless follow-up
+// RecapPrompt builds the combined label+recap prompt asked of a
+// finished/resumed session — the headless follow-up
 // docs/agent-sessions-plan.md §5 fires after a session's terminal
-// handoff returns. excerpt, when non-empty, is a rendering of just the
-// conversational turns since the session was last resumed (see
-// TranscriptExcerptSince): it scopes the recap to that new work while
-// the `--resume` call still gives the model the rest of the session for
-// background, so a small, constrained resume doesn't lose the context of
-// what the task actually is.
+// handoff returns. The recap half is a standup-style update suitable
+// for a task's log entry; the label half is a short, distinguishing
+// description of what the session actually did, stored as
+// agent_sessions.label (see ParseRecapResponse) — the auto-naming fix
+// for §4's known issue, where every session on a task otherwise renders
+// the same static task-title snapshot. excerpt, when non-empty, is a
+// rendering of just the conversational turns since the session was last
+// resumed (see TranscriptExcerptSince): it scopes the recap to that new
+// work while the `--resume` call still gives the model the rest of the
+// session for background, so a small, constrained resume doesn't lose
+// the context of what the task actually is.
 func RecapPrompt(excerpt string) string {
-	base := "In 2-3 short sentences (plain text, no markdown headers or bullet " +
-		"lists), give a standup-style update on this session for the task you were working on: " +
-		"what got done, what's next, and whether anything is blocked or needs a decision. Stay " +
-		"high-level — no file names, function names, or other implementation detail. If there's " +
-		"nothing blocking, don't mention blockers at all. Respond with only that update — no " +
-		"preamble like \"Here's a summary\"."
+	base := "Respond in exactly this two-line format and nothing else — no preamble, no " +
+		"markdown, no extra lines:\n\n" +
+		"LABEL: <a short label, 3-6 words, naming what this session actually worked on — " +
+		"specific enough to tell it apart from another session on the same task>\n" +
+		"RECAP: <in 2-3 short sentences, plain text, a standup-style update on this session " +
+		"for the task you were working on: what got done, what's next, and whether anything " +
+		"is blocked or needs a decision. Stay high-level — no file names, function names, or " +
+		"other implementation detail. If there's nothing blocking, don't mention blockers at " +
+		"all>"
 	if excerpt == "" {
 		return base
 	}
 	return base + "\n\nScope the recap to only the turns below — the new work since you were " +
 		"last resumed. Use the rest of the session only as background context to understand " +
 		"them; don't re-report anything from before this excerpt.\n\n" + excerpt
+}
+
+// ParseRecapResponse splits a RecapPrompt reply into its label and recap
+// halves. A real model reply won't always land in the exact two-line
+// shape asked for, so this degrades gracefully rather than erroring: if
+// both markers aren't found in order, or the RECAP half comes back
+// empty, the whole trimmed response is returned as the recap with no
+// label — exactly the pre-auto-naming behavior, so a malformed reply
+// still logs a usable recap, it just skips renaming the session.
+func ParseRecapResponse(raw string) (label, recap string) {
+	raw = strings.TrimSpace(raw)
+	li := strings.Index(raw, "LABEL:")
+	ri := strings.Index(raw, "RECAP:")
+	if li == -1 || ri == -1 || ri <= li {
+		return "", raw
+	}
+	label = strings.TrimSpace(raw[li+len("LABEL:") : ri])
+	recap = strings.TrimSpace(raw[ri+len("RECAP:"):])
+	if recap == "" {
+		return "", raw
+	}
+	return label, recap
 }
 
 // RecapTimeout bounds the headless follow-up: generous, since a real

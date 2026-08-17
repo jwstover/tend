@@ -385,6 +385,21 @@ func (s *Store) TouchSession(ctx context.Context, id int64) error {
 	return nil
 }
 
+// UpdateSessionLabel replaces a session's label with a short description
+// of what it actually did, derived from the post-session recap call
+// (see docs/agent-sessions-plan.md §5) — the auto-naming fix for the
+// static task-title snapshot not distinguishing sessions on the same
+// task. Keyed by external_id rather than the row id: it's the identifier
+// recapSessionCmd already has in hand for both a freshly launched
+// session (whose row id it never sees, since CreateSession's caller
+// discards the result) and a resumed one alike.
+func (s *Store) UpdateSessionLabel(ctx context.Context, externalID, label string) error {
+	if err := s.q.UpdateSessionLabel(ctx, gen.UpdateSessionLabelParams{ExternalID: externalID, Label: label}); err != nil {
+		return fmt.Errorf("updating session label for %s: %w", externalID, err)
+	}
+	return nil
+}
+
 // GetTask loads a single task by id.
 func (s *Store) GetTask(ctx context.Context, id int64) (task.Task, error) {
 	row, err := s.q.GetTask(ctx, id)

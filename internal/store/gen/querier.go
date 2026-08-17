@@ -37,6 +37,7 @@ type Querier interface {
 	SetTaskProject(ctx context.Context, arg SetTaskProjectParams) error
 	SetTaskState(ctx context.Context, arg SetTaskStateParams) error
 	TouchSession(ctx context.Context, id int64) error
+	UpdateSessionLabel(ctx context.Context, arg UpdateSessionLabelParams) error
 }
 
 var _ Querier = (*Queries)(nil)

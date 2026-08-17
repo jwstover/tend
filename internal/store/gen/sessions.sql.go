@@ -90,3 +90,19 @@ func (q *Queries) TouchSession(ctx context.Context, id int64) error {
 	_, err := q.db.ExecContext(ctx, touchSession, id)
 	return err
 }
+
+const updateSessionLabel = `-- name: UpdateSessionLabel :exec
+UPDATE agent_sessions
+SET label = ?
+WHERE external_id = ?
+`
+
+type UpdateSessionLabelParams struct {
+	Label      string
+	ExternalID string
+}
+
+func (q *Queries) UpdateSessionLabel(ctx context.Context, arg UpdateSessionLabelParams) error {
+	_, err := q.db.ExecContext(ctx, updateSessionLabel, arg.Label, arg.ExternalID)
+	return err
+}
