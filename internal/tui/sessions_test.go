@@ -201,7 +201,12 @@ func TestSessionResumedMsgTouchesSession(t *testing.T) {
 	}
 	m = drive(t, m, refreshMsg{})
 
-	m = drive(t, m, sessionResumedMsg{sessionRowID: sess.ID})
+	m = drive(t, m, sessionResumedMsg{
+		sessionRowID: sess.ID,
+		taskID:       parent.ID,
+		cwd:          sess.Cwd,
+		externalID:   sess.ExternalID,
+	})
 
 	waitFor(t, "session touched", func() bool {
 		sessions, err := s.ListSessionsForTask(ctx, parent.ID)

@@ -153,9 +153,16 @@ type (
 		err        error
 	}
 	// sessionResumedMsg reports a resumed session's terminal handoff
-	// returning; last_active_at is only bumped on a clean exit.
+	// returning; last_active_at is only bumped on a clean exit. since is
+	// the transcript's line count at the moment it was resumed (see
+	// resumeSessionCmd), passed to recapSessionCmd to scope the recap to
+	// only what happened after that point.
 	sessionResumedMsg struct {
 		sessionRowID int64
+		taskID       int64
+		cwd          string
+		externalID   string
+		since        int
 		err          error
 	}
 )
@@ -346,19 +353,25 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.status = flash{text: "claude: " + msg.err.Error(), isErr: true}
 			return a, nil
 		}
-		return a, a.mutate(flash{kind: flashEdit, text: "session recorded"}, func() error {
-			_, err := a.store.CreateSession(a.ctx, msg.taskID, msg.externalID, msg.cwd, msg.label)
-			return err
-		})
+		return a, tea.Batch(
+			a.mutate(flash{kind: flashEdit, text: "session recorded"}, func() error {
+				_, err := a.store.CreateSession(a.ctx, msg.taskID, msg.externalID, msg.cwd, msg.label)
+				return err
+			}),
+			a.recapSessionCmd(msg.taskID, msg.cwd, msg.externalID, nil),
+		)
 
 	case sessionResumedMsg:
 		if msg.err != nil {
 			a.status = flash{text: "claude: " + msg.err.Error(), isErr: true}
 			return a, nil
 		}
-		return a, a.mutate(flash{kind: flashEdit, text: "session resumed"}, func() error {
-			return a.store.TouchSession(a.ctx, msg.sessionRowID)
-		})
+		return a, tea.Batch(
+			a.mutate(flash{kind: flashEdit, text: "session resumed"}, func() error {
+				return a.store.TouchSession(a.ctx, msg.sessionRowID)
+			}),
+			a.recapSessionCmd(msg.taskID, msg.cwd, msg.externalID, &msg.since),
+		)
 
 	case standupLoadedMsg:
 		if a.mode != modeStandup {

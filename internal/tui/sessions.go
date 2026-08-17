@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -108,8 +109,7 @@ func (a app) chooseSessionPickerRow(row int) (tea.Model, tea.Cmd) {
 		return a, a.openSessionCwdPrompt(taskID, label, a.defaultCwd(sessions))
 	}
 	if i := row - 1; i >= 0 && i < len(sessions) {
-		sess := sessions[i]
-		return a, resumeSessionCmd(sess.ID, sess.Cwd, sess.ExternalID)
+		return a, resumeSessionCmd(sessions[i])
 	}
 	return a, nil
 }
@@ -133,14 +133,81 @@ func launchSessionCmd(taskID int64, cwd, label string) tea.Cmd {
 }
 
 // resumeSessionCmd reopens an existing session in its stored directory.
-func resumeSessionCmd(sessionRowID int64, cwd, externalID string) tea.Cmd {
+// It snapshots the transcript's current line count before handing off
+// the terminal — recorded on the resulting msg as `since` — so a later
+// recap can scope itself to only what's appended after this point (see
+// agent.TranscriptExcerptSince). A read error here just means an
+// unscoped recap later, not a failure to resume, so it's swallowed.
+func resumeSessionCmd(sess task.Session) tea.Cmd {
 	if err := agent.CheckInstalled(); err != nil {
 		return errCmd(err)
 	}
-	c := agent.ResumeCmd(cwd, externalID)
+	since, _ := agent.TranscriptLineCount(sess.Cwd, sess.ExternalID)
+	c := agent.ResumeCmd(sess.Cwd, sess.ExternalID)
 	return tea.ExecProcess(c, func(err error) tea.Msg {
-		return sessionResumedMsg{sessionRowID: sessionRowID, err: err}
+		return sessionResumedMsg{
+			sessionRowID: sess.ID,
+			taskID:       sess.TaskID,
+			cwd:          sess.Cwd,
+			externalID:   sess.ExternalID,
+			since:        since,
+			err:          err,
+		}
 	})
+}
+
+// recapNotePrefix marks a log entry as an auto-generated session recap,
+// not hand-typed, so the LOG section reads sensibly next to manual
+// notes — a plain-text convention, not a schema change (see
+// docs/agent-sessions-plan.md §5).
+const recapNotePrefix = "[Claude] Session recap — "
+
+// runRecap executes the headless recap call and returns its trimmed
+// output. A package-level var, not a direct call to agent.RecapCmd, so
+// tests can swap in a stub that never shells out to the real claude
+// binary — recapSessionCmd fires from the same Update path
+// sessions_test.go already drives with drive(), and this repo's own dev
+// environment has claude installed, so a hard-coded exec call here would
+// make `go test` intermittently invoke a real CLI call. excerpt is
+// forwarded straight to agent.RecapPrompt to scope a resumed session's
+// recap (see recapSessionCmd); empty means unscoped.
+var runRecap = func(ctx context.Context, cwd, externalID, excerpt string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, agent.RecapTimeout)
+	defer cancel()
+	out, err := agent.RecapCmd(ctx, cwd, externalID, agent.RecapPrompt(excerpt)).Output()
+	return strings.TrimSpace(string(out)), err
+}
+
+// recapSessionCmd fires the headless claude -p follow-up after a
+// session's tea.ExecProcess handoff returns, and stores a successful
+// result as a log entry on the task via Store.AddLogEntry — the fix for
+// "I took a break and lost the thread" (docs/agent-sessions-plan.md §5).
+// It runs fully async and off the update loop, exactly like
+// captureTask's Jira lookup, and swallows any failure — claude
+// erroring, timing out, or returning nothing — by returning a nil Msg
+// rather than an error flash: losing an automatic recap isn't something
+// the user needs to act on, unlike a genuine store failure.
+//
+// since is nil for a freshly launched session (the whole transcript is
+// new, so the recap is naturally unscoped) and non-nil for a resumed
+// one — the transcript line count at the moment it was resumed
+// (sessionResumedMsg.since), used to pull just the new turns via
+// agent.TranscriptExcerptSince and scope the recap to them.
+func (a app) recapSessionCmd(taskID int64, cwd, externalID string, since *int) tea.Cmd {
+	return func() tea.Msg {
+		var excerpt string
+		if since != nil {
+			excerpt, _ = agent.TranscriptExcerptSince(cwd, externalID, *since)
+		}
+		body, err := runRecap(a.ctx, cwd, externalID, excerpt)
+		if err != nil || body == "" {
+			return nil
+		}
+		if _, err := a.store.AddLogEntry(a.ctx, &taskID, recapNotePrefix+body); err != nil {
+			return errMsg{err}
+		}
+		return refreshMsg{status: flash{kind: flashEdit, text: "session recap logged"}}
+	}
 }
 
 // sessionPickerView renders the chooser box: numbered session rows below
