@@ -38,16 +38,28 @@ func CheckInstalled() error {
 // LaunchCmd builds the command for a brand-new session pinned to
 // sessionID (see NewSessionID), running in cwd. label sets the display
 // name shown in Claude Code's own /resume picker and terminal title.
-func LaunchCmd(cwd, sessionID, label string) *exec.Cmd {
-	c := exec.Command(binary, "--session-id", sessionID, "-n", label)
+// mcpConfigPath, when non-empty (see WriteMCPConfig), wires the
+// session's task-bound MCP tools via --mcp-config.
+func LaunchCmd(cwd, sessionID, label, mcpConfigPath string) *exec.Cmd {
+	args := []string{"--session-id", sessionID, "-n", label}
+	if mcpConfigPath != "" {
+		args = append(args, "--mcp-config", mcpConfigPath)
+	}
+	c := exec.Command(binary, args...)
 	c.Dir = cwd
 	return c
 }
 
 // ResumeCmd builds the command to reopen an existing session by its
-// external id, in the directory it was stored against.
-func ResumeCmd(cwd, externalID string) *exec.Cmd {
-	c := exec.Command(binary, "--resume", externalID)
+// external id, in the directory it was stored against. mcpConfigPath is
+// as in LaunchCmd — resuming is "continue the work," not just "reread
+// the transcript," so tools should be there either time.
+func ResumeCmd(cwd, externalID, mcpConfigPath string) *exec.Cmd {
+	args := []string{"--resume", externalID}
+	if mcpConfigPath != "" {
+		args = append(args, "--mcp-config", mcpConfigPath)
+	}
+	c := exec.Command(binary, args...)
 	c.Dir = cwd
 	return c
 }

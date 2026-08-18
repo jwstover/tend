@@ -8,12 +8,16 @@ import (
 	"os"
 
 	"github.com/jwstover/tend/internal/cli"
+	"github.com/jwstover/tend/internal/mcpserver"
 	"github.com/jwstover/tend/internal/store"
 	"github.com/jwstover/tend/internal/tui"
 )
 
 func main() {
 	open := func(ctx context.Context, dbPath string) (cli.Store, error) {
+		return store.Open(ctx, dbPath)
+	}
+	openMCP := func(ctx context.Context, dbPath string) (mcpserver.Store, error) {
 		return store.Open(ctx, dbPath)
 	}
 	runTUI := func(ctx context.Context, dbPath string) error {
@@ -24,7 +28,7 @@ func main() {
 		defer s.Close()
 		return tui.Run(ctx, s, dbPath)
 	}
-	if err := cli.Execute(open, runTUI); err != nil {
+	if err := cli.Execute(open, runTUI, openMCP); err != nil {
 		fmt.Fprintln(os.Stderr, "tend:", err)
 		os.Exit(1)
 	}

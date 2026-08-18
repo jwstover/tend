@@ -29,7 +29,7 @@ func TestNewSessionID(t *testing.T) {
 }
 
 func TestLaunchCmd(t *testing.T) {
-	c := LaunchCmd("/tmp/work", "abc-123", "fix the bug")
+	c := LaunchCmd("/tmp/work", "abc-123", "fix the bug", "")
 	if c.Dir != "/tmp/work" {
 		t.Errorf("Dir = %q, want /tmp/work", c.Dir)
 	}
@@ -39,12 +39,28 @@ func TestLaunchCmd(t *testing.T) {
 	}
 }
 
+func TestLaunchCmdWithMCPConfig(t *testing.T) {
+	c := LaunchCmd("/tmp/work", "abc-123", "fix the bug", "/tmp/mcp.json")
+	want := []string{binary, "--session-id", "abc-123", "-n", "fix the bug", "--mcp-config", "/tmp/mcp.json"}
+	if got := c.Args; !equalArgs(got, want) {
+		t.Errorf("Args = %v, want %v", got, want)
+	}
+}
+
 func TestResumeCmd(t *testing.T) {
-	c := ResumeCmd("/tmp/work", "abc-123")
+	c := ResumeCmd("/tmp/work", "abc-123", "")
 	if c.Dir != "/tmp/work" {
 		t.Errorf("Dir = %q, want /tmp/work", c.Dir)
 	}
 	want := []string{binary, "--resume", "abc-123"}
+	if got := c.Args; !equalArgs(got, want) {
+		t.Errorf("Args = %v, want %v", got, want)
+	}
+}
+
+func TestResumeCmdWithMCPConfig(t *testing.T) {
+	c := ResumeCmd("/tmp/work", "abc-123", "/tmp/mcp.json")
+	want := []string{binary, "--resume", "abc-123", "--mcp-config", "/tmp/mcp.json"}
 	if got := c.Args; !equalArgs(got, want) {
 		t.Errorf("Args = %v, want %v", got, want)
 	}

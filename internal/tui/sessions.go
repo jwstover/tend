@@ -108,7 +108,7 @@ func (a app) chooseSessionPickerRow(row int) (tea.Model, tea.Cmd) {
 		return a, a.openSessionCwdPrompt(taskID, label, a.defaultCwd(sessions))
 	}
 	if i := row - 1; i >= 0 && i < len(sessions) {
-		return a, resumeSessionCmd(sessions[i])
+		return a, resumeSessionCmd(sessions[i], a.dbPath)
 	}
 	return a, nil
 }
@@ -116,8 +116,11 @@ func (a app) chooseSessionPickerRow(row int) (tea.Model, tea.Cmd) {
 // launchSessionCmd pins a fresh session id, suspends the TUI, and hands
 // the terminal to claude. The store row is written only once the process
 // returns cleanly (see sessionFinishedMsg), mirroring editBodyCmd's
-// don't-save-on-error handling for $EDITOR.
-func launchSessionCmd(taskID int64, cwd, label string) tea.Cmd {
+// don't-save-on-error handling for $EDITOR. dbPath wires the session's
+// task-bound MCP tools (docs/agent-sessions-plan.md §9.2); a config
+// write failure just means no MCP tools this session, not a failure to
+// launch, so it's swallowed rather than surfaced as errCmd.
+func launchSessionCmd(taskID int64, cwd, label, dbPath string) tea.Cmd {
 	if err := agent.CheckInstalled(); err != nil {
 		return errCmd(err)
 	}
@@ -125,8 +128,10 @@ func launchSessionCmd(taskID int64, cwd, label string) tea.Cmd {
 	if err != nil {
 		return errCmd(err)
 	}
-	c := agent.LaunchCmd(cwd, id, label)
+	mcpPath, mcpCleanup, _ := agent.WriteMCPConfig(taskID, dbPath)
+	c := agent.LaunchCmd(cwd, id, label, mcpPath)
 	return tea.ExecProcess(c, func(err error) tea.Msg {
+		mcpCleanup()
 		return sessionFinishedMsg{taskID: taskID, externalID: id, cwd: cwd, label: label, err: err}
 	})
 }
@@ -137,13 +142,16 @@ func launchSessionCmd(taskID int64, cwd, label string) tea.Cmd {
 // recap can scope itself to only what's appended after this point (see
 // agent.TranscriptExcerptSince). A read error here just means an
 // unscoped recap later, not a failure to resume, so it's swallowed.
-func resumeSessionCmd(sess task.Session) tea.Cmd {
+// dbPath is as in launchSessionCmd.
+func resumeSessionCmd(sess task.Session, dbPath string) tea.Cmd {
 	if err := agent.CheckInstalled(); err != nil {
 		return errCmd(err)
 	}
 	since, _ := agent.TranscriptLineCount(sess.Cwd, sess.ExternalID)
-	c := agent.ResumeCmd(sess.Cwd, sess.ExternalID)
+	mcpPath, mcpCleanup, _ := agent.WriteMCPConfig(sess.TaskID, dbPath)
+	c := agent.ResumeCmd(sess.Cwd, sess.ExternalID, mcpPath)
 	return tea.ExecProcess(c, func(err error) tea.Msg {
+		mcpCleanup()
 		return sessionResumedMsg{
 			sessionRowID: sess.ID,
 			taskID:       sess.TaskID,

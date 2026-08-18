@@ -4,9 +4,11 @@
 > launched from tend via `r`, confirming session-id pinning, terminal handoff, and transcript
 > resolution work against the real `claude` CLI. Phase 2's recap logging is also implemented and
 > manually confirmed (2026-08-17); its auto-naming half is implemented and unit-tested but not yet
-> manually confirmed against the real CLI. Phases 3-5 are unstarted. This is a project-specific
-> addendum to `AGENTS.md`, not a replacement for it — the layering, conventions, and commit rules
-> in `AGENTS.md` still govern everything built here.
+> manually confirmed against the real CLI. Phase 5 (MCP task read/write) is implemented, unit- and
+> integration-tested, and manually confirmed (2026-08-18) with a real `tend mcp` subprocess driven
+> over stdio JSON-RPC end to end against a live SQLite file. Phases 3-4 are unstarted. This is a
+> project-specific addendum to `AGENTS.md`, not a replacement for it — the layering, conventions,
+> and commit rules in `AGENTS.md` still govern everything built here.
 
 ## 0. The problem
 
@@ -450,3 +452,24 @@ pane, with no manual `tend` interaction and no scratch markdown file involved.
 
 **Sequencing:** independent of Phase 2/3/4 — no ordering dependency. Reasonable to build next
 given it's the directly-requested motivation for this doc's own drafting process.
+
+**Implemented (2026-08-18), as designed above with one simplification.** `internal/mcpserver`
+(`server.go`, `tools.go`, `store.go`), `tend mcp` (`internal/cli/mcp.go`), and
+`agent.WriteMCPConfig` (`internal/agent/mcp_config.go`) landed together with `LaunchCmd`/
+`ResumeCmd` gaining an `mcpConfigPath` parameter and `internal/tui/sessions.go` wiring it through
+both launch and resume, cleaning up the temp config file once the terminal handoff returns —
+matching §9.2 and §9.5 exactly. All nine tools from §9.3's table are registered via the generic
+`mcp.AddTool`, which infers each tool's JSON input schema from the handler's argument struct
+(required vs. optional falls out of `omitempty`/pointer fields), so there's no hand-written schema
+to keep in sync with the Go types. Covered by `internal/mcpserver/server_test.go` (an in-memory
+transport pair driving real tool calls against a fake `Store`), `internal/agent/mcp_config_test.go`,
+and a manual end-to-end pass: a real `tend mcp` subprocess driven over stdio JSON-RPC against a live
+SQLite file, confirming `get_current_task`, `add_log_entry`, and `create_subtask` all land real rows
+visible to `tend ls`/the log table.
+
+The one deviation from the design as written: `MCPStoreFactory`/`newMcpCmd` take a zero-arg
+`func(ctx) (mcpserver.Store, error)` closure (mirroring `root.go`'s existing `openHere` pattern for
+`cli.Store`) rather than threading `--db` through as an explicit function parameter — `--db` is
+still a real flag on `tend mcp` (inherited from the persistent root flag, resolved the same way
+every other subcommand resolves it), just not part of the factory's Go signature. Behavior matches
+§9.2/§9.5 exactly; only the internal plumbing differs from the sketch.

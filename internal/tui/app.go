@@ -49,8 +49,9 @@ type Store interface {
 	UpdateSessionLabel(ctx context.Context, externalID, label string) error
 }
 
-// Run starts the TUI and blocks until it exits. dbPath is display-only
-// (the loading frame); the store already owns the connection.
+// Run starts the TUI and blocks until it exits. dbPath is shown on the
+// loading frame and also passed to launched/resumed sessions' --mcp-config
+// (see agent.WriteMCPConfig) so `tend mcp` can open the same database.
 func Run(ctx context.Context, s Store, dbPath string) error {
 	p := tea.NewProgram(newApp(ctx, s, dbPath), tea.WithContext(ctx))
 	if _, err := p.Run(); err != nil {
@@ -1182,7 +1183,7 @@ func (a app) submitPrompt() (tea.Model, tea.Cmd) {
 		if value == "" {
 			return a, nil
 		}
-		return a, launchSessionCmd(target, value, label)
+		return a, launchSessionCmd(target, value, label, a.dbPath)
 	}
 	return a, nil
 }
