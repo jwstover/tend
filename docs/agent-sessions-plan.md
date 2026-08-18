@@ -7,9 +7,9 @@
 > manually confirmed against the real CLI. Phase 5 (MCP task read/write) is implemented, unit- and
 > integration-tested, and manually confirmed (2026-08-18) with a real `tend mcp` subprocess driven
 > over stdio JSON-RPC end to end against a live SQLite file. Phase 4.1 (tmux-backed
-> launch/attach/background) is implemented and unit-tested, with its tmux behavior verified
-> end-to-end against real tmux 3.7b using a stand-in for `claude`, but not yet manually confirmed
-> against the real CLI from tend's own UI. Phase 3 and Phases 4.2-4.4 are unstarted. This is a
+> launch/attach/background) is implemented, unit-tested, verified end-to-end against real tmux
+> 3.7b, and manually confirmed (2026-08-18) against the real `claude` CLI from tend's own UI —
+> detach and reattach both work. Phase 3 and Phases 4.2-4.4 are unstarted. This is a
 > project-specific addendum to `AGENTS.md`, not a replacement for it — the layering, conventions,
 > and commit rules in `AGENTS.md` still govern everything built here.
 
@@ -323,8 +323,11 @@ tmux session: launch attaches with no nesting guard; `C-h` exits the client with
 session stays alive; `AttachCmd` reattaches; the inner process exiting destroys the session and the
 server, leaving no orphan. Unit tests cover argv construction (`internal/agent/tmux_test.go`), the
 schema round-trip (`internal/store/store_test.go`), and the recap-skip behavior
-(`internal/tui/background_test.go`). Not yet exercised against the real `claude` binary from tend's
-own UI — that's the manual confirmation step, as in Phases 1 and 2.
+(`internal/tui/background_test.go`).
+
+**Manually confirmed (2026-08-18)** against the real `claude` binary from tend's own UI: detach and
+reattach both behave as designed, and neither `C-Space` nor `C-h` is claimed by Claude Code's TUI,
+so the generated config needs no adjustment.
 
 **Out of scope for 8.1:** cross-host reconnect (needs SSH-forwarded sockets — materially bigger, no
 concrete need); a background-only launch (`-d`, never attach); a kill affordance for a wedged
