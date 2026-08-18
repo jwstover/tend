@@ -685,7 +685,7 @@ func TestAgentSessions(t *testing.T) {
 		t.Fatalf("ListSessionsForTask before any sessions = %+v, %v, want empty", empty, err)
 	}
 
-	first, err := s.CreateSession(ctx, parent.ID, "ext-1", "/tmp/work", parent.Title)
+	first, err := s.CreateSession(ctx, parent.ID, "ext-1", "/tmp/work", parent.Title, "")
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -693,7 +693,7 @@ func TestAgentSessions(t *testing.T) {
 		t.Errorf("CreateSession result = %+v, want it to echo the inputs", first)
 	}
 
-	second, err := s.CreateSession(ctx, parent.ID, "ext-2", "/tmp/other", parent.Title)
+	second, err := s.CreateSession(ctx, parent.ID, "ext-2", "/tmp/other", parent.Title, "")
 	if err != nil {
 		t.Fatalf("CreateSession (second): %v", err)
 	}
@@ -724,7 +724,7 @@ func TestUpdateSessionLabel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AddTask: %v", err)
 	}
-	if _, err := s.CreateSession(ctx, parent.ID, "ext-1", "/tmp/work", parent.Title); err != nil {
+	if _, err := s.CreateSession(ctx, parent.ID, "ext-1", "/tmp/work", parent.Title, ""); err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
 
@@ -749,7 +749,7 @@ func TestAgentSessionsCascadeDeleteWithTask(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AddTask: %v", err)
 	}
-	if _, err := s.CreateSession(ctx, parent.ID, "ext-1", "/tmp/work", parent.Title); err != nil {
+	if _, err := s.CreateSession(ctx, parent.ID, "ext-1", "/tmp/work", parent.Title, ""); err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
 
@@ -763,5 +763,89 @@ func TestAgentSessionsCascadeDeleteWithTask(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Errorf("sessions survived task delete: %+v, want cascaded away", got)
+	}
+}
+
+func TestCreateSessionStoresTmuxName(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	parent, err := s.AddTask(ctx, "fix the bug")
+	if err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+
+	sess, err := s.CreateSession(ctx, parent.ID, "ext-1", "/tmp/work", parent.Title, "tend-ext-1")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if sess.TmuxSession != "tend-ext-1" {
+		t.Errorf("TmuxSession = %q, want tend-ext-1", sess.TmuxSession)
+	}
+	if sess.NeedsRecap {
+		t.Error("NeedsRecap = true on a fresh session, want false")
+	}
+
+	got, err := s.ListSessionsForTask(ctx, parent.ID)
+	if err != nil {
+		t.Fatalf("ListSessionsForTask: %v", err)
+	}
+	if len(got) != 1 || got[0].TmuxSession != "tend-ext-1" {
+		t.Errorf("sessions = %+v, want the tmux name to survive a round trip", got)
+	}
+}
+
+// A session launched without tmux stores an empty name, which reads as
+// "not attachable" — the same answer has-session would give.
+func TestCreateSessionWithoutTmux(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	parent, err := s.AddTask(ctx, "fix the bug")
+	if err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	sess, err := s.CreateSession(ctx, parent.ID, "ext-1", "/tmp/work", parent.Title, "")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if sess.TmuxSession != "" {
+		t.Errorf("TmuxSession = %q, want empty", sess.TmuxSession)
+	}
+}
+
+func TestSetSessionNeedsRecap(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	parent, err := s.AddTask(ctx, "fix the bug")
+	if err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	if _, err := s.CreateSession(ctx, parent.ID, "ext-1", "/tmp/work", parent.Title, "tend-ext-1"); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	if err := s.SetSessionNeedsRecap(ctx, "ext-1", true); err != nil {
+		t.Fatalf("SetSessionNeedsRecap(true): %v", err)
+	}
+	got, err := s.ListSessionsForTask(ctx, parent.ID)
+	if err != nil {
+		t.Fatalf("ListSessionsForTask: %v", err)
+	}
+	if len(got) != 1 || !got[0].NeedsRecap {
+		t.Fatalf("sessions = %+v, want NeedsRecap true", got)
+	}
+
+	// Phase 4.2 clears it; make sure the round trip works both ways now.
+	if err := s.SetSessionNeedsRecap(ctx, "ext-1", false); err != nil {
+		t.Fatalf("SetSessionNeedsRecap(false): %v", err)
+	}
+	got, err = s.ListSessionsForTask(ctx, parent.ID)
+	if err != nil {
+		t.Fatalf("ListSessionsForTask: %v", err)
+	}
+	if len(got) != 1 || got[0].NeedsRecap {
+		t.Fatalf("sessions = %+v, want NeedsRecap cleared", got)
 	}
 }

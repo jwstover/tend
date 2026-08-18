@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -113,13 +114,40 @@ func (a app) chooseSessionPickerRow(row int) (tea.Model, tea.Cmd) {
 	return a, nil
 }
 
+// wrapInTmux rewrites a direct claude command to run inside a named tmux
+// session on tend's own server, so detaching backgrounds it instead of
+// ending it (docs/agent-sessions-plan.md §8.1). Returns the unmodified
+// command with an empty name when tmux isn't installed or its config
+// can't be written — launch and resume then behave exactly as they did
+// before §8.1, just without backgrounding. tmux is a capability here,
+// never a requirement.
+func wrapInTmux(c *exec.Cmd, externalID string) (wrapped *exec.Cmd, name, confPath string) {
+	if !agent.TmuxInstalled() {
+		return c, "", ""
+	}
+	confPath, err := agent.WriteConfig()
+	if err != nil {
+		return c, "", ""
+	}
+	name = agent.SessionName(externalID)
+	return agent.WrapTmux(c, name, confPath), name, confPath
+}
+
 // launchSessionCmd pins a fresh session id, suspends the TUI, and hands
-// the terminal to claude. The store row is written only once the process
-// returns cleanly (see sessionFinishedMsg), mirroring editBodyCmd's
-// don't-save-on-error handling for $EDITOR. dbPath wires the session's
-// task-bound MCP tools (docs/agent-sessions-plan.md §9.2); a config
-// write failure just means no MCP tools this session, not a failure to
-// launch, so it's swallowed rather than surfaced as errCmd.
+// the terminal to claude — wrapped in tmux where available, so tmux's
+// detach chord backgrounds the session rather than ending it. The store
+// row is written only once the process returns cleanly (see
+// sessionFinishedMsg), mirroring editBodyCmd's don't-save-on-error
+// handling for $EDITOR. dbPath wires the session's task-bound MCP tools
+// (docs/agent-sessions-plan.md §9.2); a config write failure just means
+// no MCP tools this session, not a failure to launch, so it's swallowed
+// rather than surfaced as errCmd.
+//
+// The MCP config is only cleaned up when the session is really over. A
+// backgrounded session still has a live claude process holding that
+// config, and deleting it out from under a running session would break
+// its tools on any reconnect — leaking a small temp file is the cheaper
+// mistake.
 func launchSessionCmd(taskID int64, cwd, label, dbPath string) tea.Cmd {
 	if err := agent.CheckInstalled(); err != nil {
 		return errCmd(err)
@@ -129,10 +157,21 @@ func launchSessionCmd(taskID int64, cwd, label, dbPath string) tea.Cmd {
 		return errCmd(err)
 	}
 	mcpPath, mcpCleanup, _ := agent.WriteMCPConfig(taskID, dbPath)
-	c := agent.LaunchCmd(cwd, id, label, mcpPath)
+	c, tmuxName, confPath := wrapInTmux(agent.LaunchCmd(cwd, id, label, mcpPath), id)
 	return tea.ExecProcess(c, func(err error) tea.Msg {
-		mcpCleanup()
-		return sessionFinishedMsg{taskID: taskID, externalID: id, cwd: cwd, label: label, err: err}
+		bg := err == nil && agent.HasSession(tmuxName, confPath)
+		if !bg {
+			mcpCleanup()
+		}
+		return sessionFinishedMsg{
+			taskID:       taskID,
+			externalID:   id,
+			cwd:          cwd,
+			label:        label,
+			tmuxSession:  tmuxName,
+			backgrounded: bg,
+			err:          err,
+		}
 	})
 }
 
@@ -143,21 +182,56 @@ func launchSessionCmd(taskID int64, cwd, label, dbPath string) tea.Cmd {
 // agent.TranscriptExcerptSince). A read error here just means an
 // unscoped recap later, not a failure to resume, so it's swallowed.
 // dbPath is as in launchSessionCmd.
+//
+// It takes one of two paths. If the session's tmux session is still
+// alive — it was backgrounded, possibly by a different tend process on
+// this host — it attaches to the running claude rather than starting a
+// second one against the same session id. This is the cross-instance
+// reconnect case, and it needs no IPC beyond what tend already shares:
+// the sqlite DB and the tmux socket. Otherwise (never backgrounded, or
+// the server died with the host) it falls back to launching `claude
+// --resume` fresh, wrapped in tmux so this time it can be backgrounded.
 func resumeSessionCmd(sess task.Session, dbPath string) tea.Cmd {
 	if err := agent.CheckInstalled(); err != nil {
 		return errCmd(err)
 	}
 	since, _ := agent.TranscriptLineCount(sess.Cwd, sess.ExternalID)
-	mcpPath, mcpCleanup, _ := agent.WriteMCPConfig(sess.TaskID, dbPath)
-	c := agent.ResumeCmd(sess.Cwd, sess.ExternalID, mcpPath)
+
+	// A pre-§8.1 row has no stored name; derive the one it would have
+	// had, so an old session becomes attachable from its first resume.
+	name := sess.TmuxSession
+	if name == "" {
+		name = agent.SessionName(sess.ExternalID)
+	}
+
+	var c *exec.Cmd
+	var confPath string
+	var mcpCleanup = func() {}
+	if agent.TmuxInstalled() {
+		confPath, _ = agent.WriteConfig()
+	}
+	if agent.HasSession(name, confPath) {
+		// Already running: just take the terminal back. No new claude
+		// process, so no MCP config is needed — the live one has its own.
+		c = agent.AttachCmd(name, confPath)
+	} else {
+		var mcpPath string
+		mcpPath, mcpCleanup, _ = agent.WriteMCPConfig(sess.TaskID, dbPath)
+		c, name, confPath = wrapInTmux(agent.ResumeCmd(sess.Cwd, sess.ExternalID, mcpPath), sess.ExternalID)
+	}
+
 	return tea.ExecProcess(c, func(err error) tea.Msg {
-		mcpCleanup()
+		bg := err == nil && agent.HasSession(name, confPath)
+		if !bg {
+			mcpCleanup()
+		}
 		return sessionResumedMsg{
 			sessionRowID: sess.ID,
 			taskID:       sess.TaskID,
 			cwd:          sess.Cwd,
 			externalID:   sess.ExternalID,
 			since:        since,
+			backgrounded: bg,
 			err:          err,
 		}
 	})
