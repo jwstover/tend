@@ -20,6 +20,17 @@ func newTestStore(t *testing.T) *Store {
 	return s
 }
 
+// mustAdd captures a task or fails the test, for the many session tests
+// that need a parent row and don't care how it got there.
+func mustAdd(t *testing.T, s *Store, title string) task.Task {
+	t.Helper()
+	created, err := s.AddTask(context.Background(), title)
+	if err != nil {
+		t.Fatalf("AddTask(%q): %v", title, err)
+	}
+	return created
+}
+
 func TestAddTaskDefaults(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
@@ -847,5 +858,153 @@ func TestSetSessionNeedsRecap(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].NeedsRecap {
 		t.Fatalf("sessions = %+v, want NeedsRecap cleared", got)
+	}
+}
+
+// Status starts at the honest default rather than guessing: a session
+// tend has never heard from is unknown, not idle.
+func TestSessionStatusDefaultsToUnknown(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	parent := mustAdd(t, s, "do the thing")
+
+	sess, err := s.CreateSession(ctx, parent.ID, "ext-1", "/tmp/work", parent.Title, "tend-ext-1")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if sess.Status != task.SessionUnknown {
+		t.Errorf("Status = %q, want %q", sess.Status, task.SessionUnknown)
+	}
+	if !sess.StatusUpdatedAt.IsZero() {
+		t.Errorf("StatusUpdatedAt = %v, want zero — nothing has been observed yet", sess.StatusUpdatedAt)
+	}
+}
+
+func TestSetSessionStatusRoundTrips(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	parent := mustAdd(t, s, "do the thing")
+	if _, err := s.CreateSession(ctx, parent.ID, "ext-1", "/tmp/work", parent.Title, "tend-ext-1"); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	if err := s.SetSessionStatus(ctx, "ext-1", task.SessionBlocked); err != nil {
+		t.Fatalf("SetSessionStatus: %v", err)
+	}
+	sessions, err := s.ListSessionsForTask(ctx, parent.ID)
+	if err != nil {
+		t.Fatalf("ListSessionsForTask: %v", err)
+	}
+	if sessions[0].Status != task.SessionBlocked {
+		t.Errorf("Status = %q, want %q", sessions[0].Status, task.SessionBlocked)
+	}
+	if sessions[0].StatusUpdatedAt.IsZero() {
+		t.Error("StatusUpdatedAt is zero after a status write")
+	}
+}
+
+// A hook fired during a brand-new session's first run legitimately
+// matches no row — agent_sessions rows are written when the terminal
+// handoff returns, not at launch. That must not be an error, or every
+// such session would print a failure into the user's transcript.
+func TestSetSessionStatusUnknownSessionIsNotAnError(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	if err := s.SetSessionStatus(ctx, "never-seen", task.SessionIdle); err != nil {
+		t.Fatalf("SetSessionStatus on an unknown session: %v", err)
+	}
+}
+
+func TestListSessionsNeedingRecap(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	parent := mustAdd(t, s, "do the thing")
+	for _, ext := range []string{"ext-1", "ext-2"} {
+		if _, err := s.CreateSession(ctx, parent.ID, ext, "/tmp/work", parent.Title, "tend-"+ext); err != nil {
+			t.Fatalf("CreateSession %s: %v", ext, err)
+		}
+	}
+	if err := s.SetSessionNeedsRecap(ctx, "ext-2", true); err != nil {
+		t.Fatalf("SetSessionNeedsRecap: %v", err)
+	}
+
+	owed, err := s.ListSessionsNeedingRecap(ctx)
+	if err != nil {
+		t.Fatalf("ListSessionsNeedingRecap: %v", err)
+	}
+	if len(owed) != 1 || owed[0].ExternalID != "ext-2" {
+		t.Fatalf("owed = %+v, want just ext-2", owed)
+	}
+}
+
+// Deliberately not filtered on status: a host that dies never gets to
+// fire SessionEnd, and a status-gated query would strand that session's
+// recap forever.
+func TestListSessionsNeedingRecapIgnoresStatus(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	parent := mustAdd(t, s, "do the thing")
+	if _, err := s.CreateSession(ctx, parent.ID, "ext-1", "/tmp/work", parent.Title, "tend-ext-1"); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if err := s.SetSessionNeedsRecap(ctx, "ext-1", true); err != nil {
+		t.Fatalf("SetSessionNeedsRecap: %v", err)
+	}
+
+	owed, err := s.ListSessionsNeedingRecap(ctx)
+	if err != nil {
+		t.Fatalf("ListSessionsNeedingRecap: %v", err)
+	}
+	if len(owed) != 1 {
+		t.Fatalf("owed = %d, want the session with status still unknown", len(owed))
+	}
+}
+
+// The two-instance guard: claiming is what decides who runs the expensive
+// recap call, so exactly one caller may win.
+func TestClaimSessionRecapIsExclusive(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	parent := mustAdd(t, s, "do the thing")
+	if _, err := s.CreateSession(ctx, parent.ID, "ext-1", "/tmp/work", parent.Title, "tend-ext-1"); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if err := s.SetSessionNeedsRecap(ctx, "ext-1", true); err != nil {
+		t.Fatalf("SetSessionNeedsRecap: %v", err)
+	}
+
+	first, err := s.ClaimSessionRecap(ctx, "ext-1")
+	if err != nil {
+		t.Fatalf("ClaimSessionRecap: %v", err)
+	}
+	if !first {
+		t.Fatal("first claim = false, want the debt claimed")
+	}
+	second, err := s.ClaimSessionRecap(ctx, "ext-1")
+	if err != nil {
+		t.Fatalf("second ClaimSessionRecap: %v", err)
+	}
+	if second {
+		t.Error("second claim = true, want false — two instances would both recap")
+	}
+
+	owed, err := s.ListSessionsNeedingRecap(ctx)
+	if err != nil {
+		t.Fatalf("ListSessionsNeedingRecap: %v", err)
+	}
+	if len(owed) != 0 {
+		t.Errorf("owed = %+v, want the claim to have cleared the debt", owed)
+	}
+}
+
+func TestClaimSessionRecapWithNoDebt(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	got, err := s.ClaimSessionRecap(ctx, "never-seen")
+	if err != nil {
+		t.Fatalf("ClaimSessionRecap: %v", err)
+	}
+	if got {
+		t.Error("claimed a debt that was never owed")
 	}
 }

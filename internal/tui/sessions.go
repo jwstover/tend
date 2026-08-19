@@ -157,11 +157,13 @@ func launchSessionCmd(taskID int64, cwd, label, dbPath string) tea.Cmd {
 		return errCmd(err)
 	}
 	mcpPath, mcpCleanup, _ := agent.WriteMCPConfig(taskID, dbPath)
-	c, tmuxName, confPath := wrapInTmux(agent.LaunchCmd(cwd, id, label, mcpPath), id)
+	hooksPath, hooksCleanup, _ := agent.WriteHookSettings(dbPath)
+	c, tmuxName, confPath := wrapInTmux(agent.LaunchCmd(cwd, id, label, mcpPath, hooksPath), id)
 	return tea.ExecProcess(c, func(err error) tea.Msg {
 		bg := err == nil && agent.HasSession(tmuxName, confPath)
 		if !bg {
 			mcpCleanup()
+			hooksCleanup()
 		}
 		return sessionFinishedMsg{
 			taskID:       taskID,
@@ -206,24 +208,27 @@ func resumeSessionCmd(sess task.Session, dbPath string) tea.Cmd {
 
 	var c *exec.Cmd
 	var confPath string
-	var mcpCleanup = func() {}
+	var cleanup = func() {}
 	if agent.TmuxInstalled() {
 		confPath, _ = agent.WriteConfig()
 	}
 	if agent.HasSession(name, confPath) {
 		// Already running: just take the terminal back. No new claude
-		// process, so no MCP config is needed — the live one has its own.
+		// process, so neither an MCP config nor a hook settings file is
+		// needed — the live one is already wired with its own.
 		c = agent.AttachCmd(name, confPath)
 	} else {
-		var mcpPath string
-		mcpPath, mcpCleanup, _ = agent.WriteMCPConfig(sess.TaskID, dbPath)
-		c, name, confPath = wrapInTmux(agent.ResumeCmd(sess.Cwd, sess.ExternalID, mcpPath), sess.ExternalID)
+		mcpPath, mcpCleanup, _ := agent.WriteMCPConfig(sess.TaskID, dbPath)
+		hooksPath, hooksCleanup, _ := agent.WriteHookSettings(dbPath)
+		cleanup = func() { mcpCleanup(); hooksCleanup() }
+		c, name, confPath = wrapInTmux(
+			agent.ResumeCmd(sess.Cwd, sess.ExternalID, mcpPath, hooksPath), sess.ExternalID)
 	}
 
 	return tea.ExecProcess(c, func(err error) tea.Msg {
 		bg := err == nil && agent.HasSession(name, confPath)
 		if !bg {
-			mcpCleanup()
+			cleanup()
 		}
 		return sessionResumedMsg{
 			sessionRowID: sess.ID,

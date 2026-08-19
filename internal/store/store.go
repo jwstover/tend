@@ -419,6 +419,73 @@ func (s *Store) SetSessionNeedsRecap(ctx context.Context, externalID string, nee
 	return nil
 }
 
+// SetSessionStatus records what a session's Claude Code hooks last
+// reported about it (docs/agent-sessions-plan.md §8.2), keyed by
+// external_id — the id the hook payload carries as session_id, which is
+// what makes the correlation a lookup rather than a join.
+//
+// A session id with no row is not an error: agent_sessions rows are only
+// written once a session's first terminal handoff *returns*, so hooks
+// fired during a brand-new session's first run legitimately match
+// nothing. The UPDATE affects zero rows and that's the whole story.
+//
+// last_active_at is bumped alongside the status because a hook event is
+// genuine activity — it keeps the resume picker's newest-first ordering
+// honest for a session that's been running in the background.
+func (s *Store) SetSessionStatus(ctx context.Context, externalID string, status task.SessionStatus) error {
+	err := s.q.SetSessionStatus(ctx, gen.SetSessionStatusParams{
+		Status: string(status), ExternalID: externalID,
+	})
+	if err != nil {
+		return fmt.Errorf("setting status for session %s: %w", externalID, err)
+	}
+	return nil
+}
+
+// ListSessionsNeedingRecap returns every session still owing a recap:
+// one that was backgrounded rather than exited, so the recap call was
+// deliberately skipped while it was live (§8.1).
+//
+// Deliberately not filtered to status = 'ended'. A host that dies takes
+// its tmux server and its chance to fire SessionEnd with it, and such a
+// session would be stranded forever by a status filter. The caller
+// decides liveness with `tmux has-session`, which is authoritative in
+// every case — including /clear, which fires SessionEnd while the
+// process keeps running.
+func (s *Store) ListSessionsNeedingRecap(ctx context.Context) ([]task.Session, error) {
+	rows, err := s.q.ListSessionsNeedingRecap(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("listing sessions needing recap: %w", err)
+	}
+	sessions := make([]task.Session, 0, len(rows))
+	for _, row := range rows {
+		sess, err := sessionToDomain(row)
+		if err != nil {
+			return nil, err
+		}
+		sessions = append(sessions, sess)
+	}
+	return sessions, nil
+}
+
+// ClaimSessionRecap atomically takes ownership of a session's owed
+// recap, reporting whether this caller is the one that got it. The
+// UPDATE clears needs_recap only if it was still set, so of two tend
+// instances draining the same debt concurrently exactly one sees true
+// and fires the (expensive, and side-effecting) recap call.
+//
+// Claiming before running the recap rather than after means a recap that
+// then fails loses the debt. That's the intended trade: it bounds the
+// work to one attempt instead of retrying forever, and per §5's existing
+// convention a lost automatic recap isn't something the user can act on.
+func (s *Store) ClaimSessionRecap(ctx context.Context, externalID string) (bool, error) {
+	n, err := s.q.ClaimSessionRecap(ctx, externalID)
+	if err != nil {
+		return false, fmt.Errorf("claiming recap for session %s: %w", externalID, err)
+	}
+	return n > 0, nil
+}
+
 // GetTask loads a single task by id.
 func (s *Store) GetTask(ctx context.Context, id int64) (task.Task, error) {
 	row, err := s.q.GetTask(ctx, id)
@@ -495,16 +562,26 @@ func sessionToDomain(row gen.AgentSession) (task.Session, error) {
 	if err != nil {
 		return task.Session{}, fmt.Errorf("session %d last_active_at: %w", row.ID, err)
 	}
+	// status_updated_at is nullable and, unlike started_at/last_active_at,
+	// an unparseable value is not worth failing the whole read over: it's
+	// a display timestamp on a cached observation, so a bad one degrades
+	// to the zero time (see task.SessionStatus).
+	var statusUpdated time.Time
+	if row.StatusUpdatedAt.Valid {
+		statusUpdated, _ = parseTime(row.StatusUpdatedAt.String)
+	}
 	return task.Session{
-		ID:           row.ID,
-		TaskID:       row.TaskID,
-		ExternalID:   row.ExternalID,
-		Cwd:          row.Cwd,
-		Label:        row.Label,
-		TmuxSession:  row.TmuxSession,
-		NeedsRecap:   row.NeedsRecap != 0,
-		StartedAt:    started,
-		LastActiveAt: lastActive,
+		ID:              row.ID,
+		TaskID:          row.TaskID,
+		ExternalID:      row.ExternalID,
+		Cwd:             row.Cwd,
+		Label:           row.Label,
+		TmuxSession:     row.TmuxSession,
+		NeedsRecap:      row.NeedsRecap != 0,
+		Status:          task.SessionStatus(row.Status),
+		StatusUpdatedAt: statusUpdated,
+		StartedAt:       started,
+		LastActiveAt:    lastActive,
 	}, nil
 }
 

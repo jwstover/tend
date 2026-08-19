@@ -14,7 +14,7 @@ func TestSessionName(t *testing.T) {
 }
 
 func TestWrapTmux(t *testing.T) {
-	inner := LaunchCmd("/tmp/work", "abc-123", "fix the bug", "")
+	inner := LaunchCmd("/tmp/work", "abc-123", "fix the bug", "", "")
 	c := WrapTmux(inner, "tend-abc-123", "/cfg/tmux.conf")
 
 	want := []string{
@@ -34,7 +34,7 @@ func TestWrapTmux(t *testing.T) {
 // inner command after `--` is what guarantees that; a shell-string form
 // would split it and claude would see a truncated -n value.
 func TestWrapTmuxKeepsArgumentBoundaries(t *testing.T) {
-	inner := LaunchCmd("/tmp/work", "abc-123", "fix the flaky retry test", "")
+	inner := LaunchCmd("/tmp/work", "abc-123", "fix the flaky retry test", "", "")
 	c := WrapTmux(inner, "tend-abc-123", "/cfg/tmux.conf")
 
 	var found bool
@@ -52,7 +52,7 @@ func TestWrapTmuxKeepsArgumentBoundaries(t *testing.T) {
 }
 
 func TestWrapTmuxWithoutDirOmitsC(t *testing.T) {
-	inner := LaunchCmd("", "abc-123", "label", "")
+	inner := LaunchCmd("", "abc-123", "label", "", "")
 	c := WrapTmux(inner, "tend-abc-123", "/cfg/tmux.conf")
 	for _, a := range c.Args {
 		if a == "-c" {
