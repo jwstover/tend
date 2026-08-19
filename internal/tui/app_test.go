@@ -791,15 +791,16 @@ func TestExpandCollapseBranch(t *testing.T) {
 	}
 
 	// ⏎ expands one level: the caret flips and the child slides in with
-	// its checkbox; the grandchild stays hidden behind the child's caret.
+	// its state glyph; the grandchild stays hidden behind the child's caret.
 	m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	content = ansi.Strip(m.View().Content)
 	if !strings.Contains(lineWith(content, "parent task"), "▾") {
 		t.Errorf("parent caret did not flip open:\n%s", content)
 	}
 	childLine := lineWith(content, "child step")
-	if !strings.Contains(childLine, "▢") || !strings.Contains(childLine, "▸") {
-		t.Errorf("child row missing checkbox or caret: %q", childLine)
+	inbox := unicodeGlyphs().State[task.StateInbox]
+	if !strings.Contains(childLine, inbox) || !strings.Contains(childLine, "▸") {
+		t.Errorf("child row missing state glyph or caret: %q", childLine)
 	}
 	if strings.Contains(content, "grandchild step") {
 		t.Errorf("grandchild visible before its branch expanded:\n%s", content)
@@ -891,8 +892,8 @@ func TestToggleChildDoneWithX(t *testing.T) {
 		t.Fatalf("child state after x = %s, want done", got.State)
 	}
 	content := ansi.Strip(m.View().Content)
-	if !strings.Contains(lineWith(content, "child step"), "▣") {
-		t.Errorf("done child missing checked box:\n%s", content)
+	if !strings.Contains(lineWith(content, "child step"), unicodeGlyphs().State[task.StateDone]) {
+		t.Errorf("done child missing the done glyph:\n%s", content)
 	}
 	if !strings.Contains(lineWith(content, "parent task"), "1/1") {
 		t.Errorf("parent count not 1/1 after child done:\n%s", content)
@@ -1008,7 +1009,7 @@ func TestAddSubTaskAutoExpands(t *testing.T) {
 		t.Fatalf("ListChildren = %+v, want the new sub-task", children)
 	}
 	content := ansi.Strip(m.View().Content)
-	if !strings.Contains(lineWith(content, "new step"), "▢") {
+	if !strings.Contains(lineWith(content, "new step"), unicodeGlyphs().State[task.StateInbox]) {
 		t.Errorf("new sub-task not visible under its auto-expanded parent:\n%s", content)
 	}
 }

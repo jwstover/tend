@@ -363,13 +363,15 @@ func (d taskDelegate) renderChildRow(it childItem, selected bool, width int) str
 		segs = append(segs, seg{"  ", s.Normal})
 	}
 
-	// Checkbox: sub-task "done" is the done state.
+	// State dot (2), the same three-signal treatment a top-level row
+	// gets: a sub-task in doing or blocked has to read as such rather
+	// than collapsing to an unchecked box.
 	done := it.t.State == task.StateDone
-	if done {
-		segs = append(segs, seg{g.BoxChecked + " ", s.CheckDone})
-	} else {
-		segs = append(segs, seg{g.BoxUnchecked + " ", s.CheckOpen})
+	dot := s.State[it.t.State]
+	if it.t.State == task.StateDoing || it.t.State == task.StateBlocked {
+		dot = dot.Bold(true)
 	}
+	segs = append(segs, seg{g.State[it.t.State] + " ", dot})
 
 	titleStyle := s.Dimmed
 	switch {
