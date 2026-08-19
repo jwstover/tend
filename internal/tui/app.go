@@ -48,6 +48,8 @@ type Store interface {
 	TouchSession(ctx context.Context, id int64) error
 	UpdateSessionLabel(ctx context.Context, externalID, label string) error
 	SetSessionNeedsRecap(ctx context.Context, externalID string, needs bool) error
+	ListSessionsNeedingRecap(ctx context.Context) ([]task.Session, error)
+	ClaimSessionRecap(ctx context.Context, externalID string) (bool, error)
 }
 
 // Run starts the TUI and blocks until it exits. dbPath is shown on the
@@ -176,6 +178,11 @@ type (
 		backgrounded bool
 		err          error
 	}
+	// recapsDrainedMsg carries the backgrounded sessions this instance
+	// successfully claimed the owed recap for (see drainRecapsCmd) —
+	// already claimed in the store, so Update's job is only to fire the
+	// recap calls and account for them against pendingRecaps.
+	recapsDrainedMsg struct{ sessions []task.Session }
 	// recapDoneMsg wraps whatever recapSessionCmd produces — including
 	// nil, on a swallowed failure — so pendingRecaps can be decremented
 	// on every completion, not just the ones that surface a Msg.
@@ -307,7 +314,10 @@ func newApp(ctx context.Context, s Store, dbPath string) app {
 }
 
 func (a app) Init() tea.Cmd {
-	return a.loadTasks(a.mode)
+	// Startup is the one moment guaranteed to happen after a host
+	// reboot, which is exactly when a session backgrounded before the
+	// reboot is owed a recap nobody has settled (see drainRecapsCmd).
+	return tea.Batch(a.loadTasks(a.mode), a.drainRecapsCmd())
 }
 
 func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -430,6 +440,21 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.recapSessionCmd(msg.taskID, msg.cwd, msg.externalID, &msg.since),
 		)
 
+	case recapsDrainedMsg:
+		if len(msg.sessions) == 0 {
+			return a, nil
+		}
+		cmds := make([]tea.Cmd, 0, len(msg.sessions))
+		for _, sess := range msg.sessions {
+			a.pendingRecaps++
+			// since is nil: the transcript marker a resume records lives
+			// only in the memory of the instance that did the resuming,
+			// so a drained recap is unscoped — the pre-§5 behavior, and
+			// still far better than no recap at all.
+			cmds = append(cmds, a.recapSessionCmd(sess.TaskID, sess.Cwd, sess.ExternalID, nil))
+		}
+		return a, tea.Batch(cmds...)
+
 	case recapDoneMsg:
 		a.pendingRecaps = max(a.pendingRecaps-1, 0)
 		if msg.inner == nil {
@@ -454,10 +479,15 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case refreshMsg:
 		a.status = msg.status
+		// Every mutation passes through here, including the one that
+		// records a just-backgrounded session — so returning from a
+		// session is also the moment a previously-owed recap gets
+		// settled. The scan is a single indexed query that finds nothing
+		// in the common case.
 		if a.mode == modeStandup {
-			return a, a.loadStandup()
+			return a, tea.Batch(a.loadStandup(), a.drainRecapsCmd())
 		}
-		return a, a.loadTasks(a.mode)
+		return a, tea.Batch(a.loadTasks(a.mode), a.drainRecapsCmd())
 
 	case statusMsg:
 		a.status = flash(msg)

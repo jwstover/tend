@@ -3,6 +3,8 @@ package tui
 import (
 	"context"
 	"testing"
+
+	"github.com/jwstover/tend/internal/task"
 )
 
 // Backgrounding is the whole point of §8.1, and its defining property is
@@ -12,6 +14,7 @@ import (
 // ran, so an empty log is the assertion.
 func TestBackgroundedSessionSkipsRecap(t *testing.T) {
 	stubRecap(t, "did the thing", nil)
+	stubSessionAlive(t, true)
 	ctx := context.Background()
 	m, s := newTestApp(t)
 	parent, err := s.AddTask(ctx, "do the thing")
@@ -93,6 +96,7 @@ func TestExitedSessionStillRecaps(t *testing.T) {
 // a recap rather than firing one.
 func TestBackgroundedResumeSkipsRecap(t *testing.T) {
 	stubRecap(t, "did more", nil)
+	stubSessionAlive(t, true)
 	ctx := context.Background()
 	m, s := newTestApp(t)
 	parent, err := s.AddTask(ctx, "do the thing")
@@ -129,4 +133,14 @@ func TestBackgroundedResumeSkipsRecap(t *testing.T) {
 	if len(entries) != 0 {
 		t.Errorf("log entries = %+v, want none", entries)
 	}
+}
+
+// stubSessionAlive pins the drain's liveness answer so a test can decide
+// whether a backgrounded session counts as still running, without a real
+// tmux server — the same seam stubRecap provides for the recap call.
+func stubSessionAlive(t *testing.T, alive bool) {
+	t.Helper()
+	prev := sessionAlive
+	sessionAlive = func(task.Session) bool { return alive }
+	t.Cleanup(func() { sessionAlive = prev })
 }

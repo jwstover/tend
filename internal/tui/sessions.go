@@ -242,6 +242,72 @@ func resumeSessionCmd(sess task.Session, dbPath string) tea.Cmd {
 	})
 }
 
+// drainRecapsCmd settles recap debts left by sessions that were
+// backgrounded and never re-attached — the known gap
+// docs/agent-sessions-plan.md §8.1 left open, closed here rather than by
+// a daemon: any tend instance that refreshes picks up whatever is owed.
+//
+// Liveness is decided by `tmux has-session`, not by the stored status.
+// A host that dies takes its tmux server and its chance to fire
+// SessionEnd with it, so a status-only gate would strand those sessions
+// forever; and /clear fires SessionEnd while the process keeps running,
+// so a status-only gate would also fire a recap against a live session —
+// exactly the two-processes-on-one-transcript hazard §8.1 exists to
+// avoid. has-session is right in both directions.
+//
+// The debt is claimed before the recap runs, not after, so two tend
+// instances draining concurrently can't both fire the same expensive
+// call (see Store.ClaimSessionRecap). Every failure here is swallowed
+// into an empty result: a missed drain is retried on the next refresh,
+// and unlike a genuine store error there is nothing for the user to do
+// about it.
+func (a app) drainRecapsCmd() tea.Cmd {
+	return func() tea.Msg {
+		owed, err := a.store.ListSessionsNeedingRecap(a.ctx)
+		if err != nil || len(owed) == 0 {
+			return recapsDrainedMsg{}
+		}
+		var claimed []task.Session
+		for _, sess := range owed {
+			if sessionAlive(sess) {
+				continue // still running; the debt stays owed
+			}
+			ok, err := a.store.ClaimSessionRecap(a.ctx, sess.ExternalID)
+			if err != nil || !ok {
+				continue // another instance got there first
+			}
+			claimed = append(claimed, sess)
+		}
+		return recapsDrainedMsg{sessions: claimed}
+	}
+}
+
+// sessionAlive reports whether a session's wrapping tmux session is
+// still running — the one question that decides whether an owed recap is
+// safe to fire (see drainRecapsCmd).
+//
+// It fails *closed*: if the generated tmux config can't be written there
+// is no way to ask tmux anything, and answering "not running" would risk
+// a second claude process against a live session's transcript. Deferring
+// a recap to the next refresh costs nothing; that does.
+//
+// A package-level var for the same reason runRecap is one: the drain
+// fires from the same Update path the TUI tests already drive, and
+// without a seam every test would reach for the real tmux server — and
+// for the real user's config directory — on every refreshMsg.
+var sessionAlive = func(sess task.Session) bool {
+	name := sess.TmuxSession
+	if name == "" {
+		// A pre-§8.1 row stored no name; derive the one it would have had.
+		name = agent.SessionName(sess.ExternalID)
+	}
+	confPath, err := agent.WriteConfig()
+	if err != nil {
+		return true
+	}
+	return agent.HasSession(name, confPath)
+}
+
 // recapNotePrefix marks a log entry as an auto-generated session recap,
 // not hand-typed, so the LOG section reads sensibly next to manual
 // notes — a plain-text convention, not a schema change (see
