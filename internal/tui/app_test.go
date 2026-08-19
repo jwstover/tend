@@ -935,7 +935,9 @@ func TestXCompletesTopLevelTask(t *testing.T) {
 	}
 }
 
-func TestDetailFollowsOwningTask(t *testing.T) {
+// A sub-task is a first-class task: selecting one points the detail pane
+// at that sub-task, not at the top-level task owning its branch.
+func TestDetailFollowsSelectedSubTask(t *testing.T) {
 	ctx := context.Background()
 	m, s := newTestApp(t)
 	parent, err := s.AddTask(ctx, "parent task")
@@ -945,7 +947,8 @@ func TestDetailFollowsOwningTask(t *testing.T) {
 	if _, err := s.AddChild(ctx, parent.ID, "first step"); err != nil {
 		t.Fatalf("AddChild: %v", err)
 	}
-	if _, err := s.AddChild(ctx, parent.ID, "second step"); err != nil {
+	second, err := s.AddChild(ctx, parent.ID, "second step")
+	if err != nil {
 		t.Fatalf("AddChild: %v", err)
 	}
 	m = drive(t, m, refreshMsg{})
@@ -959,13 +962,91 @@ func TestDetailFollowsOwningTask(t *testing.T) {
 	if sel, ok := a.selected(); !ok || sel.Title != "second step" {
 		t.Fatalf("selection = %+v, want second step", sel)
 	}
-	if a.detailID != parent.ID {
-		t.Errorf("detailID = %d, want the owning task %d", a.detailID, parent.ID)
+	if a.detailID != second.ID {
+		t.Errorf("detailID = %d, want the selected sub-task %d", a.detailID, second.ID)
+	}
+	content := ansi.Strip(m.View().Content)
+	if !strings.Contains(content, fmt.Sprintf("#%d", second.ID)) {
+		t.Errorf("detail pane not showing the sub-task's own header:\n%s", content)
+	}
+	// The parent's checklist belongs to the parent's pane, not this one.
+	if strings.Contains(content, "SUB-TASKS") {
+		t.Errorf("leaf sub-task should render no checklist:\n%s", content)
+	}
+}
+
+// A sub-task with children of its own gets the same checklist and progress
+// count a top-level task gets.
+func TestSubTaskDetailShowsItsOwnChildren(t *testing.T) {
+	ctx := context.Background()
+	m, s := newTestApp(t)
+	parent, err := s.AddTask(ctx, "parent task")
+	if err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	mid, err := s.AddChild(ctx, parent.ID, "middle step")
+	if err != nil {
+		t.Fatalf("AddChild: %v", err)
+	}
+	for _, title := range []string{"leaf one", "leaf two"} {
+		if _, err := s.AddChild(ctx, mid.ID, title); err != nil {
+			t.Fatalf("AddChild: %v", err)
+		}
+	}
+	m = drive(t, m, refreshMsg{})
+
+	m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyEnter}) // expand parent
+	m = drive(t, m, keyPress(']'))                       // open detail
+	m = drive(t, m, keyPress('j'))                       // onto middle step
+
+	a := m.(app)
+	if a.detailID != mid.ID {
+		t.Fatalf("detailID = %d, want the sub-task %d", a.detailID, mid.ID)
 	}
 	content := ansi.Strip(m.View().Content)
 	if !strings.Contains(content, "SUB-TASKS  0/2") {
-		t.Errorf("detail pane not showing the owner's checklist:\n%s", content)
+		t.Errorf("sub-task pane missing its own checklist:\n%s", content)
 	}
+	for _, want := range []string{"leaf one", "leaf two"} {
+		if !strings.Contains(content, want) {
+			t.Errorf("sub-task pane missing child %q:\n%s", want, content)
+		}
+	}
+}
+
+// A sub-task row carries its workflow state, not a done/not-done box: a
+// sub-task in doing has to be distinguishable from one in todo.
+func TestSubTaskRowShowsStateGlyph(t *testing.T) {
+	ctx := context.Background()
+	m, s := newTestApp(t)
+	parent, err := s.AddTask(ctx, "parent task")
+	if err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	child, err := s.AddChild(ctx, parent.ID, "active step")
+	if err != nil {
+		t.Fatalf("AddChild: %v", err)
+	}
+	if err := s.SetState(ctx, child.ID, task.StateDoing); err != nil {
+		t.Fatalf("SetState: %v", err)
+	}
+	m = drive(t, m, refreshMsg{})
+	m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyEnter}) // expand
+
+	a := m.(app)
+	glyph := a.styles.Glyphs.State[task.StateDoing]
+	for _, it := range a.list.VisibleItems() {
+		ci, ok := it.(childItem)
+		if !ok || ci.t.ID != child.ID {
+			continue
+		}
+		row := ansi.Strip(taskDelegate{styles: a.styles}.renderChildRow(ci, false, 80))
+		if !strings.Contains(row, glyph) {
+			t.Errorf("sub-task row %q missing the doing glyph %q", row, glyph)
+		}
+		return
+	}
+	t.Fatal("expanded sub-task row not found")
 }
 
 func TestEnterOnLeafTogglesDetail(t *testing.T) {

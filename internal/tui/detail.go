@@ -31,11 +31,11 @@ func newBodyRenderer(width int) (*glamour.TermRenderer, error) {
 
 // renderDetail builds the full detail pane content: a compact metadata
 // header, the glamour-rendered body, the sub-task checklist with progress,
-// the URLs detected in the body, and the task's note log. selectedID
-// highlights the checklist row of the sub-task under the list cursor
-// (0 = none); width wraps the log entries to the pane.
+// the URLs detected in the body, and the task's note log. It is agnostic
+// to where t sits in the tree: a sub-task renders exactly like a top-level
+// task. width wraps the log entries to the pane.
 func renderDetail(t task.Task, children []task.Task, log []task.LogEntry, sessions []task.Session,
-	renderer *glamour.TermRenderer, styles Styles, selectedID int64, width int) string {
+	renderer *glamour.TermRenderer, styles Styles, width int) string {
 	g := styles.Glyphs
 	var b strings.Builder
 
@@ -105,19 +105,12 @@ func renderDetail(t task.Task, children []task.Task, log []task.LogEntry, sessio
 		b.WriteString("\n" + "  " + styles.SubHeader.Render("SUB-TASKS") + "  " +
 			count.Render(fmt.Sprintf("%d/%d", done, len(children))) + "\n")
 		for _, c := range children {
-			title := styles.Title
-			switch {
-			case c.ID == selectedID:
-				title = styles.SubSelText
-			case c.State == task.StateDone:
-				title = styles.SubDoneText
-			}
 			if c.State == task.StateDone {
 				b.WriteString("  " + styles.CheckDone.Render(g.BoxChecked) + " " +
-					title.Render(c.Title) + "\n")
+					styles.SubDoneText.Render(c.Title) + "\n")
 			} else {
 				b.WriteString("  " + styles.CheckOpen.Render(g.BoxUnchecked) + " " +
-					title.Render(c.Title) + "\n")
+					styles.Title.Render(c.Title) + "\n")
 			}
 		}
 	}
