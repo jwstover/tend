@@ -229,7 +229,7 @@ type app struct {
 
 	showDetail bool
 	detail     viewport.Model
-	detailID   int64 // owning task currently rendered in the pane; 0 = none
+	detailID   int64 // task currently rendered in the pane; 0 = none
 	renderer   *glamour.TermRenderer
 
 	prompt       textinput.Model
@@ -346,8 +346,8 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		if a.showDetail && msg.parentID == a.detailID {
-			if n, ok := a.selectedNode(); ok && n.owner.ID == a.detailID {
-				a.renderDetailFor(n.owner)
+			if n, ok := a.selectedNode(); ok && n.t.ID == a.detailID {
+				a.renderDetailFor(n.t)
 			}
 		}
 		return a, cmd
@@ -935,11 +935,10 @@ func (a app) deleteTask(t task.Task) tea.Cmd {
 	})
 }
 
-// node is the selection-relevant view of a row: the task itself, the
-// top-level task that owns its branch, and its disclosure state.
+// node is the selection-relevant view of a row: the task itself, how deep
+// it sits, and its disclosure state.
 type node struct {
 	t        task.Task
-	owner    task.Task
 	depth    int
 	total    int64
 	expanded bool
@@ -961,13 +960,13 @@ func (a app) selectedNode() (node, bool) {
 			return node{}, false
 		}
 		t := a.triageQueue[0]
-		return node{t: t, owner: t}, true
+		return node{t: t}, true
 	}
 	switch it := a.list.SelectedItem().(type) {
 	case listItem:
-		return node{t: it.t, owner: it.t, total: it.total, expanded: it.expanded}, true
+		return node{t: it.t, total: it.total, expanded: it.expanded}, true
 	case childItem:
-		return node{t: it.t, owner: it.owner, depth: it.depth, total: it.total, expanded: it.expanded}, true
+		return node{t: it.t, depth: it.depth, total: it.total, expanded: it.expanded}, true
 	}
 	return node{}, false
 }
@@ -1036,10 +1035,10 @@ func (a *app) selectByID(id int64) {
 	}
 }
 
-// syncDetail points the detail pane at the owning top-level task of the
-// current selection. With force, it reloads even if the same task is
-// already shown (after a mutation or resize); otherwise a same-owner
-// cursor move just re-renders to track the checklist highlight.
+// syncDetail points the detail pane at the task under the cursor, at
+// whatever depth it sits. With force, it reloads even if the same task is
+// already shown (after a mutation or resize); otherwise moving onto a
+// different task loads that task's own children, log and sessions.
 func (a *app) syncDetail(force bool) tea.Cmd {
 	if !a.showDetail {
 		return nil
@@ -1050,25 +1049,20 @@ func (a *app) syncDetail(force bool) tea.Cmd {
 		a.detail.SetContent(a.styles.Dimmed.Render("nothing selected"))
 		return nil
 	}
-	if force || n.owner.ID != a.detailID {
-		a.detailID = n.owner.ID
-		return a.loadChildren(n.owner.ID)
+	if force || n.t.ID != a.detailID {
+		a.detailID = n.t.ID
+		return a.loadChildren(n.t.ID)
 	}
-	a.renderDetailFor(n.owner)
+	a.renderDetailFor(n.t)
 	return nil
 }
 
-// renderDetailFor renders the pane for an owning task from the children
-// cache, highlighting the selected sub-task when the cursor is inside the
-// branch.
-func (a *app) renderDetailFor(owner task.Task) {
-	var selID int64
-	if n, ok := a.selectedNode(); ok && n.t.ID != owner.ID {
-		selID = n.t.ID
-	}
+// renderDetailFor renders the pane for one task from the caches. The task
+// may sit at any depth; a sub-task gets the same pane as a top-level task.
+func (a *app) renderDetailFor(t task.Task) {
 	_, detailW, _ := a.splitWidths()
-	a.detail.SetContent(renderDetail(owner, a.childCache[owner.ID], a.logCache[owner.ID],
-		a.sessionsCache[owner.ID], a.renderer, a.styles, selID, detailW))
+	a.detail.SetContent(renderDetail(t, a.childCache[t.ID], a.logCache[t.ID],
+		a.sessionsCache[t.ID], a.renderer, a.styles, detailW))
 }
 
 // splitWidths computes the list/detail column widths for the current

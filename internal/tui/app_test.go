@@ -83,6 +83,20 @@ func waitFor(t *testing.T, what string, check func() bool) {
 	t.Fatalf("timed out waiting for %s", what)
 }
 
+// waitForTask polls until the stored task satisfies check. Store
+// assertions that follow a key press must wait the same way waitFor
+// describes: the mutation Cmd runs in a goroutine that can outlive
+// collect's window, so reading immediately races the write on a loaded
+// runner.
+func waitForTask(t *testing.T, s *store.Store, id int64, what string, check func(task.Task) bool) {
+	t.Helper()
+	ctx := context.Background()
+	waitFor(t, what, func() bool {
+		got, err := s.GetTask(ctx, id)
+		return err == nil && check(got)
+	})
+}
+
 func newTestApp(t *testing.T) (tea.Model, *store.Store) {
 	t.Helper()
 	ctx := context.Background()
@@ -219,13 +233,9 @@ func TestTriageStateKey(t *testing.T) {
 	}
 
 	m = drive(t, m, keyPress('x')) // mark done
-	got, err := s.GetTask(ctx, captured.ID)
-	if err != nil {
-		t.Fatalf("GetTask: %v", err)
-	}
-	if got.State != task.StateDone {
-		t.Errorf("state after x = %s, want done", got.State)
-	}
+	waitForTask(t, s, captured.ID, "state done after x", func(got task.Task) bool {
+		return got.State == task.StateDone
+	})
 	if strings.Contains(ansi.Strip(m.View().Content), "triage me") {
 		t.Error("done task should leave the triage view")
 	}
@@ -309,13 +319,9 @@ func TestTriageProgressAdvancesOnAction(t *testing.T) {
 	m = drive(t, m, keyPress('i'))
 	m = drive(t, m, keyPress('t')) // current card → todo
 
-	got, err := s.GetTask(ctx, first.ID)
-	if err != nil {
-		t.Fatalf("GetTask: %v", err)
-	}
-	if got.State != task.StateTodo {
-		t.Errorf("state after t = %s, want todo", got.State)
-	}
+	waitForTask(t, s, first.ID, "state todo after t", func(got task.Task) bool {
+		return got.State == task.StateTodo
+	})
 	content := ansi.Strip(m.View().Content)
 	if !strings.Contains(content, "1 done · 1 left") {
 		t.Errorf("progress did not advance after action:\n%s", content)
@@ -381,14 +387,10 @@ func TestTriageActionsTargetCurrentCard(t *testing.T) {
 	m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyEnter}) // skip onto the second card
 	m = drive(t, m, keyPress('d'))                       // → doing
 
-	got, err := s.GetTask(ctx, second.ID)
-	if err != nil {
-		t.Fatalf("GetTask: %v", err)
-	}
-	if got.State != task.StateDoing {
-		t.Errorf("second task state = %s, want doing", got.State)
-	}
-	got, err = s.GetTask(ctx, first.ID)
+	waitForTask(t, s, second.ID, "second task doing", func(got task.Task) bool {
+		return got.State == task.StateDoing
+	})
+	got, err := s.GetTask(ctx, first.ID)
 	if err != nil {
 		t.Fatalf("GetTask: %v", err)
 	}
@@ -448,13 +450,9 @@ func TestChangeStateChord(t *testing.T) {
 	if strings.Contains(ansi.Strip(m.View().Content), "esc cancel") {
 		t.Errorf("panel still visible after chord resolved:\n%s", ansi.Strip(m.View().Content))
 	}
-	got, err := s.GetTask(ctx, captured.ID)
-	if err != nil {
-		t.Fatalf("GetTask: %v", err)
-	}
-	if got.State != task.StateDone {
-		t.Errorf("state after c,x = %s, want done", got.State)
-	}
+	waitForTask(t, s, captured.ID, "state done after c,x", func(got task.Task) bool {
+		return got.State == task.StateDone
+	})
 	if m.(app).statePending {
 		t.Error("statePending still true after chord completed")
 	}
@@ -465,7 +463,7 @@ func TestChangeStateChord(t *testing.T) {
 	if m.(app).statePending {
 		t.Error("statePending still true after esc")
 	}
-	got, err = s.GetTask(ctx, captured.ID)
+	got, err := s.GetTask(ctx, captured.ID)
 	if err != nil {
 		t.Fatalf("GetTask: %v", err)
 	}
@@ -500,13 +498,9 @@ func TestPriorityChord(t *testing.T) {
 	if strings.Contains(ansi.Strip(m.View().Content), "esc cancel") {
 		t.Errorf("panel still visible after chord resolved:\n%s", ansi.Strip(m.View().Content))
 	}
-	got, err := s.GetTask(ctx, captured.ID)
-	if err != nil {
-		t.Fatalf("GetTask: %v", err)
-	}
-	if got.Priority == nil || *got.Priority != 1 {
-		t.Errorf("priority after p,a = %v, want 1", got.Priority)
-	}
+	waitForTask(t, s, captured.ID, "priority A after p,a", func(got task.Task) bool {
+		return got.Priority != nil && *got.Priority == 1
+	})
 	if m.(app).priorityPending {
 		t.Error("priorityPending still true after chord completed")
 	}
@@ -520,7 +514,7 @@ func TestPriorityChord(t *testing.T) {
 	if m.(app).priorityPending {
 		t.Error("priorityPending still true after esc")
 	}
-	got, err = s.GetTask(ctx, captured.ID)
+	got, err := s.GetTask(ctx, captured.ID)
 	if err != nil {
 		t.Fatalf("GetTask: %v", err)
 	}
@@ -531,13 +525,9 @@ func TestPriorityChord(t *testing.T) {
 	// `p`,`n` clears the priority.
 	m = drive(t, m, keyPress('p'))
 	_ = drive(t, m, keyPress('n'))
-	got, err = s.GetTask(ctx, captured.ID)
-	if err != nil {
-		t.Fatalf("GetTask: %v", err)
-	}
-	if got.Priority != nil {
-		t.Errorf("priority after p,n = %v, want nil", got.Priority)
-	}
+	waitForTask(t, s, captured.ID, "priority cleared after p,n", func(got task.Task) bool {
+		return got.Priority == nil
+	})
 }
 
 func TestProjectPromptFromListView(t *testing.T) {
@@ -558,13 +548,9 @@ func TestProjectPromptFromListView(t *testing.T) {
 	}
 	_ = drive(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
-	got, err := s.GetTask(ctx, captured.ID)
-	if err != nil {
-		t.Fatalf("GetTask: %v", err)
-	}
-	if got.Project == nil || *got.Project != "home" {
-		t.Errorf("project after P prompt = %v, want home", got.Project)
-	}
+	waitForTask(t, s, captured.ID, "project home after P prompt", func(got task.Task) bool {
+		return got.Project != nil && *got.Project == "home"
+	})
 }
 
 func TestQuickAddPrompt(t *testing.T) {
@@ -791,15 +777,16 @@ func TestExpandCollapseBranch(t *testing.T) {
 	}
 
 	// ⏎ expands one level: the caret flips and the child slides in with
-	// its checkbox; the grandchild stays hidden behind the child's caret.
+	// its state glyph; the grandchild stays hidden behind the child's caret.
 	m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	content = ansi.Strip(m.View().Content)
 	if !strings.Contains(lineWith(content, "parent task"), "▾") {
 		t.Errorf("parent caret did not flip open:\n%s", content)
 	}
 	childLine := lineWith(content, "child step")
-	if !strings.Contains(childLine, "▢") || !strings.Contains(childLine, "▸") {
-		t.Errorf("child row missing checkbox or caret: %q", childLine)
+	inbox := unicodeGlyphs().State[task.StateInbox]
+	if !strings.Contains(childLine, inbox) || !strings.Contains(childLine, "▸") {
+		t.Errorf("child row missing state glyph or caret: %q", childLine)
 	}
 	if strings.Contains(content, "grandchild step") {
 		t.Errorf("grandchild visible before its branch expanded:\n%s", content)
@@ -883,16 +870,12 @@ func TestToggleChildDoneWithX(t *testing.T) {
 	m = drive(t, m, keyPress('j'))                       // onto the child
 	m = drive(t, m, keyPress('x'))                       // check it
 
-	got, err := s.GetTask(ctx, child.ID)
-	if err != nil {
-		t.Fatalf("GetTask: %v", err)
-	}
-	if got.State != task.StateDone {
-		t.Fatalf("child state after x = %s, want done", got.State)
-	}
+	waitForTask(t, s, child.ID, "child state done after x", func(got task.Task) bool {
+		return got.State == task.StateDone
+	})
 	content := ansi.Strip(m.View().Content)
-	if !strings.Contains(lineWith(content, "child step"), "▣") {
-		t.Errorf("done child missing checked box:\n%s", content)
+	if !strings.Contains(lineWith(content, "child step"), unicodeGlyphs().State[task.StateDone]) {
+		t.Errorf("done child missing the done glyph:\n%s", content)
 	}
 	if !strings.Contains(lineWith(content, "parent task"), "1/1") {
 		t.Errorf("parent count not 1/1 after child done:\n%s", content)
@@ -903,13 +886,9 @@ func TestToggleChildDoneWithX(t *testing.T) {
 		t.Fatalf("selection drifted after refresh: %+v", sel)
 	}
 	_ = drive(t, m, keyPress('x'))
-	got, err = s.GetTask(ctx, child.ID)
-	if err != nil {
-		t.Fatalf("GetTask: %v", err)
-	}
-	if got.State != task.StateTodo {
-		t.Errorf("child state after second x = %s, want todo", got.State)
-	}
+	waitForTask(t, s, child.ID, "child state todo after second x", func(got task.Task) bool {
+		return got.State == task.StateTodo
+	})
 }
 
 func TestXCompletesTopLevelTask(t *testing.T) {
@@ -922,19 +901,17 @@ func TestXCompletesTopLevelTask(t *testing.T) {
 	m = drive(t, m, refreshMsg{})
 
 	m = drive(t, m, keyPress('x'))
-	got, err := s.GetTask(ctx, captured.ID)
-	if err != nil {
-		t.Fatalf("GetTask: %v", err)
-	}
-	if got.State != task.StateDone {
-		t.Errorf("state after x = %s, want done", got.State)
-	}
+	waitForTask(t, s, captured.ID, "state done after x", func(got task.Task) bool {
+		return got.State == task.StateDone
+	})
 	if strings.Contains(ansi.Strip(m.View().Content), "finish me") {
 		t.Error("done task should leave the live view")
 	}
 }
 
-func TestDetailFollowsOwningTask(t *testing.T) {
+// A sub-task is a first-class task: selecting one points the detail pane
+// at that sub-task, not at the top-level task owning its branch.
+func TestDetailFollowsSelectedSubTask(t *testing.T) {
 	ctx := context.Background()
 	m, s := newTestApp(t)
 	parent, err := s.AddTask(ctx, "parent task")
@@ -944,7 +921,8 @@ func TestDetailFollowsOwningTask(t *testing.T) {
 	if _, err := s.AddChild(ctx, parent.ID, "first step"); err != nil {
 		t.Fatalf("AddChild: %v", err)
 	}
-	if _, err := s.AddChild(ctx, parent.ID, "second step"); err != nil {
+	second, err := s.AddChild(ctx, parent.ID, "second step")
+	if err != nil {
 		t.Fatalf("AddChild: %v", err)
 	}
 	m = drive(t, m, refreshMsg{})
@@ -958,13 +936,91 @@ func TestDetailFollowsOwningTask(t *testing.T) {
 	if sel, ok := a.selected(); !ok || sel.Title != "second step" {
 		t.Fatalf("selection = %+v, want second step", sel)
 	}
-	if a.detailID != parent.ID {
-		t.Errorf("detailID = %d, want the owning task %d", a.detailID, parent.ID)
+	if a.detailID != second.ID {
+		t.Errorf("detailID = %d, want the selected sub-task %d", a.detailID, second.ID)
+	}
+	content := ansi.Strip(m.View().Content)
+	if !strings.Contains(content, fmt.Sprintf("#%d", second.ID)) {
+		t.Errorf("detail pane not showing the sub-task's own header:\n%s", content)
+	}
+	// The parent's checklist belongs to the parent's pane, not this one.
+	if strings.Contains(content, "SUB-TASKS") {
+		t.Errorf("leaf sub-task should render no checklist:\n%s", content)
+	}
+}
+
+// A sub-task with children of its own gets the same checklist and progress
+// count a top-level task gets.
+func TestSubTaskDetailShowsItsOwnChildren(t *testing.T) {
+	ctx := context.Background()
+	m, s := newTestApp(t)
+	parent, err := s.AddTask(ctx, "parent task")
+	if err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	mid, err := s.AddChild(ctx, parent.ID, "middle step")
+	if err != nil {
+		t.Fatalf("AddChild: %v", err)
+	}
+	for _, title := range []string{"leaf one", "leaf two"} {
+		if _, err := s.AddChild(ctx, mid.ID, title); err != nil {
+			t.Fatalf("AddChild: %v", err)
+		}
+	}
+	m = drive(t, m, refreshMsg{})
+
+	m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyEnter}) // expand parent
+	m = drive(t, m, keyPress(']'))                       // open detail
+	m = drive(t, m, keyPress('j'))                       // onto middle step
+
+	a := m.(app)
+	if a.detailID != mid.ID {
+		t.Fatalf("detailID = %d, want the sub-task %d", a.detailID, mid.ID)
 	}
 	content := ansi.Strip(m.View().Content)
 	if !strings.Contains(content, "SUB-TASKS  0/2") {
-		t.Errorf("detail pane not showing the owner's checklist:\n%s", content)
+		t.Errorf("sub-task pane missing its own checklist:\n%s", content)
 	}
+	for _, want := range []string{"leaf one", "leaf two"} {
+		if !strings.Contains(content, want) {
+			t.Errorf("sub-task pane missing child %q:\n%s", want, content)
+		}
+	}
+}
+
+// A sub-task row carries its workflow state, not a done/not-done box: a
+// sub-task in doing has to be distinguishable from one in todo.
+func TestSubTaskRowShowsStateGlyph(t *testing.T) {
+	ctx := context.Background()
+	m, s := newTestApp(t)
+	parent, err := s.AddTask(ctx, "parent task")
+	if err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	child, err := s.AddChild(ctx, parent.ID, "active step")
+	if err != nil {
+		t.Fatalf("AddChild: %v", err)
+	}
+	if err := s.SetState(ctx, child.ID, task.StateDoing); err != nil {
+		t.Fatalf("SetState: %v", err)
+	}
+	m = drive(t, m, refreshMsg{})
+	m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyEnter}) // expand
+
+	a := m.(app)
+	glyph := a.styles.Glyphs.State[task.StateDoing]
+	for _, it := range a.list.VisibleItems() {
+		ci, ok := it.(childItem)
+		if !ok || ci.t.ID != child.ID {
+			continue
+		}
+		row := ansi.Strip(taskDelegate{styles: a.styles}.renderChildRow(ci, false, 80))
+		if !strings.Contains(row, glyph) {
+			t.Errorf("sub-task row %q missing the doing glyph %q", row, glyph)
+		}
+		return
+	}
+	t.Fatal("expanded sub-task row not found")
 }
 
 func TestEnterOnLeafTogglesDetail(t *testing.T) {
@@ -1000,15 +1056,12 @@ func TestAddSubTaskAutoExpands(t *testing.T) {
 	}
 	m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
-	children, err := s.ListChildren(ctx, parent.ID)
-	if err != nil {
-		t.Fatalf("ListChildren: %v", err)
-	}
-	if len(children) != 1 || children[0].Title != "new step" {
-		t.Fatalf("ListChildren = %+v, want the new sub-task", children)
-	}
+	waitFor(t, "the sub-task to save", func() bool {
+		children, err := s.ListChildren(ctx, parent.ID)
+		return err == nil && len(children) == 1 && children[0].Title == "new step"
+	})
 	content := ansi.Strip(m.View().Content)
-	if !strings.Contains(lineWith(content, "new step"), "▢") {
+	if !strings.Contains(lineWith(content, "new step"), unicodeGlyphs().State[task.StateInbox]) {
 		t.Errorf("new sub-task not visible under its auto-expanded parent:\n%s", content)
 	}
 }

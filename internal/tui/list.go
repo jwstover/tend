@@ -33,12 +33,12 @@ func (i listItem) FilterValue() string {
 
 func (i listItem) rowTask() task.Task { return i.t }
 
-// childItem is an expanded sub-task row at any depth. It remembers its
-// owning top-level task so the detail pane can follow the branch root.
+// childItem is an expanded sub-task row at any depth. Depth is the only
+// thing separating it from a top-level row: it carries the same task and
+// gets the same detail pane.
 type childItem struct {
 	t           task.Task
-	owner       task.Task // top-level ancestor
-	depth       int       // 1 for direct children; indentation = depth cells
+	depth       int // 1 for direct children; indentation = depth cells
 	done, total int64
 	expanded    bool
 }
@@ -134,7 +134,7 @@ func appendTaskRows(items []list.Item, t task.Task, counts map[int64]task.ChildC
 		expanded: expanded[t.ID] && c.Total > 0 && loaded,
 	})
 	if expanded[t.ID] {
-		items = appendChildRows(items, t.ID, 1, t, counts, expanded, children)
+		items = appendChildRows(items, t.ID, 1, counts, expanded, children)
 	}
 	return items
 }
@@ -142,7 +142,7 @@ func appendTaskRows(items []list.Item, t task.Task, counts map[int64]task.ChildC
 // appendChildRows walks an expanded branch depth-first, one indent cell
 // per level. Branches whose children haven't loaded yet render closed
 // until their childrenLoadedMsg arrives.
-func appendChildRows(items []list.Item, parentID int64, depth int, owner task.Task,
+func appendChildRows(items []list.Item, parentID int64, depth int,
 	counts map[int64]task.ChildCount, expanded map[int64]bool,
 	children map[int64][]task.Task) []list.Item {
 	for _, c := range children[parentID] {
@@ -150,11 +150,11 @@ func appendChildRows(items []list.Item, parentID int64, depth int, owner task.Ta
 		_, loaded := children[c.ID]
 		exp := expanded[c.ID] && cc.Total > 0 && loaded
 		items = append(items, childItem{
-			t: c, owner: owner, depth: depth,
+			t: c, depth: depth,
 			done: cc.Done, total: cc.Total, expanded: exp,
 		})
 		if exp {
-			items = appendChildRows(items, c.ID, depth+1, owner, counts, expanded, children)
+			items = appendChildRows(items, c.ID, depth+1, counts, expanded, children)
 		}
 	}
 	return items
@@ -363,13 +363,15 @@ func (d taskDelegate) renderChildRow(it childItem, selected bool, width int) str
 		segs = append(segs, seg{"  ", s.Normal})
 	}
 
-	// Checkbox: sub-task "done" is the done state.
+	// State dot (2), the same three-signal treatment a top-level row
+	// gets: a sub-task in doing or blocked has to read as such rather
+	// than collapsing to an unchecked box.
 	done := it.t.State == task.StateDone
-	if done {
-		segs = append(segs, seg{g.BoxChecked + " ", s.CheckDone})
-	} else {
-		segs = append(segs, seg{g.BoxUnchecked + " ", s.CheckOpen})
+	dot := s.State[it.t.State]
+	if it.t.State == task.StateDoing || it.t.State == task.StateBlocked {
+		dot = dot.Bold(true)
 	}
+	segs = append(segs, seg{g.State[it.t.State] + " ", dot})
 
 	titleStyle := s.Dimmed
 	switch {
