@@ -740,14 +740,27 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return a.toggleDetail()
 
 	case key.Matches(msg, a.keys.ExpandOpen) && a.mode == modeList:
-		if n, ok := a.selectedNode(); ok && n.total > 0 && !a.expanded[n.t.ID] {
+		n, ok := a.selectedNode()
+		if !ok {
+			return a, nil
+		}
+		if n.total > 0 && !a.expanded[n.t.ID] {
 			return a.toggleExpand(n.t.ID)
 		}
-		// Nothing to expand: l/→ instead moves focus into the detail
-		// pane, mirroring vim window navigation. Not offered in the
-		// full-width layout — there the pane already owns every key.
-		if _, _, full := a.splitWidths(); a.showDetail && !full {
+		// Nothing to expand: l/→ opens the detail pane if it's closed
+		// and moves focus into it, mirroring vim window navigation.
+		// Skipped in the full-width layout, where the pane would own
+		// every key anyway.
+		probe := a
+		probe.showDetail = true
+		if _, _, full := probe.splitWidths(); !full {
+			wasOpen := a.showDetail
+			a.showDetail = true
 			a.detailFocused = true
+			a.resize()
+			if !wasOpen {
+				return a, a.syncDetail(true)
+			}
 		}
 		return a, nil
 
@@ -1617,14 +1630,24 @@ func (a app) footer() string {
 			{"j/k", "scroll"}, {"]", "close"}, {":", "palette"}, {"?", "help"}, {"q", "quit"},
 		}
 	default:
-		if n, ok := a.selectedNode(); ok && a.mode == modeList && n.total > 0 {
+		n, ok := a.selectedNode()
+		switch {
+		case ok && a.mode == modeList && n.total > 0:
 			verb := "expand"
 			if n.expanded {
 				verb = "collapse"
 			}
 			hints = append([][2]string{hints[0], {"⏎", verb}}, hints[1:]...)
-		} else if a.showDetail {
-			hints = append([][2]string{hints[0], {"l", "focus pane"}}, hints[1:]...)
+		case ok:
+			probe := a
+			probe.showDetail = true
+			if _, _, probeFull := probe.splitWidths(); !probeFull {
+				verb := "focus pane"
+				if !a.showDetail {
+					verb = "open + focus pane"
+				}
+				hints = append([][2]string{hints[0], {"l", verb}}, hints[1:]...)
+			}
 		}
 	}
 	if a.mode == modeTriage {

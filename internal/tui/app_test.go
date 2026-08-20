@@ -1050,6 +1050,28 @@ func TestEnterOnLeafTogglesDetail(t *testing.T) {
 	}
 }
 
+func TestDetailPaneLOpensAndFocuses(t *testing.T) {
+	ctx := context.Background()
+	m, s := newTestApp(t)
+	if _, err := s.AddTask(ctx, "task one"); err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	m = drive(t, m, refreshMsg{})
+
+	if m.(app).showDetail {
+		t.Fatal("pane should start closed")
+	}
+
+	m = drive(t, m, keyPress('l'))
+	a := m.(app)
+	if !a.showDetail {
+		t.Fatal("l on a leaf should open the pane when it's closed")
+	}
+	if !a.detailFocused {
+		t.Fatal("l should also focus the newly opened pane")
+	}
+}
+
 func TestDetailPaneFocusToggle(t *testing.T) {
 	ctx := context.Background()
 	m, s := newTestApp(t)
