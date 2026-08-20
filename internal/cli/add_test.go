@@ -12,10 +12,12 @@ import (
 	"github.com/jwstover/tend/internal/task"
 )
 
-// fakeStore records captured tasks; the other Store methods are unused
-// by the add command.
+// fakeStore records captured tasks and session status writes; the other
+// Store methods are unused by the commands under test.
 type fakeStore struct {
-	tasks []task.Task
+	tasks     []task.Task
+	statuses  map[string]task.SessionStatus
+	statusErr error
 }
 
 func (f *fakeStore) AddTask(_ context.Context, title string) (task.Task, error) {
@@ -45,6 +47,16 @@ func (f *fakeStore) AddLogEntry(context.Context, *int64, string) (task.LogEntry,
 }
 func (f *fakeStore) ListLogEntries(context.Context, time.Time, time.Time) ([]task.LogEntry, error) {
 	return nil, nil
+}
+func (f *fakeStore) SetSessionStatus(_ context.Context, externalID string, st task.SessionStatus) error {
+	if f.statusErr != nil {
+		return f.statusErr
+	}
+	if f.statuses == nil {
+		f.statuses = map[string]task.SessionStatus{}
+	}
+	f.statuses[externalID] = st
+	return nil
 }
 func (f *fakeStore) Close() error { return nil }
 

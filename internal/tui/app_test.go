@@ -28,6 +28,15 @@ func drive(t *testing.T, m tea.Model, msg tea.Msg) tea.Model {
 	for len(queue) > 0 {
 		var next tea.Msg
 		next, queue = queue[0], queue[1:]
+		// A batch handed straight in — Init() returns one now — is a
+		// bundle of commands, not something Update knows how to handle.
+		// Run it out into the messages it produces instead of dropping it.
+		if batch, ok := next.(tea.BatchMsg); ok {
+			for _, c := range batch {
+				queue = append(queue, collect(c)...)
+			}
+			continue
+		}
 		var cmd tea.Cmd
 		m, cmd = m.Update(next)
 		queue = append(queue, collect(cmd)...)

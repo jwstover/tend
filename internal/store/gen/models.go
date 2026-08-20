@@ -9,15 +9,17 @@ import (
 )
 
 type AgentSession struct {
-	ID           int64
-	TaskID       int64
-	ExternalID   string
-	Cwd          string
-	Label        string
-	StartedAt    string
-	LastActiveAt string
-	TmuxSession  string
-	NeedsRecap   int64
+	ID              int64
+	TaskID          int64
+	ExternalID      string
+	Cwd             string
+	Label           string
+	StartedAt       string
+	LastActiveAt    string
+	TmuxSession     string
+	NeedsRecap      int64
+	Status          string
+	StatusUpdatedAt sql.NullString
 }
 
 type LogEntry struct {

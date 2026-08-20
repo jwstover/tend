@@ -29,7 +29,7 @@ func TestNewSessionID(t *testing.T) {
 }
 
 func TestLaunchCmd(t *testing.T) {
-	c := LaunchCmd("/tmp/work", "abc-123", "fix the bug", "")
+	c := LaunchCmd("/tmp/work", "abc-123", "fix the bug", "", "")
 	if c.Dir != "/tmp/work" {
 		t.Errorf("Dir = %q, want /tmp/work", c.Dir)
 	}
@@ -40,7 +40,7 @@ func TestLaunchCmd(t *testing.T) {
 }
 
 func TestLaunchCmdWithMCPConfig(t *testing.T) {
-	c := LaunchCmd("/tmp/work", "abc-123", "fix the bug", "/tmp/mcp.json")
+	c := LaunchCmd("/tmp/work", "abc-123", "fix the bug", "/tmp/mcp.json", "")
 	want := []string{binary, "--session-id", "abc-123", "-n", "fix the bug", "--mcp-config", "/tmp/mcp.json"}
 	if got := c.Args; !equalArgs(got, want) {
 		t.Errorf("Args = %v, want %v", got, want)
@@ -48,7 +48,7 @@ func TestLaunchCmdWithMCPConfig(t *testing.T) {
 }
 
 func TestResumeCmd(t *testing.T) {
-	c := ResumeCmd("/tmp/work", "abc-123", "")
+	c := ResumeCmd("/tmp/work", "abc-123", "", "")
 	if c.Dir != "/tmp/work" {
 		t.Errorf("Dir = %q, want /tmp/work", c.Dir)
 	}
@@ -59,7 +59,7 @@ func TestResumeCmd(t *testing.T) {
 }
 
 func TestResumeCmdWithMCPConfig(t *testing.T) {
-	c := ResumeCmd("/tmp/work", "abc-123", "/tmp/mcp.json")
+	c := ResumeCmd("/tmp/work", "abc-123", "/tmp/mcp.json", "")
 	want := []string{binary, "--resume", "abc-123", "--mcp-config", "/tmp/mcp.json"}
 	if got := c.Args; !equalArgs(got, want) {
 		t.Errorf("Args = %v, want %v", got, want)
@@ -252,4 +252,33 @@ func equalArgs(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+func TestLaunchCmdWithHookSettings(t *testing.T) {
+	c := LaunchCmd("/tmp/work", "abc-123", "fix the bug", "/tmp/mcp.json", "/tmp/hooks.json")
+	want := []string{
+		binary, "--session-id", "abc-123", "-n", "fix the bug",
+		"--mcp-config", "/tmp/mcp.json", "--settings", "/tmp/hooks.json",
+	}
+	if got := c.Args; !equalArgs(got, want) {
+		t.Errorf("Args = %v, want %v", got, want)
+	}
+}
+
+// The two config files degrade independently: a session with no MCP
+// tools must still report its status, and vice versa.
+func TestLaunchCmdSettingsWithoutMCPConfig(t *testing.T) {
+	c := LaunchCmd("/tmp/work", "abc-123", "fix the bug", "", "/tmp/hooks.json")
+	want := []string{binary, "--session-id", "abc-123", "-n", "fix the bug", "--settings", "/tmp/hooks.json"}
+	if got := c.Args; !equalArgs(got, want) {
+		t.Errorf("Args = %v, want %v", got, want)
+	}
+}
+
+func TestResumeCmdWithHookSettings(t *testing.T) {
+	c := ResumeCmd("/tmp/work", "abc-123", "/tmp/mcp.json", "/tmp/hooks.json")
+	want := []string{binary, "--resume", "abc-123", "--mcp-config", "/tmp/mcp.json", "--settings", "/tmp/hooks.json"}
+	if got := c.Args; !equalArgs(got, want) {
+		t.Errorf("Args = %v, want %v", got, want)
+	}
 }

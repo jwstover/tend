@@ -10,6 +10,7 @@ import (
 )
 
 type Querier interface {
+	ClaimSessionRecap(ctx context.Context, externalID string) (int64, error)
 	CountInboxTasks(ctx context.Context) (int64, error)
 	CreateChildTask(ctx context.Context, arg CreateChildTaskParams) (Task, error)
 	CreateLogEntry(ctx context.Context, arg CreateLogEntryParams) (LogEntry, error)
@@ -31,7 +32,9 @@ type Querier interface {
 	ListLogEntriesBetween(ctx context.Context, arg ListLogEntriesBetweenParams) ([]ListLogEntriesBetweenRow, error)
 	ListLogEntriesForTask(ctx context.Context, taskID sql.NullInt64) ([]LogEntry, error)
 	ListSessionsForTask(ctx context.Context, taskID int64) ([]AgentSession, error)
+	ListSessionsNeedingRecap(ctx context.Context) ([]AgentSession, error)
 	SetSessionNeedsRecap(ctx context.Context, arg SetSessionNeedsRecapParams) error
+	SetSessionStatus(ctx context.Context, arg SetSessionStatusParams) error
 	SetTaskBody(ctx context.Context, arg SetTaskBodyParams) error
 	SetTaskDue(ctx context.Context, arg SetTaskDueParams) error
 	SetTaskPriority(ctx context.Context, arg SetTaskPriorityParams) error

@@ -23,3 +23,19 @@ WHERE external_id = ?;
 UPDATE agent_sessions
 SET needs_recap = ?
 WHERE external_id = ?;
+
+-- name: SetSessionStatus :exec
+UPDATE agent_sessions
+SET status = ?, status_updated_at = datetime('now'), last_active_at = datetime('now')
+WHERE external_id = ?;
+
+-- name: ListSessionsNeedingRecap :many
+SELECT *
+FROM agent_sessions
+WHERE needs_recap = 1
+ORDER BY last_active_at DESC, id DESC;
+
+-- name: ClaimSessionRecap :execrows
+UPDATE agent_sessions
+SET needs_recap = 0
+WHERE external_id = ? AND needs_recap = 1;

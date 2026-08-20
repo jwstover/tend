@@ -9,7 +9,9 @@
 > over stdio JSON-RPC end to end against a live SQLite file. Phase 4.1 (tmux-backed
 > launch/attach/background) is implemented, unit-tested, verified end-to-end against real tmux
 > 3.7b, and manually confirmed (2026-08-18) against the real `claude` CLI from tend's own UI —
-> detach and reattach both work. Phase 3 and Phases 4.2-4.4 are unstarted. This is a
+> detach and reattach both work. Phase 4.2 (agent-hook wiring for session status, and the
+> recap drain that closes 4.1's known gap) is implemented, unit-tested, and verified end to end
+> against the real `claude` CLI (2026-08-19). Phase 3 and Phases 4.3-4.4 are unstarted. This is a
 > project-specific addendum to `AGENTS.md`, not a replacement for it — the layering, conventions,
 > and commit rules in `AGENTS.md` still govern everything built here.
 
@@ -314,9 +316,10 @@ explicitly rather than re-derived, so the naming scheme can change without a bac
 `agent_sessions.needs_recap INTEGER`.
 
 **Known limitation, closed by 8.2:** a session that is backgrounded and never re-attached logs no
-recap. `needs_recap` records the debt but nothing drains it yet — 8.2's `SessionEnd` hook marks the
-session ended, and any tend instance settles the pending recap on refresh. This is a stated gap,
-not an oversight, and it gives 8.2 a second job beyond status glyphs.
+recap. `needs_recap` records the debt but nothing drains it yet — this was a stated gap, not an
+oversight, and it gave 8.2 a second job beyond status glyphs. **Closed by §8.2 (2026-08-19)**, though
+not as written here: the drain gates on `tmux has-session`, not on the `SessionEnd` hook, so a
+session whose host died is settled too. See §8.2.
 
 **Verified end-to-end (2026-08-18)** with a stand-in for `claude`, launched nested inside a real
 tmux session: launch attaches with no nesting guard; `C-h` exits the client with status 0 while the
@@ -336,23 +339,100 @@ deletion of session *records*). Also unaddressed: the tmux server freezes the en
 whichever tend process started it, and `update-environment` only refreshes its own list on attach —
 pass `-e` explicitly if that ever bites.
 
-### 8.2 Status, part 1 — hook wiring (identity + coarse lifecycle)
+### 8.2 Status, part 1 — hook wiring — implemented (2026-08-19)
 
 Reintroduces the `status` column §2 explicitly declined for phase 1, now that sessions really can
-run concurrently with tend's own UI.
+run concurrently with tend's own UI. Hook behavior was **probed against the real `claude` 2.1.234
+CLI**, not taken from documentation.
 
-- New hidden CLI command `tend agent-hook <event>`: reads Claude Code's hook JSON payload from
-  stdin, writes into sqlite via the existing `Store` — no new socket server, tend already owns a
-  shared, WAL-mode DB every instance can write to.
-- Injected via a generated `--settings` file at launch time (`agent.LaunchCmd`), wiring:
-  - `SessionStart` — confirms `external_id` ↔ `tmux_session` ↔ task row (mostly a sanity check;
-    tend already knows this at launch time).
-  - `Stop` — fires when Claude finishes a turn and sits at the input prompt → status `idle`.
-  - `Notification` — fires on permission prompts / idle nudges → status `blocked`.
-- Migration `00006_agent_session_status.sql` adds `agent_sessions.status TEXT NOT NULL DEFAULT
-  'unknown'` and `status_updated_at TEXT`.
-- Covers start/idle/blocked cleanly. Does **not** cover "actively working" — Claude Code has no
-  hook that fires mid-tool-call — hence §8.3.
+**Verified findings, each probed directly:**
+
+- **`--settings` merges; it does not replace.** `--help` says "load *additional* settings from", and
+  a probe run confirmed hooks injected this way fire with no approval prompt while the user's own
+  `~/.claude/settings.json` stays in force. This is what makes injecting hooks safe at all — a
+  replacing flag would have silently dropped the user's permissions and hooks for every tend-launched
+  session.
+- **Captured payload shapes** (headless `-p` run, pinned `--session-id`, one capture script per
+  event): `SessionStart` carries `{session_id, transcript_path, cwd, hook_event_name, source}`;
+  `Stop` adds `prompt_id`, `permission_mode`, `stop_hook_active`, `last_assistant_message`,
+  `background_tasks`, `session_crons`; `SessionEnd` adds `reason` (observed `"other"`).
+  `Notification` isn't reachable headlessly, so its extra fields are treated as optional.
+- **`session_id` is exactly tend's `external_id`**, confirming §8.1's bet: correlation is a direct
+  `WHERE external_id = ?` lookup rather than a join. Naming tmux sessions by the external UUID paid
+  off here as designed.
+
+**Implemented:**
+
+- `internal/agent/hooks.go` — `HookPayload`/`ParseHookPayload`, the `hookEvents` event→status table,
+  `StatusForEvent`, and `WriteHookSettings`/`buildHookSettings`. The generated file wires four
+  events: `SessionStart` → `starting`, `Stop` → `idle`, `Notification` → `blocked`, `SessionEnd` →
+  `ended`.
+- `internal/cli/agent_hook.go` — the hidden `tend agent-hook <event>` command: one short-lived
+  process per hook firing, reading the payload from stdin and writing via the existing `Store`. No
+  socket server and no daemon; tend already owns a WAL-mode database every instance can write to,
+  which is the whole reason this can be a plain CLI command.
+- `--settings` is a separate flag from `--mcp-config`, not one merged file, because they are separate
+  Claude Code mechanisms and each degrades independently: a session with no MCP tools still reports
+  status, and one with no hooks still gets its tools. Both temp files share a lifetime — cleaned up
+  only when the session really ends, never on a detach, since a backgrounded claude still holds them.
+- Migration `00006_agent_session_status.sql` adds `status TEXT NOT NULL DEFAULT 'unknown'` and a
+  **nullable** `status_updated_at`. Nullable is load-bearing: it is the tiebreaker §8.3 needs between
+  an authoritative hook event and the poller's guess, so "never observed" has to stay
+  distinguishable from "observed at row creation". `status` is plain TEXT with no states-table
+  foreign key the way `tasks.state` has — it caches an out-of-band observation rather than modelling
+  a workflow, and an uninterpretable value should render as unknown, not fail to insert.
+- A hook **always exits 0**, even on a database failure; the error goes to stderr and nowhere else.
+  It runs synchronously between turns, so the worst thing it could do is get in the user's way, and
+  a lost status update costs nothing. Each hook also carries a 5s timeout for the same reason.
+- Both the binary path and the user-supplied `--db` path are shell-quoted: Claude Code runs hook
+  commands through a shell, and `--db`/`$TEND_DB` are user-supplied. `--db` is passed explicitly
+  rather than left to `resolveDBPath`'s defaults because the hook subprocess inherits *claude's*
+  environment, not tend's.
+
+**The ordering gap, accepted rather than designed around.** `CreateSession` fires when the terminal
+handoff *returns*, so **no `agent_sessions` row exists during a brand-new session's first run** —
+every hook in that window updates zero rows and is dropped. `SetSessionStatus` therefore treats "no
+such session" as success, not an error; anything else would print a failure into the user's
+transcript on every launch. Overturning §8.1's don't-save-on-error design to close this was
+considered and rejected: it would trade a cosmetic gap for the risk of a failed launch leaving a
+row behind. Consequence: a session backgrounded while already idle reads `unknown` until §8.3's
+poller sees it. tend's UI is suspended during that window anyway, and the case this phase actually
+targets — post-detach events, and attach/resume — works fully.
+
+**Correction to this section as originally written.** It specified draining `ended && needs_recap`.
+That strands any session whose host died before `SessionEnd` could fire, and it would also fire a
+recap against a live session after `/clear` (which fires `SessionEnd` while the process keeps
+running). The drain gates on `needs_recap = 1` in SQL plus a live `tmux has-session` check in Go
+instead — `has-session` is authoritative in both directions, exactly as §8.1 relies on it. That in
+turn forced two more decisions:
+
+- **Claim before firing, not after.** `ClaimSessionRecap` is an `:execrows` `UPDATE ... WHERE
+  external_id = ? AND needs_recap = 1`; only the instance that gets one row runs the recap, so two
+  tend instances draining concurrently can't both fire it. A claimed recap that then fails loses the
+  debt — deliberate, since it bounds the work to one attempt, and per §5's convention a lost
+  automatic recap isn't user-actionable.
+- **Drained recaps are unscoped.** The transcript marker a resume records (`sessionResumedMsg.since`)
+  lives only in the memory of the instance that did the resuming, so another instance has nothing to
+  scope against. `since = nil` — the pre-§5 behavior, and far better than no recap at all.
+
+The drain fires from `Init` and from `refreshMsg`. `Init` is the one moment guaranteed to happen
+after a host reboot; `refreshMsg` covers returning from a session, which is the moment that matters
+in practice. A fully idle tend won't drain until its next mutation — acceptable, and §8.3's tick can
+drive it later. **This closes §8.1's stated known limitation.**
+
+**Verified end-to-end (2026-08-19)** against the real `claude` binary: a headless session launched
+with the generated `--settings` drove `SessionStart` → `Stop` → `SessionEnd` through `tend
+agent-hook` into a live SQLite file, ending at `status=ended` with a timestamp. Each event was then
+exercised individually against the built binary — `Stop` → `idle`, `Notification` → `blocked` — as
+were both failure paths: an unknown `session_id` and a malformed payload each exit 0, the latter
+reporting to stderr only. Unit tests cover the event table, payload parsing, settings generation and
+quoting (`internal/agent/hooks_test.go`), the command's always-succeed contract
+(`internal/cli/agent_hook_test.go`), the schema round-trip and claim exclusivity
+(`internal/store/store_test.go`), and the drain's liveness gating (`internal/tui/drain_test.go`).
+
+**Out of scope for 8.2:** the `working` status — no Claude Code hook fires mid-tool-call, which is
+the entire reason §8.3 exists — and every status glyph, which is §8.4. This phase populates the
+column; nothing renders it yet.
 
 ### 8.3 Status, part 2 — capture-pane polling ("working" detection)
 
@@ -389,8 +469,8 @@ and that's a different, non-interactive mode tend isn't switching to here).
 - Poll interval, and whether it should back off when the pane is unchanged between ticks.
 - Whether `classifyPane` patterns should live as plain Go string matches or get pulled into a small
   data table, given they're expected to need updates as Claude Code's TUI evolves.
-- Sequencing 8.1 vs 8.2/8.3 — 8.1 (background + reconnect) is independently useful and answers the
-  original ask on its own; 8.2/8.3 (status) can land later as a separate, self-contained follow-up.
+- ~~Sequencing 8.1 vs 8.2/8.3~~ — resolved: 8.1 landed first (2026-08-18), 8.2 second (2026-08-19),
+  each self-contained. 8.3 remains independently deferrable.
 
 ## 9. Phase 5 — task read/write via MCP (not started)
 

@@ -9,10 +9,24 @@ import (
 	"context"
 )
 
+const claimSessionRecap = `-- name: ClaimSessionRecap :execrows
+UPDATE agent_sessions
+SET needs_recap = 0
+WHERE external_id = ? AND needs_recap = 1
+`
+
+func (q *Queries) ClaimSessionRecap(ctx context.Context, externalID string) (int64, error) {
+	result, err := q.db.ExecContext(ctx, claimSessionRecap, externalID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const createSession = `-- name: CreateSession :one
 INSERT INTO agent_sessions (task_id, external_id, cwd, label, tmux_session)
 VALUES (?, ?, ?, ?, ?)
-RETURNING id, task_id, external_id, cwd, label, started_at, last_active_at, tmux_session, needs_recap
+RETURNING id, task_id, external_id, cwd, label, started_at, last_active_at, tmux_session, needs_recap, status, status_updated_at
 `
 
 type CreateSessionParams struct {
@@ -42,12 +56,14 @@ func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) (A
 		&i.LastActiveAt,
 		&i.TmuxSession,
 		&i.NeedsRecap,
+		&i.Status,
+		&i.StatusUpdatedAt,
 	)
 	return i, err
 }
 
 const listSessionsForTask = `-- name: ListSessionsForTask :many
-SELECT id, task_id, external_id, cwd, label, started_at, last_active_at, tmux_session, needs_recap
+SELECT id, task_id, external_id, cwd, label, started_at, last_active_at, tmux_session, needs_recap, status, status_updated_at
 FROM agent_sessions
 WHERE task_id = ?
 ORDER BY last_active_at DESC, id DESC
@@ -72,6 +88,50 @@ func (q *Queries) ListSessionsForTask(ctx context.Context, taskID int64) ([]Agen
 			&i.LastActiveAt,
 			&i.TmuxSession,
 			&i.NeedsRecap,
+			&i.Status,
+			&i.StatusUpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listSessionsNeedingRecap = `-- name: ListSessionsNeedingRecap :many
+SELECT id, task_id, external_id, cwd, label, started_at, last_active_at, tmux_session, needs_recap, status, status_updated_at
+FROM agent_sessions
+WHERE needs_recap = 1
+ORDER BY last_active_at DESC, id DESC
+`
+
+func (q *Queries) ListSessionsNeedingRecap(ctx context.Context) ([]AgentSession, error) {
+	rows, err := q.db.QueryContext(ctx, listSessionsNeedingRecap)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AgentSession{}
+	for rows.Next() {
+		var i AgentSession
+		if err := rows.Scan(
+			&i.ID,
+			&i.TaskID,
+			&i.ExternalID,
+			&i.Cwd,
+			&i.Label,
+			&i.StartedAt,
+			&i.LastActiveAt,
+			&i.TmuxSession,
+			&i.NeedsRecap,
+			&i.Status,
+			&i.StatusUpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -99,6 +159,22 @@ type SetSessionNeedsRecapParams struct {
 
 func (q *Queries) SetSessionNeedsRecap(ctx context.Context, arg SetSessionNeedsRecapParams) error {
 	_, err := q.db.ExecContext(ctx, setSessionNeedsRecap, arg.NeedsRecap, arg.ExternalID)
+	return err
+}
+
+const setSessionStatus = `-- name: SetSessionStatus :exec
+UPDATE agent_sessions
+SET status = ?, status_updated_at = datetime('now'), last_active_at = datetime('now')
+WHERE external_id = ?
+`
+
+type SetSessionStatusParams struct {
+	Status     string
+	ExternalID string
+}
+
+func (q *Queries) SetSessionStatus(ctx context.Context, arg SetSessionStatusParams) error {
+	_, err := q.db.ExecContext(ctx, setSessionStatus, arg.Status, arg.ExternalID)
 	return err
 }
 

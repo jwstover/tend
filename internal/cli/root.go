@@ -24,6 +24,7 @@ type Store interface {
 	ListEvents(ctx context.Context, from, to time.Time) ([]task.Event, error)
 	AddLogEntry(ctx context.Context, taskID *int64, body string) (task.LogEntry, error)
 	ListLogEntries(ctx context.Context, from, to time.Time) ([]task.LogEntry, error)
+	SetSessionStatus(ctx context.Context, externalID string, status task.SessionStatus) error
 	Close() error
 }
 
@@ -69,6 +70,7 @@ func newRootCmd(open StoreFactory, runTUI TUIRunner, openMCP MCPStoreFactory) *c
 	root.AddCommand(newStandupCmd(openHere))
 	root.AddCommand(newLogCmd(openHere))
 	root.AddCommand(newMcpCmd(openMCPHere))
+	root.AddCommand(newAgentHookCmd(openHere))
 	root.AddCommand(&cobra.Command{
 		Use:   "version",
 		Short: "Print the tend version",
