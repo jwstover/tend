@@ -11,7 +11,9 @@
 > 3.7b, and manually confirmed (2026-08-18) against the real `claude` CLI from tend's own UI —
 > detach and reattach both work. Phase 4.2 (agent-hook wiring for session status, and the
 > recap drain that closes 4.1's known gap) is implemented, unit-tested, and verified end to end
-> against the real `claude` CLI (2026-08-19). Phase 3 and Phases 4.3-4.4 are unstarted. This is a
+> against the real `claude` CLI (2026-08-19). Phase 4.4 (status glyphs in the detail pane, the
+> picker, and list rows) is implemented and unit-tested (2026-08-19), deliberately ahead of 4.3 so
+> that 4.2's status column has an instrument to read it by. Phase 3 and Phase 4.3 are unstarted. This is a
 > project-specific addendum to `AGENTS.md`, not a replacement for it — the layering, conventions,
 > and commit rules in `AGENTS.md` still govern everything built here.
 
@@ -455,22 +457,77 @@ and that's a different, non-interactive mode tend isn't switching to here).
   indicator, not the source of truth for whether the session is alive, which `has-session` always
   answers directly).
 
-### 8.4 UI surfacing
+### 8.4 UI surfacing — implemented (2026-08-19)
 
-- `detail.go`'s SESSIONS section and `sessions.go`'s `sessionPickerView`
-  (`internal/tui/sessions.go:149-191`) each grow a status glyph per row (⚡ working, ⏸ blocked, ✓
-  idle/done, sourced from `agent_sessions.status`), next to the existing relative-time age.
-- `list.go` task rows show the same glyph for the task's most-recently-active session (join on
-  `task_id`, order by `last_active_at`), so a background session's state is visible without opening
-  the task.
+**Built before 8.3, reversing this section's original ordering.** 8.2 populates
+`agent_sessions.status` and nothing rendered it, so the only way to verify 4.2 by hand was reading
+the column out of SQLite — and 8.3's poller would have been worse, since its whole job is to write a
+status no hook produces. The UI is the instrument both phases are verified with, so it comes first.
+§8.4's own note already allowed this: "8.3 remains independently deferrable."
 
-**Open decisions before starting (flag now, resolve at implementation time, same convention as §5):**
+**Implemented:**
+
+- `glyphs.Session` / `Styles.Session` (`internal/tui/styles.go`) — the marker set, resolved through
+  one shared helper, `sessionStatusCell` (`internal/tui/sessions.go`), so the three call sites can't
+  drift. An unrecognized status falls back to unknown rather than rendering an empty string, which
+  is what §8.2's "plain TEXT, no foreign key" choice implies at the render end.
+- `detail.go`'s SESSIONS section and `sessions.go`'s `sessionPickerView` render the marker before
+  the label, next to the existing relative-time age.
+- `list.go` task rows carry it in a two-cell column between the state dot and the caret, sourced
+  from `Store.SessionStatuses`. Sub-task rows get it too — sub-tasks own sessions the same way
+  top-level tasks do.
+
+**The glyphs are not the ones this section originally specified.** ⚡ and ⏸ are both East Asian
+Wide: rendering either would push every column after it one cell right on exactly the rows that
+carry a marker, breaking the alignment the whole row layout depends on. The set is width-1
+throughout (`◌` starting, `◉` working, `⊗` blocked, `⊙` idle, `·` ended, blank unknown), enforced by
+a test rather than by care. They are also a deliberately *different family* from the state dots —
+circled operators, not plain circles — because the two sit in adjacent columns meaning different
+things, and the obvious reuse of `⊘`/`✓` renders a blocked task with a blocked session as two
+identical glyphs side by side in the same color.
+
+**The list marker is selective; the detail pane's is not.** A list row shows a marker only for
+`starting`/`working`/`blocked`/`idle` — `ended` and `unknown` render as a blank of the same width.
+Every task ever worked on would otherwise carry permanent chrome, which is noise rather than signal;
+the marker is meant to say "a session is doing something right now." The detail pane and picker are
+already scoped to one task the user chose to open, so they show every status including `ended`.
+
+- **`Store.SessionStatuses`** returns `map[task_id]status` from `ListSessionStatuses`, which selects
+  every session ordered oldest-first and lets the map's last write per task win. Cheaper to reason
+  about than a correlated `MAX()` subquery, and it needs no separate tiebreak rule for two sessions
+  sharing a timestamp because the ordering already falls back to `id`.
+- **A `SessionStatuses` failure degrades to no markers**, not to a failed load: the status is
+  decoration on the row, and failing the whole list would leave the user with nothing.
+- **The status map rides on the `taskDelegate`, not on each item** the way `counts` does. `counts`
+  drives disclosure logic as well as rendering; a session marker is purely visual, so the renderer
+  is the only thing that needs it, and threading it through `toGroupedItems`/`appendTaskRows`/
+  `appendChildRows` and both item types would buy nothing.
+
+**A sqlc trap worth recording, since this repo regenerates.** A non-ASCII character in a query's
+leading comment truncates the *generated* SQL string by the extra byte count — sqlc computes the
+query span by byte offset. A `§` in the comment above `ListSessionStatuses` silently produced
+`ORDER BY last_active_at ASC, id AS`, which is valid-looking and wrong. Keep query comments ASCII;
+no other query in `internal/store/queries` currently contains a non-ASCII byte.
+
+**Known limitation, inherited not introduced:** a session whose host died without firing `SessionEnd`
+keeps its last reported status forever, so its marker can read `idle` long after the process is
+gone. `has-session` already answers liveness authoritatively and the recap drain uses it; wiring the
+same check into the marker is 8.3's natural companion. Likewise, §8.2's ordering gap means a
+brand-new session's first run shows no marker until its first `Stop`.
+
+**Not yet manually confirmed.** Unit tests cover the glyph widths, the selective list marker, the
+unknown fallback, the store query's latest-per-task behavior, and the delegate wiring end to end
+(`internal/tui/status_glyph_test.go`, `internal/store/store_test.go`). What it now makes possible —
+watching a real session move through the statuses — is exactly what §8.2 still needs.
+
+**Open decisions before starting 8.3 (flag now, resolve at implementation time, same convention as §5):**
 
 - Poll interval, and whether it should back off when the pane is unchanged between ticks.
 - Whether `classifyPane` patterns should live as plain Go string matches or get pulled into a small
   data table, given they're expected to need updates as Claude Code's TUI evolves.
-- ~~Sequencing 8.1 vs 8.2/8.3~~ — resolved: 8.1 landed first (2026-08-18), 8.2 second (2026-08-19),
-  each self-contained. 8.3 remains independently deferrable.
+- ~~Sequencing 8.1 vs 8.2/8.3~~ — resolved: 8.1 landed first (2026-08-18), 8.2 second and 8.4 third
+  (both 2026-08-19), each self-contained. 8.3 is now the only piece left, and lands last because the
+  UI it would feed already exists to verify it against.
 
 ## 9. Phase 5 — task read/write via MCP (not started)
 
