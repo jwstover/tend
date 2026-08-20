@@ -87,7 +87,7 @@ func TestRecapEmptyOutputSkipsLogEntry(t *testing.T) {
 	}
 	m = drive(t, m, refreshMsg{})
 
-	m = drive(t, m, sessionFinishedMsg{taskID: parent.ID, externalID: "ext-1", cwd: "/tmp/work", label: parent.Title})
+	_ = drive(t, m, sessionFinishedMsg{taskID: parent.ID, externalID: "ext-1", cwd: "/tmp/work", label: parent.Title})
 
 	waitFor(t, "session recorded", func() bool {
 		sessions, err := s.ListSessionsForTask(ctx, parent.ID)
@@ -112,7 +112,7 @@ func TestRecapAutoNamesSessionOnSessionFinished(t *testing.T) {
 	}
 	m = drive(t, m, refreshMsg{})
 
-	m = drive(t, m, sessionFinishedMsg{taskID: parent.ID, externalID: "ext-1", cwd: "/tmp/work", label: parent.Title})
+	_ = drive(t, m, sessionFinishedMsg{taskID: parent.ID, externalID: "ext-1", cwd: "/tmp/work", label: parent.Title})
 
 	waitFor(t, "recap logged", func() bool {
 		entries, err := s.ListTaskLog(ctx, parent.ID)
@@ -137,7 +137,7 @@ func TestRecapWithoutLabelMarkerLeavesSessionLabelUnchanged(t *testing.T) {
 	}
 	m = drive(t, m, refreshMsg{})
 
-	m = drive(t, m, sessionFinishedMsg{taskID: parent.ID, externalID: "ext-1", cwd: "/tmp/work", label: parent.Title})
+	_ = drive(t, m, sessionFinishedMsg{taskID: parent.ID, externalID: "ext-1", cwd: "/tmp/work", label: parent.Title})
 
 	waitFor(t, "recap logged", func() bool {
 		entries, err := s.ListTaskLog(ctx, parent.ID)
@@ -200,7 +200,7 @@ func TestQuitAsksConfirmationWhileRecapPending(t *testing.T) {
 	}
 
 	// A second q confirms and quits.
-	m, cmd = m.Update(keyPress('q'))
+	_, cmd = m.Update(keyPress('q'))
 	if !quitMsg(cmd) {
 		t.Errorf("second q did not quit")
 	}
@@ -253,7 +253,7 @@ func TestRecapFiresOnSessionResumed(t *testing.T) {
 	}
 	m = drive(t, m, refreshMsg{})
 
-	m = drive(t, m, sessionResumedMsg{
+	_ = drive(t, m, sessionResumedMsg{
 		sessionRowID: sess.ID,
 		taskID:       parent.ID,
 		cwd:          sess.Cwd,
