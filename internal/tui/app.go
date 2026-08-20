@@ -246,8 +246,9 @@ type app struct {
 	standupCollapsed    map[string]bool // collapsed note-group keys, see standupGroupKey
 	standupJumpToLatest bool
 
-	showDetail bool
-	detail     viewport.Model
+	showDetail    bool
+	detailFocused bool // pane owns j/k/scroll keys; list cursor is frozen
+	detail        viewport.Model
 	detailID   int64 // task currently rendered in the pane; 0 = none
 	renderer   *glamour.TermRenderer
 
@@ -661,6 +662,10 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				a.mode = modeList
 				return a, a.loadTasks(modeList)
 			}
+			if a.detailFocused {
+				a.detailFocused = false
+				return a, nil
+			}
 			if a.showDetail {
 				a.showDetail = false
 				a.resize()
@@ -685,6 +690,12 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if a.mode == modeTriage {
 			a.mode = modeList
 			return a, a.loadTasks(modeList)
+		}
+		// Un-focus the pane before closing it, so esc backs out one step
+		// at a time.
+		if a.detailFocused {
+			a.detailFocused = false
+			return a, nil
 		}
 		if a.showDetail {
 			a.showDetail = false
@@ -732,9 +743,21 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if n, ok := a.selectedNode(); ok && n.total > 0 && !a.expanded[n.t.ID] {
 			return a.toggleExpand(n.t.ID)
 		}
+		// Nothing to expand: l/→ instead moves focus into the detail
+		// pane, mirroring vim window navigation. Not offered in the
+		// full-width layout — there the pane already owns every key.
+		if _, _, full := a.splitWidths(); a.showDetail && !full {
+			a.detailFocused = true
+		}
 		return a, nil
 
 	case key.Matches(msg, a.keys.ExpandClose) && a.mode == modeList:
+		// h/← first backs focus out of the detail pane, same direction
+		// it moved in.
+		if a.detailFocused {
+			a.detailFocused = false
+			return a, nil
+		}
 		n, ok := a.selectedNode()
 		if !ok {
 			return a, nil
@@ -853,6 +876,16 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if a.mode == modeTriage {
 		model, cmd, _ := a.handleTriageKey(msg)
 		return model, cmd
+	}
+
+	// The pane owns scrolling when explicitly focused, or when it has
+	// replaced the list outright (full-width layout) and there's nothing
+	// else a key like j/k could mean.
+	_, _, full := a.splitWidths()
+	if a.detailFocused || (a.showDetail && full) {
+		var cmd tea.Cmd
+		a.detail, cmd = a.detail.Update(msg)
+		return a, cmd
 	}
 
 	// Let the list handle navigation (j/k, g/G, /, paging).
@@ -1044,6 +1077,7 @@ func (a app) selected() (task.Task, bool) {
 // toggleDetail shows or hides the detail pane.
 func (a app) toggleDetail() (tea.Model, tea.Cmd) {
 	a.showDetail = !a.showDetail
+	a.detailFocused = false
 	a.resize()
 	if a.showDetail {
 		return a, a.syncDetail(true)
@@ -1118,6 +1152,12 @@ func (a *app) syncDetail(force bool) tea.Cmd {
 		return nil
 	}
 	if force || n.t.ID != a.detailID {
+		if n.t.ID != a.detailID {
+			// A genuinely different task starts scrolled to the top; a
+			// same-task refresh (resize, new log entry) leaves reading
+			// position alone.
+			a.detail.GotoTop()
+		}
 		a.detailID = n.t.ID
 		return a.loadChildren(n.t.ID)
 	}
@@ -1421,8 +1461,12 @@ func (a app) View() tea.View {
 	case a.showDetail && full:
 		body = a.detail.View()
 	case a.showDetail:
+		dividerStyle := a.styles.Rule
+		if a.detailFocused {
+			dividerStyle = a.styles.Accent
+		}
 		divider := strings.TrimSuffix(strings.Repeat(
-			a.styles.Rule.Render(a.styles.Glyphs.RuleV)+"\n", max(a.bodyHeight, 1)), "\n")
+			dividerStyle.Render(a.styles.Glyphs.RuleV)+"\n", max(a.bodyHeight, 1)), "\n")
 		body = lipgloss.JoinHorizontal(lipgloss.Top, a.list.View(), divider, a.detail.View())
 	default:
 		body = a.list.View()
@@ -1562,12 +1606,26 @@ func (a app) footer() string {
 		{"j/k", "move"}, {"]", "detail"}, {"n", "add"}, {"c", "state"},
 		{"/", "search"}, {":", "palette"}, {"i", "triage"}, {"?", "help"}, {"q", "quit"},
 	}
-	if n, ok := a.selectedNode(); ok && a.mode == modeList && n.total > 0 {
-		verb := "expand"
-		if n.expanded {
-			verb = "collapse"
+	_, _, full := a.splitWidths()
+	switch {
+	case a.detailFocused:
+		hints = [][2]string{
+			{"j/k", "scroll"}, {"h/esc", "back to list"}, {":", "palette"}, {"?", "help"}, {"q", "quit"},
 		}
-		hints = append([][2]string{hints[0], {"⏎", verb}}, hints[1:]...)
+	case a.showDetail && full:
+		hints = [][2]string{
+			{"j/k", "scroll"}, {"]", "close"}, {":", "palette"}, {"?", "help"}, {"q", "quit"},
+		}
+	default:
+		if n, ok := a.selectedNode(); ok && a.mode == modeList && n.total > 0 {
+			verb := "expand"
+			if n.expanded {
+				verb = "collapse"
+			}
+			hints = append([][2]string{hints[0], {"⏎", verb}}, hints[1:]...)
+		} else if a.showDetail {
+			hints = append([][2]string{hints[0], {"l", "focus pane"}}, hints[1:]...)
+		}
 	}
 	if a.mode == modeTriage {
 		hints = [][2]string{

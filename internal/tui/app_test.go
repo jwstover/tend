@@ -1050,6 +1050,163 @@ func TestEnterOnLeafTogglesDetail(t *testing.T) {
 	}
 }
 
+func TestDetailPaneFocusToggle(t *testing.T) {
+	ctx := context.Background()
+	m, s := newTestApp(t)
+	if _, err := s.AddTask(ctx, "task one"); err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	if _, err := s.AddTask(ctx, "task two"); err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	m = drive(t, m, refreshMsg{})
+
+	m = drive(t, m, keyPress(']')) // open detail
+	if m.(app).detailFocused {
+		t.Fatal("opening the pane should not start it focused")
+	}
+
+	m = drive(t, m, keyPress('l')) // focus the pane
+	if !m.(app).detailFocused {
+		t.Fatal("l on a leaf with the pane open should focus it")
+	}
+	sel, _ := m.(app).selected()
+
+	m = drive(t, m, keyPress('j')) // would move the list cursor if unfocused
+	a := m.(app)
+	if !a.detailFocused {
+		t.Fatal("j while focused should not drop focus")
+	}
+	if got, _ := a.selected(); got.ID != sel.ID {
+		t.Errorf("list cursor moved while pane was focused: got %q, want %q", got.Title, sel.Title)
+	}
+
+	m = drive(t, m, keyPress('h')) // back to the list
+	if m.(app).detailFocused {
+		t.Error("h should drop focus back to the list")
+	}
+}
+
+func TestDetailPaneFocusEscLayering(t *testing.T) {
+	ctx := context.Background()
+	m, s := newTestApp(t)
+	if _, err := s.AddTask(ctx, "task one"); err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	m = drive(t, m, refreshMsg{})
+
+	m = drive(t, m, keyPress(']'))
+	m = drive(t, m, keyPress('l'))
+	if !m.(app).detailFocused {
+		t.Fatal("l should focus the pane")
+	}
+
+	m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyEscape})
+	a := m.(app)
+	if a.detailFocused {
+		t.Error("the first esc should un-focus the pane, not close it")
+	}
+	if !a.showDetail {
+		t.Fatal("the first esc should leave the pane open")
+	}
+
+	m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyEscape})
+	if m.(app).showDetail {
+		t.Error("a second esc should close the pane")
+	}
+}
+
+func TestDetailPaneFocusScrolls(t *testing.T) {
+	ctx := context.Background()
+	m, s := newTestApp(t)
+	tk, err := s.AddTask(ctx, "long task")
+	if err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	for i := range 40 {
+		if _, err := s.AddLogEntry(ctx, &tk.ID, fmt.Sprintf("log line %d", i)); err != nil {
+			t.Fatalf("AddLogEntry: %v", err)
+		}
+	}
+	m = drive(t, m, refreshMsg{})
+
+	m = drive(t, m, keyPress(']'))
+	m = drive(t, m, keyPress('l'))
+	if !m.(app).detailFocused {
+		t.Fatal("l should focus the pane")
+	}
+	for range 20 {
+		m = drive(t, m, keyPress('j'))
+	}
+
+	if a := m.(app); a.detail.YOffset() == 0 {
+		t.Error("scrolling while focused should move the viewport, but YOffset is still 0")
+	}
+}
+
+func TestDetailPaneScrollResetsOnTaskSwitch(t *testing.T) {
+	ctx := context.Background()
+	m, s := newTestApp(t)
+	tk, err := s.AddTask(ctx, "long task")
+	if err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	if _, err := s.AddTask(ctx, "other task"); err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	for i := range 40 {
+		if _, err := s.AddLogEntry(ctx, &tk.ID, fmt.Sprintf("log line %d", i)); err != nil {
+			t.Fatalf("AddLogEntry: %v", err)
+		}
+	}
+	m = drive(t, m, refreshMsg{})
+
+	m = drive(t, m, keyPress(']'))
+	m = drive(t, m, keyPress('l'))
+	for range 20 {
+		m = drive(t, m, keyPress('j'))
+	}
+	if a := m.(app); a.detail.YOffset() == 0 {
+		t.Fatal("setup failed: expected the pane to be scrolled before switching tasks")
+	}
+
+	m = drive(t, m, keyPress('h')) // back to the list
+	m = drive(t, m, keyPress('j')) // move onto the other task
+
+	a := m.(app)
+	if off := a.detail.YOffset(); off != 0 {
+		t.Errorf("YOffset = %d after switching tasks, want 0", off)
+	}
+}
+
+func TestDetailPaneFullWidthScrollsWithoutFocus(t *testing.T) {
+	ctx := context.Background()
+	m, s := newTestApp(t)
+	tk, err := s.AddTask(ctx, "long task")
+	if err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	for i := range 40 {
+		if _, err := s.AddLogEntry(ctx, &tk.ID, fmt.Sprintf("log line %d", i)); err != nil {
+			t.Fatalf("AddLogEntry: %v", err)
+		}
+	}
+	m = drive(t, m, refreshMsg{})
+	m = drive(t, m, tea.WindowSizeMsg{Width: 80, Height: 30}) // narrow enough to force full-width
+
+	m = drive(t, m, keyPress(']'))
+	if m.(app).detailFocused {
+		t.Fatal("full-width detail doesn't need an explicit focus toggle")
+	}
+	for range 20 {
+		m = drive(t, m, keyPress('j'))
+	}
+
+	if a := m.(app); a.detail.YOffset() == 0 {
+		t.Error("j should scroll the pane directly in the full-width layout")
+	}
+}
+
 func TestAddSubTaskAutoExpands(t *testing.T) {
 	ctx := context.Background()
 	m, s := newTestApp(t)
