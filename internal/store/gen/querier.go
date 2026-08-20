@@ -31,6 +31,9 @@ type Querier interface {
 	// non-null when the note is freestanding or its task was deleted.
 	ListLogEntriesBetween(ctx context.Context, arg ListLogEntriesBetweenParams) ([]ListLogEntriesBetweenRow, error)
 	ListLogEntriesForTask(ctx context.Context, taskID sql.NullInt64) ([]LogEntry, error)
+	// Ordered oldest-first so a caller building a per-task map ends up with
+	// the most-recently-active session's status per task (plan section 8.4).
+	ListSessionStatuses(ctx context.Context) ([]ListSessionStatusesRow, error)
 	ListSessionsForTask(ctx context.Context, taskID int64) ([]AgentSession, error)
 	ListSessionsNeedingRecap(ctx context.Context) ([]AgentSession, error)
 	SetSessionNeedsRecap(ctx context.Context, arg SetSessionNeedsRecapParams) error

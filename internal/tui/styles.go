@@ -75,6 +75,17 @@ func newPalette(isDark bool) palette {
 // in both sets so nothing in the layout depends on which one renders.
 type glyphs struct {
 	State map[task.State]string
+	// Session is the agent-session status marker (docs/agent-sessions-plan.md
+	// §8.4). Width 1 like every other glyph here: the plan sketched ⚡/⏸,
+	// but both are East Asian Wide and would push every following column
+	// one cell right on the rows that carry them.
+	//
+	// Deliberately a different family from State — circled operators, not
+	// plain circles — because the two sit in adjacent columns on a list
+	// row and mean different things. Sharing ⊘/✓ across both would render
+	// a blocked task with a blocked session as two identical glyphs side
+	// by side in the same color.
+	Session map[task.SessionStatus]string
 
 	SelBar                   string // selection gutter bar
 	CaretClosed, CaretOpen   string // disclosure carets
@@ -102,6 +113,14 @@ func unicodeGlyphs() glyphs {
 			task.StateBlocked: "⊘",
 			task.StateDone:    "✓",
 			task.StateSomeday: "◇",
+		},
+		Session: map[task.SessionStatus]string{
+			task.SessionStarting: "◌",
+			task.SessionWorking:  "◉",
+			task.SessionBlocked:  "⊗",
+			task.SessionIdle:     "⊙",
+			task.SessionEnded:    "·",
+			task.SessionUnknown:  " ",
 		},
 		SelBar:      "▌",
 		CaretClosed: "▸", CaretOpen: "▾",
@@ -133,6 +152,14 @@ func asciiGlyphs() glyphs {
 			task.StateBlocked: "!",
 			task.StateDone:    "x",
 			task.StateSomeday: "~",
+		},
+		Session: map[task.SessionStatus]string{
+			task.SessionStarting: ".",
+			task.SessionWorking:  "*",
+			task.SessionBlocked:  "!",
+			task.SessionIdle:     "o",
+			task.SessionEnded:    "-",
+			task.SessionUnknown:  " ",
 		},
 		SelBar:      ">",
 		CaretClosed: ">", CaretOpen: "v",
@@ -196,6 +223,7 @@ type Styles struct {
 	Faint    lipgloss.Style
 	Accent   lipgloss.Style
 	State    map[task.State]lipgloss.Style
+	Session  map[task.SessionStatus]lipgloss.Style
 	Priority map[int64]lipgloss.Style
 
 	// Detail pane.
@@ -277,6 +305,17 @@ func newStyles(isDark bool) Styles {
 			task.StateBlocked: fg(p.Blocked),
 			task.StateDone:    fg(p.Done),
 			task.StateSomeday: fg(p.Someday),
+		},
+		Session: map[task.SessionStatus]lipgloss.Style{
+			// Reuses the workflow-state colors rather than inventing a
+			// second vocabulary: a session waiting on the user reads in
+			// the same color a blocked task does.
+			task.SessionStarting: fg(p.Todo),
+			task.SessionWorking:  fg(p.Doing).Bold(true),
+			task.SessionBlocked:  fg(p.Blocked).Bold(true),
+			task.SessionIdle:     fg(p.Done),
+			task.SessionEnded:    fg(p.Faint),
+			task.SessionUnknown:  fg(p.Faint),
 		},
 		Priority: map[int64]lipgloss.Style{
 			1: fg(p.P1).Bold(true),

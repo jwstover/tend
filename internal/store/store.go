@@ -182,6 +182,28 @@ func (s *Store) ChildCounts(ctx context.Context) (map[int64]task.ChildCount, err
 	return counts, nil
 }
 
+// SessionStatuses returns the status of each task's most-recently-active
+// agent session, keyed by task id — what the list row renders so a
+// background session's state is visible without opening the task
+// (docs/agent-sessions-plan.md 8.4).
+//
+// The query returns every session oldest-first and the map keeps the
+// last write per task, which is the most recent one. That's cheaper to
+// reason about than a correlated MAX() subquery and needs no tiebreak
+// rule for two sessions sharing a timestamp, since the ordering already
+// falls back to id.
+func (s *Store) SessionStatuses(ctx context.Context) (map[int64]task.SessionStatus, error) {
+	rows, err := s.q.ListSessionStatuses(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("listing session statuses: %w", err)
+	}
+	statuses := make(map[int64]task.SessionStatus, len(rows))
+	for _, r := range rows {
+		statuses[r.TaskID] = task.SessionStatus(r.Status)
+	}
+	return statuses, nil
+}
+
 // CountInbox returns the number of tasks awaiting triage.
 func (s *Store) CountInbox(ctx context.Context) (int64, error) {
 	n, err := s.q.CountInboxTasks(ctx)

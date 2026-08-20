@@ -386,6 +386,28 @@ func (a app) recapSessionCmd(taskID int64, cwd, externalID string, since *int) t
 	}
 }
 
+// sessionStatusCell resolves a session's status marker — the glyph and
+// the style to render it in (docs/agent-sessions-plan.md §8.4). Shared by
+// the detail pane's SESSIONS section, the picker, and the list row so the
+// three can't drift apart.
+//
+// An unrecognized status falls back to unknown rather than rendering
+// nothing: §8.2 stores status as plain TEXT with no foreign key
+// precisely so an out-of-band value degrades to "not observed" instead
+// of failing. Unknown's glyph is a blank of the same width, so a row
+// with no status still aligns with one that has it.
+func sessionStatusCell(s Styles, st task.SessionStatus) (string, lipgloss.Style) {
+	glyph, ok := s.Glyphs.Session[st]
+	if !ok {
+		glyph = s.Glyphs.Session[task.SessionUnknown]
+	}
+	style, ok := s.Session[st]
+	if !ok {
+		style = s.Session[task.SessionUnknown]
+	}
+	return glyph, style
+}
+
 // sessionPickerView renders the chooser box: numbered session rows below
 // an always-present "+ new session" row, the selected one marked with the
 // selection bar — same layout as urlPickerView.
@@ -420,11 +442,13 @@ func (a app) sessionPickerView() string {
 		num := fmt.Sprintf("%d ", i+1)
 		age := relTime(sess.LastActiveAt, now)
 		var content string
+		mark, markStyle := sessionStatusCell(s, sess.Status)
+		st := markStyle.Render(mark) + " "
 		if i+1 == a.sessionPickerSel {
-			content = s.SelBar.Render(g.SelBar+" ") + s.Accent.Render(num) +
+			content = s.SelBar.Render(g.SelBar+" ") + s.Accent.Render(num) + st +
 				s.Link.Render(sess.Label) + "  " + s.Muted.Render(age)
 		} else {
-			content = "  " + s.Muted.Render(num) + s.Dimmed.Render(sess.Label) +
+			content = "  " + s.Muted.Render(num) + st + s.Dimmed.Render(sess.Label) +
 				"  " + s.Muted.Render(age)
 		}
 		lines = append(lines, row(content))

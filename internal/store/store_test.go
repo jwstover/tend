@@ -1008,3 +1008,47 @@ func TestClaimSessionRecapWithNoDebt(t *testing.T) {
 		t.Error("claimed a debt that was never owed")
 	}
 }
+
+// SessionStatuses reports the most-recently-active session per task —
+// what the list row's marker is drawn from. Two sessions created in the
+// same second tie on last_active_at, so the id tiebreak in the query's
+// ORDER BY is what decides, and it has to pick the newer one.
+func TestSessionStatusesTakesLatestPerTask(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	a := mustAdd(t, s, "task a")
+	b := mustAdd(t, s, "task b")
+	mustAdd(t, s, "task c") // no sessions at all
+
+	for _, ext := range []string{"a-old", "a-new"} {
+		if _, err := s.CreateSession(ctx, a.ID, ext, "/tmp/work", a.Title, "tend-"+ext); err != nil {
+			t.Fatalf("CreateSession(%s): %v", ext, err)
+		}
+	}
+	if _, err := s.CreateSession(ctx, b.ID, "b-1", "/tmp/work", b.Title, "tend-b-1"); err != nil {
+		t.Fatalf("CreateSession(b-1): %v", err)
+	}
+	if err := s.SetSessionStatus(ctx, "a-old", task.SessionBlocked); err != nil {
+		t.Fatalf("SetSessionStatus(a-old): %v", err)
+	}
+	if err := s.SetSessionStatus(ctx, "a-new", task.SessionWorking); err != nil {
+		t.Fatalf("SetSessionStatus(a-new): %v", err)
+	}
+
+	statuses, err := s.SessionStatuses(ctx)
+	if err != nil {
+		t.Fatalf("SessionStatuses: %v", err)
+	}
+	if got := statuses[a.ID]; got != task.SessionWorking {
+		t.Errorf("task a status = %q, want %q (the newer session)", got, task.SessionWorking)
+	}
+	// A session nothing has reported on still appears, as unknown — the
+	// row renders that as blank, which is not the same as absent.
+	if got, ok := statuses[b.ID]; !ok || got != task.SessionUnknown {
+		t.Errorf("task b status = %q (present=%v), want %q", got, ok, task.SessionUnknown)
+	}
+	if len(statuses) != 2 {
+		t.Errorf("len(statuses) = %d, want 2 — a task with no sessions must not appear", len(statuses))
+	}
+}

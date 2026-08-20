@@ -119,7 +119,9 @@ func renderDetail(t task.Task, children []task.Task, log []task.LogEntry, sessio
 		b.WriteString("\n" + "  " + styles.SubHeader.Render("SESSIONS") + "  " +
 			styles.Muted.Render(fmt.Sprintf("%d", len(sessions))) + "\n")
 		for i, sess := range sessions {
+			mark, markStyle := sessionStatusCell(styles, sess.Status)
 			b.WriteString("  " + styles.Muted.Render(fmt.Sprintf("[%d] ", i+1)) +
+				markStyle.Render(mark) + " " +
 				styles.Link.Render(sess.Label) + "  " +
 				styles.DetailFaint.Render(relTime(sess.LastActiveAt, now)) + "\n")
 		}
