@@ -197,6 +197,33 @@ func moveOffHeading(m *list.Model, dir int) {
 // dot, caret slot, flexible title, and a fixed right-aligned meta block.
 type taskDelegate struct {
 	styles Styles
+	// sessions is the latest agent-session status per task id, used for
+	// the row marker (docs/agent-sessions-plan.md 8.4). Nil is a normal
+	// state, not an error: it just means no row carries a marker.
+	sessions map[int64]task.SessionStatus
+}
+
+// sessionCell renders the agent-session marker for a task row: a
+// two-cell column that stays blank unless the task's most recent session
+// is one the user might want to act on.
+//
+// Only live-ish statuses show. A task whose session merely ended would
+// otherwise carry a marker forever — every task ever worked on would
+// grow permanent chrome, which is noise rather than signal. Ended and
+// unknown render as blank, so the marker means "there is a session doing
+// something right now."
+func (d taskDelegate) sessionCell(id int64) seg {
+	st, ok := d.sessions[id]
+	if !ok {
+		return seg{"  ", d.styles.Normal}
+	}
+	switch st {
+	case task.SessionStarting, task.SessionWorking, task.SessionBlocked, task.SessionIdle:
+	default:
+		return seg{"  ", d.styles.Normal}
+	}
+	glyph, style := sessionStatusCell(d.styles, st)
+	return seg{glyph + " ", style}
 }
 
 func (d taskDelegate) Height() int  { return 1 }
@@ -282,6 +309,9 @@ func (d taskDelegate) renderRow(it listItem, selected bool, width int) string {
 		dot = dot.Bold(true)
 	}
 	segs = append(segs, seg{g.State[t.State] + " ", dot})
+
+	// Agent-session marker (2), blank unless a session is live.
+	segs = append(segs, d.sessionCell(t.ID))
 
 	// Caret slot (2): disclosure state when the task has children.
 	if it.total > 0 {
@@ -372,6 +402,10 @@ func (d taskDelegate) renderChildRow(it childItem, selected bool, width int) str
 		dot = dot.Bold(true)
 	}
 	segs = append(segs, seg{g.State[it.t.State] + " ", dot})
+
+	// Agent-session marker (2). Sub-tasks own sessions the same way
+	// top-level tasks do, so the row carries the same marker.
+	segs = append(segs, d.sessionCell(it.t.ID))
 
 	titleStyle := s.Dimmed
 	switch {

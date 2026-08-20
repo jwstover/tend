@@ -62,6 +62,42 @@ func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) (A
 	return i, err
 }
 
+const listSessionStatuses = `-- name: ListSessionStatuses :many
+SELECT task_id, status
+FROM agent_sessions
+ORDER BY last_active_at ASC, id ASC
+`
+
+type ListSessionStatusesRow struct {
+	TaskID int64
+	Status string
+}
+
+// Ordered oldest-first so a caller building a per-task map ends up with
+// the most-recently-active session's status per task (plan section 8.4).
+func (q *Queries) ListSessionStatuses(ctx context.Context) ([]ListSessionStatusesRow, error) {
+	rows, err := q.db.QueryContext(ctx, listSessionStatuses)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListSessionStatusesRow{}
+	for rows.Next() {
+		var i ListSessionStatusesRow
+		if err := rows.Scan(&i.TaskID, &i.Status); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listSessionsForTask = `-- name: ListSessionsForTask :many
 SELECT id, task_id, external_id, cwd, label, started_at, last_active_at, tmux_session, needs_recap, status, status_updated_at
 FROM agent_sessions

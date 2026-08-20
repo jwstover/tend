@@ -39,3 +39,10 @@ ORDER BY last_active_at DESC, id DESC;
 UPDATE agent_sessions
 SET needs_recap = 0
 WHERE external_id = ? AND needs_recap = 1;
+
+-- name: ListSessionStatuses :many
+-- Ordered oldest-first so a caller building a per-task map ends up with
+-- the most-recently-active session's status per task (plan section 8.4).
+SELECT task_id, status
+FROM agent_sessions
+ORDER BY last_active_at ASC, id ASC;

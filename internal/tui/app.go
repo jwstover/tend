@@ -36,6 +36,7 @@ type Store interface {
 	ListInbox(ctx context.Context) ([]task.Task, error)
 	ListChildren(ctx context.Context, parentID int64) ([]task.Task, error)
 	ChildCounts(ctx context.Context) (map[int64]task.ChildCount, error)
+	SessionStatuses(ctx context.Context) (map[int64]task.SessionStatus, error)
 	CountInbox(ctx context.Context) (int64, error)
 	SetState(ctx context.Context, id int64, st task.State) error
 	SetProject(ctx context.Context, id int64, project *string) error
@@ -106,10 +107,11 @@ type flash struct {
 // Messages produced by commands.
 type (
 	tasksLoadedMsg struct {
-		mode   viewMode
-		tasks  []task.Task
-		counts map[int64]task.ChildCount
-		inbox  int64
+		mode     viewMode
+		tasks    []task.Task
+		counts   map[int64]task.ChildCount
+		sessions map[int64]task.SessionStatus
+		inbox    int64
 	}
 	childrenLoadedMsg struct {
 		parentID int64
@@ -203,10 +205,11 @@ type app struct {
 	// rebuilt from these whenever any of them changes.
 	tasks         []task.Task
 	counts        map[int64]task.ChildCount
-	expanded      map[int64]bool            // branch disclosure, by task ID, session-scoped
-	childCache    map[int64][]task.Task     // loaded children per parent
-	logCache      map[int64][]task.LogEntry // loaded task notes, for the detail pane
-	sessionsCache map[int64][]task.Session  // loaded claude sessions per task, for the detail pane
+	sessionStatus map[int64]task.SessionStatus // latest session status per task, for the list row
+	expanded      map[int64]bool               // branch disclosure, by task ID, session-scoped
+	childCache    map[int64][]task.Task        // loaded children per parent
+	logCache      map[int64][]task.LogEntry    // loaded task notes, for the detail pane
+	sessionsCache map[int64][]task.Session     // loaded claude sessions per task, for the detail pane
 
 	startCwd string // tend's own working directory at startup; the launch-prompt fallback
 
@@ -345,7 +348,7 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.triageQueue = mergeTriageQueue(a.triageQueue, msg.tasks)
 			return a, nil
 		}
-		a.tasks, a.counts = msg.tasks, msg.counts
+		a.tasks, a.counts, a.sessionStatus = msg.tasks, msg.counts, msg.sessions
 		// Stale-while-revalidate: rebuild from the cached children now,
 		// then re-fetch every expanded branch.
 		cmd := tea.Batch(a.rebuildList(), a.reloadExpanded())
@@ -1065,6 +1068,11 @@ func (a app) toggleExpand(id int64) (tea.Model, tea.Cmd) {
 // expansion set, and the children cache, and kicks off loads for any
 // expanded branch whose children aren't cached yet.
 func (a *app) rebuildList() tea.Cmd {
+	// The status map rides on the delegate rather than on each item the
+	// way counts does: counts drives disclosure logic as well as
+	// rendering, whereas a session marker is purely visual, so the
+	// renderer is the one thing that needs it.
+	a.list.SetDelegate(taskDelegate{styles: a.styles, sessions: a.sessionStatus})
 	cmds := []tea.Cmd{a.list.SetItems(toGroupedItems(a.tasks, a.counts, a.expanded, a.childCache))}
 	for id := range a.expanded {
 		if _, ok := a.childCache[id]; !ok {
@@ -1295,7 +1303,14 @@ func (a app) loadTasks(mode viewMode) tea.Cmd {
 		if err != nil {
 			return errMsg{err}
 		}
-		return tasksLoadedMsg{mode: mode, tasks: tasks, counts: counts, inbox: inbox}
+		// A session status is decoration on the row, so a failure here
+		// degrades to "no marker" rather than failing the whole load and
+		// leaving the user with no list at all.
+		statuses, err := a.store.SessionStatuses(a.ctx)
+		if err != nil {
+			statuses = nil
+		}
+		return tasksLoadedMsg{mode: mode, tasks: tasks, counts: counts, sessions: statuses, inbox: inbox}
 	}
 }
 
