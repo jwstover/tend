@@ -43,10 +43,11 @@ type Store interface {
 	SetDue(ctx context.Context, id int64, due *string) error
 	SetBody(ctx context.Context, id int64, body string) error
 	DeleteTask(ctx context.Context, id int64) error
-	CreateSession(ctx context.Context, taskID int64, externalID, cwd, label string) (task.Session, error)
+	CreateSession(ctx context.Context, taskID int64, externalID, cwd, label, tmuxSession string) (task.Session, error)
 	ListSessionsForTask(ctx context.Context, taskID int64) ([]task.Session, error)
 	TouchSession(ctx context.Context, id int64) error
 	UpdateSessionLabel(ctx context.Context, externalID, label string) error
+	SetSessionNeedsRecap(ctx context.Context, externalID string, needs bool) error
 }
 
 // Run starts the TUI and blocks until it exits. dbPath is shown on the
@@ -147,12 +148,19 @@ type (
 	}
 	// sessionFinishedMsg reports a launched session's terminal handoff
 	// returning; the store row is only written on a clean exit.
+	// tmuxSession is the wrapping tmux session's name, "" when the
+	// session ran without tmux. backgrounded distinguishes a detach from
+	// a real exit — both are a clean return from tea.ExecProcess, so it's
+	// resolved by asking tmux whether the session is still alive (see
+	// launchSessionCmd).
 	sessionFinishedMsg struct {
-		taskID     int64
-		externalID string
-		cwd        string
-		label      string
-		err        error
+		taskID       int64
+		externalID   string
+		cwd          string
+		label        string
+		tmuxSession  string
+		backgrounded bool
+		err          error
 	}
 	// sessionResumedMsg reports a resumed session's terminal handoff
 	// returning; last_active_at is only bumped on a clean exit. since is
@@ -165,6 +173,7 @@ type (
 		cwd          string
 		externalID   string
 		since        int
+		backgrounded bool
 		err          error
 	}
 	// recapDoneMsg wraps whatever recapSessionCmd produces — including
@@ -378,10 +387,23 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.status = flash{text: "claude: " + msg.err.Error(), isErr: true}
 			return a, nil
 		}
+		// Backgrounded: claude is still running under tmux, so the recap
+		// is deliberately skipped — `claude -p --resume` against a live
+		// session would put two processes on one session id and one
+		// transcript file. The debt is recorded instead, for Phase 4.2's
+		// SessionEnd hook to settle (docs/agent-sessions-plan.md §8.1).
+		if msg.backgrounded {
+			return a, a.mutate(flash{kind: flashEdit, text: "session backgrounded"}, func() error {
+				if _, err := a.store.CreateSession(a.ctx, msg.taskID, msg.externalID, msg.cwd, msg.label, msg.tmuxSession); err != nil {
+					return err
+				}
+				return a.store.SetSessionNeedsRecap(a.ctx, msg.externalID, true)
+			})
+		}
 		a.pendingRecaps++
 		return a, tea.Batch(
 			a.mutate(flash{kind: flashEdit, text: "session recorded"}, func() error {
-				_, err := a.store.CreateSession(a.ctx, msg.taskID, msg.externalID, msg.cwd, msg.label)
+				_, err := a.store.CreateSession(a.ctx, msg.taskID, msg.externalID, msg.cwd, msg.label, msg.tmuxSession)
 				return err
 			}),
 			a.recapSessionCmd(msg.taskID, msg.cwd, msg.externalID, nil),
@@ -391,6 +413,14 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			a.status = flash{text: "claude: " + msg.err.Error(), isErr: true}
 			return a, nil
+		}
+		if msg.backgrounded {
+			return a, a.mutate(flash{kind: flashEdit, text: "session backgrounded"}, func() error {
+				if err := a.store.TouchSession(a.ctx, msg.sessionRowID); err != nil {
+					return err
+				}
+				return a.store.SetSessionNeedsRecap(a.ctx, msg.externalID, true)
+			})
 		}
 		a.pendingRecaps++
 		return a, tea.Batch(

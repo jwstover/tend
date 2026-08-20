@@ -247,7 +247,7 @@ func TestRecapFiresOnSessionResumed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AddTask: %v", err)
 	}
-	sess, err := s.CreateSession(ctx, parent.ID, "ext-1", "/tmp/work", parent.Title)
+	sess, err := s.CreateSession(ctx, parent.ID, "ext-1", "/tmp/work", parent.Title, "")
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}

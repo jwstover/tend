@@ -348,10 +348,12 @@ func (s *Store) ListEvents(ctx context.Context, from, to time.Time) ([]task.Even
 
 // CreateSession records a Claude Code session launched or resumed against
 // a task: the pinned external session id, the directory it ran in, and
-// the task's title snapshotted as the label.
-func (s *Store) CreateSession(ctx context.Context, taskID int64, externalID, cwd, label string) (task.Session, error) {
+// the task's title snapshotted as the label. tmuxSession is the wrapping
+// tmux session's name, or "" when the session wasn't launched under tmux
+// (see task.Session).
+func (s *Store) CreateSession(ctx context.Context, taskID int64, externalID, cwd, label, tmuxSession string) (task.Session, error) {
 	row, err := s.q.CreateSession(ctx, gen.CreateSessionParams{
-		TaskID: taskID, ExternalID: externalID, Cwd: cwd, Label: label,
+		TaskID: taskID, ExternalID: externalID, Cwd: cwd, Label: label, TmuxSession: tmuxSession,
 	})
 	if err != nil {
 		return task.Session{}, fmt.Errorf("inserting session for task %d: %w", taskID, err)
@@ -396,6 +398,23 @@ func (s *Store) TouchSession(ctx context.Context, id int64) error {
 func (s *Store) UpdateSessionLabel(ctx context.Context, externalID, label string) error {
 	if err := s.q.UpdateSessionLabel(ctx, gen.UpdateSessionLabelParams{ExternalID: externalID, Label: label}); err != nil {
 		return fmt.Errorf("updating session label for %s: %w", externalID, err)
+	}
+	return nil
+}
+
+// SetSessionNeedsRecap flags a session as still owing a recap, set when
+// a session is backgrounded rather than exited so the recap call is
+// deliberately skipped while it's live (docs/agent-sessions-plan.md
+// §8.1). Keyed by external_id for the same reason UpdateSessionLabel is:
+// it's what the TUI has in hand on both the launch and resume paths.
+// Nothing clears the flag yet — Phase 4.2's SessionEnd hook drains it.
+func (s *Store) SetSessionNeedsRecap(ctx context.Context, externalID string, needs bool) error {
+	var v int64
+	if needs {
+		v = 1
+	}
+	if err := s.q.SetSessionNeedsRecap(ctx, gen.SetSessionNeedsRecapParams{ExternalID: externalID, NeedsRecap: v}); err != nil {
+		return fmt.Errorf("setting needs_recap for %s: %w", externalID, err)
 	}
 	return nil
 }
@@ -482,6 +501,8 @@ func sessionToDomain(row gen.AgentSession) (task.Session, error) {
 		ExternalID:   row.ExternalID,
 		Cwd:          row.Cwd,
 		Label:        row.Label,
+		TmuxSession:  row.TmuxSession,
+		NeedsRecap:   row.NeedsRecap != 0,
 		StartedAt:    started,
 		LastActiveAt: lastActive,
 	}, nil

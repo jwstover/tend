@@ -10,16 +10,17 @@ import (
 )
 
 const createSession = `-- name: CreateSession :one
-INSERT INTO agent_sessions (task_id, external_id, cwd, label)
-VALUES (?, ?, ?, ?)
-RETURNING id, task_id, external_id, cwd, label, started_at, last_active_at
+INSERT INTO agent_sessions (task_id, external_id, cwd, label, tmux_session)
+VALUES (?, ?, ?, ?, ?)
+RETURNING id, task_id, external_id, cwd, label, started_at, last_active_at, tmux_session, needs_recap
 `
 
 type CreateSessionParams struct {
-	TaskID     int64
-	ExternalID string
-	Cwd        string
-	Label      string
+	TaskID      int64
+	ExternalID  string
+	Cwd         string
+	Label       string
+	TmuxSession string
 }
 
 func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) (AgentSession, error) {
@@ -28,6 +29,7 @@ func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) (A
 		arg.ExternalID,
 		arg.Cwd,
 		arg.Label,
+		arg.TmuxSession,
 	)
 	var i AgentSession
 	err := row.Scan(
@@ -38,12 +40,14 @@ func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) (A
 		&i.Label,
 		&i.StartedAt,
 		&i.LastActiveAt,
+		&i.TmuxSession,
+		&i.NeedsRecap,
 	)
 	return i, err
 }
 
 const listSessionsForTask = `-- name: ListSessionsForTask :many
-SELECT id, task_id, external_id, cwd, label, started_at, last_active_at
+SELECT id, task_id, external_id, cwd, label, started_at, last_active_at, tmux_session, needs_recap
 FROM agent_sessions
 WHERE task_id = ?
 ORDER BY last_active_at DESC, id DESC
@@ -66,6 +70,8 @@ func (q *Queries) ListSessionsForTask(ctx context.Context, taskID int64) ([]Agen
 			&i.Label,
 			&i.StartedAt,
 			&i.LastActiveAt,
+			&i.TmuxSession,
+			&i.NeedsRecap,
 		); err != nil {
 			return nil, err
 		}
@@ -78,6 +84,22 @@ func (q *Queries) ListSessionsForTask(ctx context.Context, taskID int64) ([]Agen
 		return nil, err
 	}
 	return items, nil
+}
+
+const setSessionNeedsRecap = `-- name: SetSessionNeedsRecap :exec
+UPDATE agent_sessions
+SET needs_recap = ?
+WHERE external_id = ?
+`
+
+type SetSessionNeedsRecapParams struct {
+	NeedsRecap int64
+	ExternalID string
+}
+
+func (q *Queries) SetSessionNeedsRecap(ctx context.Context, arg SetSessionNeedsRecapParams) error {
+	_, err := q.db.ExecContext(ctx, setSessionNeedsRecap, arg.NeedsRecap, arg.ExternalID)
+	return err
 }
 
 const touchSession = `-- name: TouchSession :exec

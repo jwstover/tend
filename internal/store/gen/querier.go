@@ -31,6 +31,7 @@ type Querier interface {
 	ListLogEntriesBetween(ctx context.Context, arg ListLogEntriesBetweenParams) ([]ListLogEntriesBetweenRow, error)
 	ListLogEntriesForTask(ctx context.Context, taskID sql.NullInt64) ([]LogEntry, error)
 	ListSessionsForTask(ctx context.Context, taskID int64) ([]AgentSession, error)
+	SetSessionNeedsRecap(ctx context.Context, arg SetSessionNeedsRecapParams) error
 	SetTaskBody(ctx context.Context, arg SetTaskBodyParams) error
 	SetTaskDue(ctx context.Context, arg SetTaskDueParams) error
 	SetTaskPriority(ctx context.Context, arg SetTaskPriorityParams) error

@@ -50,7 +50,7 @@ func TestSessionsKeyWithSessionsOpensPicker(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AddTask: %v", err)
 	}
-	if _, err := s.CreateSession(ctx, parent.ID, "ext-1", "/tmp/work", parent.Title); err != nil {
+	if _, err := s.CreateSession(ctx, parent.ID, "ext-1", "/tmp/work", parent.Title, ""); err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
 	m = drive(t, m, refreshMsg{})
@@ -82,7 +82,7 @@ func TestSessionPickerEnterOnNewRowOpensPromptWithLastCwd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AddTask: %v", err)
 	}
-	if _, err := s.CreateSession(ctx, parent.ID, "ext-1", "/tmp/work", parent.Title); err != nil {
+	if _, err := s.CreateSession(ctx, parent.ID, "ext-1", "/tmp/work", parent.Title, ""); err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
 	m = drive(t, m, refreshMsg{})
@@ -108,7 +108,7 @@ func TestSessionPickerDigitResumesAndClosesPicker(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AddTask: %v", err)
 	}
-	if _, err := s.CreateSession(ctx, parent.ID, "ext-1", "/tmp/work", parent.Title); err != nil {
+	if _, err := s.CreateSession(ctx, parent.ID, "ext-1", "/tmp/work", parent.Title, ""); err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
 	m = drive(t, m, refreshMsg{})
@@ -131,7 +131,7 @@ func TestSessionPickerEscDismisses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AddTask: %v", err)
 	}
-	if _, err := s.CreateSession(ctx, parent.ID, "ext-1", "/tmp/work", parent.Title); err != nil {
+	if _, err := s.CreateSession(ctx, parent.ID, "ext-1", "/tmp/work", parent.Title, ""); err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
 	m = drive(t, m, refreshMsg{})
@@ -195,7 +195,7 @@ func TestSessionResumedMsgTouchesSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AddTask: %v", err)
 	}
-	sess, err := s.CreateSession(ctx, parent.ID, "ext-1", "/tmp/work", parent.Title)
+	sess, err := s.CreateSession(ctx, parent.ID, "ext-1", "/tmp/work", parent.Title, "")
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -224,7 +224,7 @@ func TestDetailPaneShowsSessions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AddTask: %v", err)
 	}
-	if _, err := s.CreateSession(ctx, parent.ID, "ext-1", "/home/me/code/my-project", "fixed the flaky test"); err != nil {
+	if _, err := s.CreateSession(ctx, parent.ID, "ext-1", "/home/me/code/my-project", "fixed the flaky test", ""); err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
 	m = drive(t, m, refreshMsg{})

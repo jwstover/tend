@@ -16,6 +16,8 @@ type AgentSession struct {
 	Label        string
 	StartedAt    string
 	LastActiveAt string
+	TmuxSession  string
+	NeedsRecap   int64
 }
 
 type LogEntry struct {

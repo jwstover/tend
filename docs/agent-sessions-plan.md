@@ -6,7 +6,10 @@
 > manually confirmed (2026-08-17); its auto-naming half is implemented and unit-tested but not yet
 > manually confirmed against the real CLI. Phase 5 (MCP task read/write) is implemented, unit- and
 > integration-tested, and manually confirmed (2026-08-18) with a real `tend mcp` subprocess driven
-> over stdio JSON-RPC end to end against a live SQLite file. Phases 3-4 are unstarted. This is a
+> over stdio JSON-RPC end to end against a live SQLite file. Phase 4.1 (tmux-backed
+> launch/attach/background) is implemented, unit-tested, verified end-to-end against real tmux
+> 3.7b, and manually confirmed (2026-08-18) against the real `claude` CLI from tend's own UI —
+> detach and reattach both work. Phase 3 and Phases 4.2-4.4 are unstarted. This is a
 > project-specific addendum to `AGENTS.md`, not a replacement for it — the layering, conventions,
 > and commit rules in `AGENTS.md` still govern everything built here.
 
@@ -233,44 +236,105 @@ rendered pane ("screen manifest detection"), not from hooks — Claude Code has 
 "still running a tool." §8.2/§8.3 split on the same line: hooks for identity + coarse lifecycle,
 screen-scraping only for the gap hooks can't cover.
 
-### 8.1 tmux-backed launch/attach
+### 8.1 tmux-backed launch/attach — implemented (2026-08-18)
 
-`tea.ExecProcess` currently hands the terminal straight to `claude` (`internal/agent/agent.go:33-45`)
-— when tend suspends, `claude` *is* the foreground process, so there's no backgrounded state to
-return to and nothing a second process could attach to. Fix: tend execs `tmux attach`, not `claude`
-directly; `claude` runs inside a tmux session that outlives the attached client.
+`tea.ExecProcess` previously handed the terminal straight to `claude` — when tend suspended,
+`claude` *was* the foreground process, so there was no backgrounded state to return to and nothing
+a second process could attach to. Fixed: tend execs `tmux`, not `claude` directly; `claude` runs
+inside a tmux session that outlives the attached client.
 
-- All tmux calls target a dedicated server: `tmux -L tend -f <generated minimal config>`. Never
-  touches the user's own `~/.tmux.conf`, prefix key, or plugins, and stays invisible to their
-  normal `tmux ls`.
-- Deterministic session name per row: `tend-<agent_sessions.id>` — not the Claude external UUID,
-  since tmux session names need to be a stable, shell-safe handle, and this doubles as the hook
-  correlation key in §8.2.
-- `agent.LaunchCmd` becomes: `tmux -L tend new-session -s tend-<id> -c <cwd> -- claude
-  --session-id <sid> -n <label>`. Attached by default (no `-d`), so first use is indistinguishable
-  from today's direct launch.
-- `agent.ResumeCmd` becomes: `tmux -L tend has-session -t tend-<id>` first. If alive, `attach-session
-  -t tend-<id>`. If not (host rebooted, tmux server restarted), fall back to today's `claude
-  --resume <externalID>` inside a freshly created tmux session — same command, just wrapped.
-- Backgrounding needs no new tend keybinding: tmux's own detach chord (default `prefix d`) exits
-  the `attach-session` process with status 0, which is all `tea.ExecProcess`'s callback sees — tend's
-  TUI resumes exactly as it does today when `claude` exits cleanly, except the tmux server keeps
-  `claude` running underneath.
-- Cross-instance reconnect falls out of the above for free: any tend instance on the same host,
-  given the session name from the DB row and the shared `-L tend` socket (per-user, default
-  location), can run the same attach command. No new IPC beyond what's already shared — the sqlite
-  DB and the tmux socket.
-- Gate on `exec.LookPath("tmux")` the same way `agent.CheckInstalled` gates `claude`
-  (`internal/agent/agent.go:19-28`). Missing tmux degrades to today's direct-exec behavior — normal
-  launch/resume still works, backgrounding/reconnect just isn't offered.
+**Verified against tmux 3.7b, not assumed.** Three findings drove the shape of this, each probed
+directly rather than taken from folklore:
 
-**Schema:** migration `00005_tmux_sessions.sql` adds `agent_sessions.tmux_session TEXT` — store the
-name explicitly rather than re-deriving it from the row id, so the naming scheme can change later
-without a backfill.
+- **tmux's nesting guard is per-server**, matched on the attaching client's tty against *that
+  server's* panes — not on `$TMUX` alone. Probed from inside a real pane: `tmux attach` →
+  "sessions should be nested with care"; `tmux -L other attach` → a plain "no sessions", i.e. the
+  guard never fired. The dedicated `-L tend` socket is therefore **load-bearing for the nested
+  case**, not just hygiene: it's what lets tend launch a session when tend itself was started from
+  inside the user's own tmux, with no `unset TMUX` hack. Don't "simplify" it away.
+- **`bind -n C-h` does not capture Backspace.** tmux parses `0x08` as `C-h` and `0x7F` as `BSpace`
+  into separate key-table entries. Probed by injecting raw bytes into a pty: C-h, Backspace, C-h
+  fired the binding exactly twice. Terminfo here is `kbs=^?` for both `xterm-256color` and
+  `tmux-256color`. The only setup where this bites is a terminal whose Backspace sends `0x08`
+  (`kbs=^H`); accepted.
+- **Setting `prefix` does not clear tmux's default key table.** With `status off`, a stray
+  `C-Space c` would silently create a second window with nothing on screen to reveal it, stranding
+  the user in what looks like a broken claude. Hence `unbind -a -T prefix`.
 
-**Out of scope for 8.1:** cross-host reconnect (would need SSH-forwarded sockets, a materially
-bigger lift — not pursuing without a concrete need); a background-only launch (`-d`, never attach)
-— worth adding once there's a real "fire and forget" use case, not now.
+**Implemented:**
+
+- `internal/agent/tmux.go` — `SocketName`, `SessionName`, `TmuxInstalled`, `ConfigPath`,
+  `WriteConfig`, `WrapTmux`, `AttachCmd`, `HasSession`, `KillSession`. `LaunchCmd`/`ResumeCmd` were
+  left alone: `WrapTmux` *transforms* a direct claude command into a tmux one, so the degrade path
+  is simply "don't wrap" and the existing command builders stay independently testable.
+- All tmux calls target a dedicated server, `tmux -L tend -f <generated config>`. Never touches the
+  user's `~/.tmux.conf`, prefix, or plugins, and stays out of their `tmux ls`.
+- **Session name is `tend-<externalID>`**, not `tend-<agent_sessions.id>` as this section originally
+  specified. The row id doesn't exist at launch time — `CreateSession` runs when the terminal
+  handoff *returns* (`internal/tui/app.go`), deliberately, so a failed launch saves nothing. The
+  external UUID is already generated before `LaunchCmd`, is shell-safe, and is what Claude Code
+  reports as `session_id` in hook payloads, which makes §8.2's correlation a direct lookup rather
+  than a join. Naming by row id would have forced writing the row before the handoff and losing the
+  don't-save-on-error property.
+- **Backgrounding needs no new tend keybinding.** `C-h` (bare) or `C-Space d` detaches; the
+  `attach-session` process exits 0, which is all `tea.ExecProcess`'s callback sees, and tend's TUI
+  resumes exactly as it does when claude exits cleanly — except the tmux server keeps `claude`
+  running underneath.
+- **Resume takes one of two paths.** If `has-session` says the tmux session is alive, it *attaches*
+  to the running claude rather than starting a second one against the same session id. Otherwise
+  (never backgrounded, or the server died with the host) it falls back to `claude --resume` wrapped
+  in a fresh tmux session. A pre-8.1 row with no stored name derives the name it would have had, so
+  old sessions become attachable from their first resume.
+- **Cross-instance reconnect falls out for free**: any tend on the same host, given the name from
+  the DB row and the shared `-L tend` socket, runs the same attach command. No new IPC beyond what
+  tend already shares — the sqlite DB and the tmux socket. `attach-session -d` so a second tend
+  *takes over* rather than mirroring at min-size, which reads as a rendering bug.
+- Missing tmux degrades to the pre-8.1 direct-exec behavior. Launch and resume still work;
+  backgrounding and reconnect just aren't offered. tmux is a capability, never a requirement.
+
+**Generated config** lives at `$XDG_CONFIG_HOME/tend/tmux.conf` — a stable path, not a temp file,
+because tmux reads `-f` **only when the server starts** and never re-reads it. Iterating on the
+config therefore needs `tmux -L tend kill-server` to take effect. Two lines look like boilerplate
+and aren't: `unbind -a -T prefix` (above), and `escape-time 10` — esc is Claude Code's interrupt
+key, and tmux's default delay makes esc-to-interrupt feel dead through the extra layer, which would
+be the most-noticed regression of wrapping claude in tmux at all. The rest preserves what nesting
+otherwise degrades: truecolor (`terminal-features ",*:RGB"`), OSC 52 copy (`set-clipboard on`), and
+sizing to the attached client (`aggressive-resize on`). `status off` keeps first use
+indistinguishable from a direct launch.
+
+**Detach vs. exit is the one real trap.** Both are a clean exit 0 from `tea.ExecProcess`, but the
+Phase 2 recap call (`claude -p --resume <id>`) must not fire against a session that's merely
+detached — that would put two processes on one session id and one transcript JSONL. The callback
+resolves it by asking tmux: `HasSession` alive → backgrounded → skip the recap and record the debt;
+dead → the session really ended → recap exactly as before. The MCP config temp file is likewise
+only cleaned up when the session is really over, since a backgrounded claude still holds it.
+
+**Schema:** migration `00005_tmux_sessions.sql` adds `agent_sessions.tmux_session TEXT` (stored
+explicitly rather than re-derived, so the naming scheme can change without a backfill) and
+`agent_sessions.needs_recap INTEGER`.
+
+**Known limitation, closed by 8.2:** a session that is backgrounded and never re-attached logs no
+recap. `needs_recap` records the debt but nothing drains it yet — 8.2's `SessionEnd` hook marks the
+session ended, and any tend instance settles the pending recap on refresh. This is a stated gap,
+not an oversight, and it gives 8.2 a second job beyond status glyphs.
+
+**Verified end-to-end (2026-08-18)** with a stand-in for `claude`, launched nested inside a real
+tmux session: launch attaches with no nesting guard; `C-h` exits the client with status 0 while the
+session stays alive; `AttachCmd` reattaches; the inner process exiting destroys the session and the
+server, leaving no orphan. Unit tests cover argv construction (`internal/agent/tmux_test.go`), the
+schema round-trip (`internal/store/store_test.go`), and the recap-skip behavior
+(`internal/tui/background_test.go`).
+
+**Manually confirmed (2026-08-18)** against the real `claude` binary from tend's own UI: detach and
+reattach both behave as designed, and neither `C-Space` nor `C-h` is claimed by Claude Code's TUI,
+so the generated config needs no adjustment.
+
+**Out of scope for 8.1:** cross-host reconnect (needs SSH-forwarded sockets — materially bigger, no
+concrete need); a background-only launch (`-d`, never attach); a kill affordance for a wedged
+session (`KillSession` exists but nothing in the TUI calls it yet — distinct from §7's ruled-out
+deletion of session *records*). Also unaddressed: the tmux server freezes the environment of
+whichever tend process started it, and `update-environment` only refreshes its own list on attach —
+pass `-e` explicitly if that ever bites.
 
 ### 8.2 Status, part 1 — hook wiring (identity + coarse lifecycle)
 

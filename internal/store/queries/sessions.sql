@@ -1,6 +1,6 @@
 -- name: CreateSession :one
-INSERT INTO agent_sessions (task_id, external_id, cwd, label)
-VALUES (?, ?, ?, ?)
+INSERT INTO agent_sessions (task_id, external_id, cwd, label, tmux_session)
+VALUES (?, ?, ?, ?, ?)
 RETURNING *;
 
 -- name: ListSessionsForTask :many
@@ -17,4 +17,9 @@ WHERE id = ?;
 -- name: UpdateSessionLabel :exec
 UPDATE agent_sessions
 SET label = ?
+WHERE external_id = ?;
+
+-- name: SetSessionNeedsRecap :exec
+UPDATE agent_sessions
+SET needs_recap = ?
 WHERE external_id = ?;
