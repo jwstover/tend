@@ -21,7 +21,7 @@ import (
 // SessionID is the claude --session-id UUID — the same value tend pinned
 // at launch and stored as agent_sessions.external_id, which is what
 // makes correlation a lookup rather than a join. Verified against the
-// real CLI (docs/agent-sessions-plan.md §8.2), not assumed from docs.
+// real CLI, not assumed from docs.
 type HookPayload struct {
 	SessionID     string `json:"session_id"`
 	HookEventName string `json:"hook_event_name"`
@@ -51,7 +51,7 @@ func ParseHookPayload(r io.Reader) (HookPayload, error) {
 //     authority on liveness; `tmux has-session` is (see HasSession).
 //
 // There is deliberately no "working" entry: Claude Code fires no hook
-// mid-tool-call, which is the whole reason §8.3's capture-pane poller
+// mid-tool-call, which is the whole reason the capture-pane poller
 // exists.
 var hookEvents = map[string]task.SessionStatus{
 	"SessionStart": task.SessionStarting,
@@ -97,9 +97,8 @@ const hookTimeout = 5
 // WriteHookSettings writes a per-session --settings file wiring `tend
 // agent-hook` to the events in hookEvents, so a launched or resumed
 // session reports its own status back into the same sqlite database tend
-// is reading (docs/agent-sessions-plan.md §8.2). No socket server and no
-// daemon: tend already owns a WAL-mode database every instance can write
-// to.
+// is reading. No socket server and no daemon: tend already owns a
+// WAL-mode database every instance can write to.
 //
 // dbPath is passed explicitly rather than left to resolveDBPath's
 // defaults because the hook subprocess inherits claude's environment,

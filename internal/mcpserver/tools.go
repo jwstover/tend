@@ -71,8 +71,8 @@ type subtasksOut struct {
 	Tasks []taskOut `json:"tasks"`
 }
 
-// registerTools wires the nine tools of docs/agent-sessions-plan.md §9.3
-// onto srv. Every mutating tool accepts an explicit task_id override —
+// registerTools wires tend's MCP tool surface onto srv. Every mutating
+// tool accepts an explicit task_id override —
 // the bound task is a convenience default, not a hard sandbox (tend is
 // single-user/local, so the risk being managed is an agent editing the
 // wrong task from a guessed id, not an isolation boundary).
@@ -303,7 +303,7 @@ func registerTools(srv *mcp.Server, store Store, boundTaskID int64) {
 
 // resolveID returns override when the caller supplied one, else def —
 // the "defaults to the bound task, but every mutating tool still
-// accepts an explicit override" rule from §9.3.
+// accepts an explicit override" rule every tool follows.
 func resolveID(override *int64, def int64) int64 {
 	if override != nil {
 		return *override

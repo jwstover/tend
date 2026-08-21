@@ -7,9 +7,9 @@ import (
 	"github.com/jwstover/tend/internal/task"
 )
 
-// The gap §8.1 left open: a session backgrounded and never re-attached
-// owes a recap that nothing settles. Once it's really gone, any tend
-// instance that refreshes must settle it.
+// The gap backgrounding otherwise leaves open: a session backgrounded and
+// never re-attached owes a recap that nothing settles. Once it's really
+// gone, any tend instance that refreshes must settle it.
 func TestDrainRecapsSettlesDeadBackgroundedSession(t *testing.T) {
 	stubRecap(t, "LABEL: wrapped up\nRECAP: finished the migration", nil)
 	stubSessionAlive(t, false)

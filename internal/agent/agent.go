@@ -80,14 +80,13 @@ func ResumeCmd(cwd, externalID, mcpConfigPath, settingsPath string) *exec.Cmd {
 }
 
 // RecapPrompt builds the combined label+recap prompt asked of a
-// finished/resumed session — the headless follow-up
-// docs/agent-sessions-plan.md §5 fires after a session's terminal
-// handoff returns. The recap half is a standup-style update suitable
-// for a task's log entry; the label half is a short, distinguishing
-// description of what the session actually did, stored as
+// finished/resumed session — the headless follow-up fired after a
+// session's terminal handoff returns. The recap half is a standup-style
+// update suitable for a task's log entry; the label half is a short,
+// distinguishing description of what the session actually did, stored as
 // agent_sessions.label (see ParseRecapResponse) — the auto-naming fix
-// for §4's known issue, where every session on a task otherwise renders
-// the same static task-title snapshot. excerpt, when non-empty, is a
+// for every session on a task otherwise rendering the same static
+// task-title snapshot. excerpt, when non-empty, is a
 // rendering of just the conversational turns since the session was last
 // resumed (see TranscriptExcerptSince): it scopes the recap to that new
 // work while the `--resume` call still gives the model the rest of the

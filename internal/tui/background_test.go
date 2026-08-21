@@ -7,8 +7,8 @@ import (
 	"github.com/jwstover/tend/internal/task"
 )
 
-// Backgrounding is the whole point of §8.1, and its defining property is
-// a negative one: the recap must NOT fire. Firing `claude -p --resume`
+// Backgrounding a session's whole point is a negative property: the
+// recap must NOT fire. Firing `claude -p --resume`
 // against a still-running session would put two processes on one session
 // id and one transcript file. stubRecap would log an entry if the recap
 // ran, so an empty log is the assertion.
@@ -57,8 +57,8 @@ func TestBackgroundedSessionSkipsRecap(t *testing.T) {
 }
 
 // The contrast case: a session that really ended still recaps exactly as
-// it did before §8.1, so wrapping in tmux changed nothing about the
-// normal path.
+// it would with no tmux wrapping at all, so backgrounding support
+// changed nothing about the normal path.
 func TestExitedSessionStillRecaps(t *testing.T) {
 	stubRecap(t, "did the thing", nil)
 	ctx := context.Background()

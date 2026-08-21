@@ -41,8 +41,8 @@ func TestStatusForEventRejectsUnsubscribed(t *testing.T) {
 }
 
 // No hook can report "working" — Claude Code fires nothing mid-tool-call,
-// which is the entire reason §8.3's capture-pane poller has to exist. If
-// this ever starts failing, that phase can be reconsidered.
+// which is the entire reason the capture-pane poller has to exist. If
+// this ever starts failing, that design can be reconsidered.
 func TestNoHookReportsWorking(t *testing.T) {
 	for event, st := range hookEvents {
 		if st == task.SessionWorking {
@@ -51,9 +51,9 @@ func TestNoHookReportsWorking(t *testing.T) {
 	}
 }
 
-// The payload shape here was captured from a real `claude` run, not taken
-// from docs (docs/agent-sessions-plan.md §8.2). session_id is the field
-// that makes correlation a direct lookup against agent_sessions.
+// The payload shape here was captured from a real `claude` run, not
+// taken from docs. session_id is the field that makes correlation a
+// direct lookup against agent_sessions.
 func TestParseHookPayload(t *testing.T) {
 	raw := `{"session_id":"6169c9d7-0fed-45cf-bc14-2b1ba4299b3b",` +
 		`"transcript_path":"/home/u/.claude/projects/-tmp-x/6169c9d7.jsonl",` +
