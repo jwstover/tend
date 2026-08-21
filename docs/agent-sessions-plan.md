@@ -436,26 +436,180 @@ quoting (`internal/agent/hooks_test.go`), the command's always-succeed contract
 the entire reason §8.3 exists — and every status glyph, which is §8.4. This phase populates the
 column; nothing renders it yet.
 
-### 8.3 Status, part 2 — capture-pane polling ("working" detection)
+### 8.3 Status, part 2 — capture-pane polling ("working" detection) — implemented (2026-08-20)
 
 The brittle half, same tradeoff herdr accepts for the same reason: no first-party alternative
 exists for the interactive TUI (only headless `--output-format stream-json` is machine-readable,
-and that's a different, non-interactive mode tend isn't switching to here).
+and that's a different, non-interactive mode tend isn't switching to here). Chrome patterns were
+**harvested from a real `claude` 2.1.237 session, not assumed** — driven inside a scratch tmux
+server (`tmux -L tend-probe`), prompted with a forced multi-step tool call, and sampled with repeated
+`tmux capture-pane -p` calls while it ran.
 
-- While a tend process is in the foreground, a `tea.Tick`-driven poller (~3-5s) runs `tmux -L tend
-  capture-pane -t <name> -p -S -5` for each task with a live session and pattern-matches the tail
-  against known Claude Code TUI chrome (spinner, "esc to interrupt", permission-box borders).
-- Isolated in one function, `internal/agent/status.go: classifyPane(text string) Status`, so the
-  matching patterns can be updated independently as Claude Code's own TUI changes without touching
-  anything else.
-- Treated as a refiner, not a source of truth: `Stop`/`Notification` hook events set
-  `idle`/`blocked` authoritatively with a timestamp; the poller only overrides to `working` when
-  the pane shows active-tool chrome *and* no hook event has landed more recently.
-- No daemon: this only runs inside a live tend process, foregrounded — consistent with tend's
-  current no-background-process model. A session backgrounded from every tend instance simply stops
-  getting fresh status until some instance re-observes it (acceptable — status is a convenience
-  indicator, not the source of truth for whether the session is alive, which `has-session` always
-  answers directly).
+**Verified findings, each probed directly:**
+
+- **`-S -5` does not mean "the last 5 lines"**, contrary to this section's original sketch. tmux's
+  own man page: "zero is the first line of the visible pane and negative numbers are lines in the
+  history" — so `-S -5` starts 5 lines *above the top* of the screen, in history, and with no `-E`
+  the capture still runs to the bottom of the pane regardless. Confirmed by direct probe: `-S -5`
+  and `-S -20` produced byte-identical output (the whole visible pane, `history_size` 0 in a fresh
+  session), while `-S -5 -E -1` produced nothing — an empty range under the same numbering.
+  `CapturePane` (`internal/agent/tmux.go`) therefore passes neither flag: bare `capture-pane -p`
+  is documented to capture exactly "the visible contents of the pane", which is what classification
+  needs and is simpler than the flag combination originally proposed.
+- **The rotating spinner text is the wrong thing to match.** The verb and glyph both vary per turn
+  from a large, apparently unbounded set — captured examples include `✢ Nucleating…`, `* Churning…`,
+  and `Running 1 shell command…` — so a literal table of them would constantly go stale as Claude
+  Code's own copy changes. The bottom status bar's hint text does not vary: it reads
+  `⏵⏵ auto mode on (shift+tab to cycle) · esc to interrupt · ← for agents` for the entire
+  interruptible window (generating a reply or running a tool) and drops the `esc to interrupt`
+  clause the instant control returns to the input prompt. `classifyPane` matches that one substring
+  — a smaller, more stable surface than the spinner text it replaced in the original sketch.
+- No permission-prompt box was observed during probing (the probe session ran without
+  `--permission-mode bypassPermissions`, and its bash calls were auto-approved rather than
+  triggering a prompt), so no permission-box border pattern is in the table. Not a gap in practice:
+  `Notification` already reports `blocked` authoritatively (§8.2), and `classifyPane` only ever
+  needs to positively identify `working` — anything it doesn't recognize, including a permission
+  box, correctly falls through to unknown and defers to the hook-owned status already on the row.
+
+**Implemented:**
+
+- `internal/agent/tmux.go` — `CapturePane(sessionName, configPath string) (string, error)`, matching
+  `HasSession`'s existing degrade-quietly contract: a missing tmux, a dead session, or any command
+  error all return `("", nil)` rather than propagating, so a poller tick that can't read a pane just
+  skips that session until the next one.
+- `internal/agent/status.go` (new) — `ClassifyPane(text string) task.SessionStatus`, a one-entry
+  `[]string` substring table (`"esc to interrupt"`) rather than a data-table/DSL, matching
+  `hookEvents`'s existing preference for a flat Go value over an abstraction. Returns
+  `task.SessionWorking` on a match, `task.SessionUnknown` otherwise — it never returns
+  idle/blocked/ended/starting, since hooks already own those authoritatively (§8.2) and the poller
+  that calls it only ever acts on the working case. **Exported**, unlike this section's original
+  lowercase `classifyPane` sketch: the poller lives in `internal/tui`, a sibling package under
+  AGENTS.md §6's layering (tui already depends on agent for `WriteConfig`/`HasSession`, never the
+  reverse), so it has to be a normal exported symbol to be callable from there.
+- `internal/store/queries/sessions.sql` / `store.go` — `ListSessionsWithTmux` /
+  `SessionsWithTmux` (candidates: `tmux_session != ''` and `status != 'ended'`), and
+  `SetSessionWorkingIfUnchanged` / `Store.SetSessionWorkingIfUnchanged`, an `:execrows`
+  compare-and-swap on `status_updated_at` — the exact idiom `ClaimSessionRecap` already uses for
+  "two writers, one must not clobber the other". The poller reads a session's `status_updated_at`
+  as part of `SessionsWithTmux`'s result, then writes `working` only if that value is still current
+  at write time; a `Stop`/`Notification`/`SessionEnd` hook landing in between moves the timestamp
+  first, so the UPDATE affects zero rows and the hook's authoritative status is left standing. This
+  is what makes "the poller only overrides to `working` when no hook event has landed more recently"
+  true without any explicit ordering logic in Go.
+- `internal/tui/app.go` — `pollTickMsg`/`sessionsPolledMsg`, `pollInterval = 4 * time.Second` (mid
+  this section's stated 3-5s range; no backoff for an unchanged pane, left as this section's own
+  open decision and resolved here for simplicity over the bookkeeping a backoff would add at
+  personal-project session counts), wired into `Init`'s existing batch and rescheduled
+  unconditionally on every `pollTickMsg` so one slow tick never stalls the next.
+- `internal/tui/sessions.go` — `pollSessionStatusCmd`, following `drainRecapsCmd`'s shape closely:
+  swallows every failure (a missed poll costs nothing, retried next tick), and gates each candidate
+  on the same `sessionAlive`-style liveness check before ever capturing its pane. A new
+  `capturePane` package-level var gives its tests the same real-tmux-free seam `sessionAlive` already
+  gives `drainRecapsCmd`'s.
+
+**No daemon**: this only runs inside a live, foregrounded tend process, consistent with tend's
+current no-background-process model. A session backgrounded from every tend instance simply stops
+getting fresh status until some instance re-observes it — acceptable, since status is a convenience
+indicator, not the source of truth for whether the session is alive, which `has-session` always
+answers directly.
+
+**Open decisions from this section, resolved:**
+
+- Poll interval: fixed 4s, no backoff-on-unchanged-pane (see above).
+- Pattern representation: plain `[]string`, not a data table — one entry currently, and the single
+  stable substring found makes a richer structure premature.
+
+**Covered by tests:** `internal/agent/status_test.go` (`ClassifyPane` against the fixture strings
+captured above, including that it never returns a hook-owned status), `internal/agent/tmux_test.go`
+(`CapturePane`'s degrade-quietly contract — it has no `*exec.Cmd` to inspect argv on the way
+`WrapTmux`/`AttachCmd` do, the same constraint `HasSession` is already under),
+`internal/store/store_test.go` (the CAS round-trip, including a simulated concurrent hook winning
+the race), and `internal/tui/poll_test.go` (the poller writes `working` only for a live,
+chrome-matching session, never captures a dead one, leaves non-matching chrome alone, and loses a
+simulated race to a hook landing mid-tick).
+
+**Not yet manually confirmed** (at implementation time). All of the above was verified with real
+`claude`/`tmux` binaries run directly (the chrome-harvesting probe) and with the full automated test
+suite, but the actual acceptance case — watching a real task-list/detail-pane marker in tend's own
+UI flip live to `◉ working` while a real session runs a tool, then back to `⊙ idle`/blank the instant
+`Stop` fires — was **not** done. This session ran headless (no interactive terminal to drive tend's
+own TUI against a real backgrounded session), so that end-to-end pass, in the style of §8.1/§8.2's
+own "Manually confirmed" notes, was left owed — and it is exactly what caught the bug below.
+
+**Bug found by the manual pass, fixed same day (2026-08-20).** `CapturePane` shipped passing
+`-t "="+sessionName` — the exact-match target syntax `HasSession`/`KillSession` correctly use for
+their `-t`, which is a *target-session*. `capture-pane`'s `-t` is a *target-pane*, and tmux does not
+accept the `=exact-name` form there: `capture-pane -t "=tend-<id>"` fails with `can't find pane`
+even when `has-session -t "=tend-<id>"` against the identical name succeeds moments earlier. Because
+`CapturePane` swallows any command error to `("", nil)` — its own documented degrade-quietly
+contract — `pollSessionStatusCmd` saw `pane == ""` on *every* session, *every* tick, and silently
+skipped all of them forever. No error surfaced anywhere; the feature simply never fired. Caught live,
+by hand: a real session was watched sitting at `idle` through multiple full `pollInterval` windows
+while it was genuinely mid-turn, then the exact `CapturePane`-constructed command was replayed by
+hand against the same live session and reproduced `can't find pane` directly, isolating the bug to
+the `=` prefix in one line.
+
+This is the reason the chrome-harvesting probe above didn't catch it: it drove raw
+`tmux capture-pane -p` commands directly to sample pane text, never going through the `CapturePane`
+Go function itself, and the only test that exercised the real function
+(`TestCapturePaneMissingSessionDegradesQuietly`) only ever pointed it at a session that was never
+there — so a correctly-empty result and a silently-broken one were indistinguishable. **Fix:** drop
+the `=` prefix in `CapturePane`'s `-t` argument. **New regression test:**
+`TestCapturePaneLiveSession` (`internal/agent/tmux_test.go`) spins up a real, disposable tmux session
+that prints a known marker and asserts `CapturePane` actually reads it back — the one case the
+original test suite had no coverage for, and the one that would have caught this before it ever
+reached a running tend process.
+
+The manual acceptance pass itself — watching the marker flip live in tend's own UI — is still owed;
+what happened instead was a more targeted manual check (direct DB inspection plus hand-replayed tmux
+commands against a real running session) that found and fixed a real defect in the process. Rebuild
+and restart any already-running `tend` process to pick up the fix — the poller silently no-op'd
+under the old binary and will keep doing so until it's replaced.
+
+**Second bug found the same way, same day: `working` had no way back down.** After rebuilding with
+the fix above, a live session was watched sitting at `working` for several minutes with no session
+activity at all — a design gap, not a repeat of the targeting bug. The poller only ever *wrote*
+`working`; a tick that saw no working chrome did nothing, so a `working` status — whether from a
+genuine observation or a narrow race against a `Stop` hook's own write — had no way back down except
+the *next* hook firing, which could be an arbitrarily long wait if the user simply stopped
+interacting.
+
+**Fix:** `SetSessionIdleIfUnchanged`, the mirror of `SetSessionWorkingIfUnchanged`, using the same
+CAS contract. The poller now takes a `working` session back to `idle` on the next tick that sees no
+working chrome, still deferring to a hook landing mid-tick exactly as the promotion path does. It
+only ever touches a row it just observed as `working` itself — idle/blocked/ended/starting/unknown
+are left alone in both directions, so the poller still never invents a status a hook hasn't already
+claimed.
+
+**A third, more fundamental bug surfaced while testing the fix above.** A test racing two *real*
+writes against each other (rather than one real write against a session no hook had ever touched)
+failed intermittently, exposing that `status_updated_at`'s CAS token had only whole-second
+resolution: `datetime('now')` truncates to the second, confirmed directly (`SELECT datetime('now'),
+datetime('now')` in the same statement produces byte-identical strings), so any two writes to the
+same session landing in the same wall-clock second are indistinguishable to the CAS — a hook and a
+poll tick racing within a second of each other could collide, and the poller could win a race it
+should always lose. This was latent in `SetSessionWorkingIfUnchanged` from the start; the original
+test for that path happened to race against a session's *never-observed* (`NULL`) state, which is
+timing-independent, so it never exercised two real timestamps colliding.
+
+**Fix:** every writer of `status_updated_at` (`SetSessionStatus`'s hook path, plus both CAS queries)
+switched from `datetime('now')` to `strftime('%Y-%m-%d %H:%M:%f', 'now')` — millisecond precision.
+The column is never displayed (grep-confirmed — it exists purely as this CAS token), so there was no
+format compatibility to preserve; `store.go` gained a dedicated `statusTimeLayout` and
+`parseStatusTime`, kept separate from `sqliteTimeLayout`/`parseTime` since `started_at`/
+`last_active_at` have no CAS role and don't need the extra precision. A pre-migration row's
+`status_updated_at` (old, whole-second format) fails to parse under the new layout and degrades to
+the zero time — the same "a bad timestamp reads as never-observed" convention this column already
+documented — so the poller simply no-ops for such a row until its next hook write refreshes it to
+the new format; not worth a backfill for a single-user local database.
+
+Millisecond precision was chosen over a monotonic version counter deliberately: a hook and a poll
+tick are always separate OS processes (a spawned `tend agent-hook` binary, or a spawned `tmux`
+subprocess), and process creation alone costs several milliseconds — real races in this system are
+never sub-millisecond. The two new tests that first exposed the collision call `SetSessionStatus`
+and the CAS write back-to-back with no real work between them, an in-process race no actual
+hook/poller pair could produce; both were fixed by inserting the small `time.Sleep` such a real race
+would always have for free, not by re-architecting the CAS token.
 
 ### 8.4 UI surfacing — implemented (2026-08-19)
 
