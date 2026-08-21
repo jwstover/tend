@@ -9,9 +9,9 @@ import (
 	"github.com/jwstover/tend/internal/task"
 )
 
-// stubCapturePane pins pollSessionStatusCmd's pane read to fn, without a
-// real tmux server — the same seam stubSessionAlive gives the drain its
-// liveness answer.
+// stubCapturePane pins pollSessions' pane read to fn, without a real tmux
+// server — the same seam stubSessionAlive gives the drain its liveness
+// answer.
 func stubCapturePane(t *testing.T, fn func(task.Session) (string, error)) {
 	t.Helper()
 	prev := capturePane
@@ -21,17 +21,17 @@ func stubCapturePane(t *testing.T, fn func(task.Session) (string, error)) {
 
 const workingChromeFixture = "  ⏵⏵ auto mode on (shift+tab to cycle) · esc to interrupt · ← for agents"
 const idleChromeFixture = "  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents"
+const blockedChromeFixture = "Enter to select · Tab/Arrow keys to navigate · Esc to cancel"
 
 // The core case: a live session whose pane shows active-tool chrome gets
-// promoted to working — the one status no Claude Code hook can report
-// (docs/agent-sessions-plan.md §8.3).
-func TestPollSessionStatusWritesWorkingForLiveMatchingSession(t *testing.T) {
+// promoted to working — the one status no Claude Code hook can report.
+func TestPollSessionsWritesWorkingForLiveMatchingSession(t *testing.T) {
 	stubSessionAlive(t, true)
 	stubCapturePane(t, func(task.Session) (string, error) {
 		return workingChromeFixture, nil
 	})
 	ctx := context.Background()
-	m, s := newTestApp(t)
+	_, s := newTestApp(t)
 	parent, err := s.AddTask(ctx, "do the thing")
 	if err != nil {
 		t.Fatalf("AddTask: %v", err)
@@ -40,17 +40,20 @@ func TestPollSessionStatusWritesWorkingForLiveMatchingSession(t *testing.T) {
 		t.Fatalf("CreateSession: %v", err)
 	}
 
-	drive(t, m, pollTickMsg{})
+	pollSessions(ctx, s, pollInterval)
 
-	waitFor(t, "status flips to working", func() bool {
-		sessions, err := s.ListSessionsForTask(ctx, parent.ID)
-		return err == nil && len(sessions) == 1 && sessions[0].Status == task.SessionWorking
-	})
+	sessions, err := s.ListSessionsForTask(ctx, parent.ID)
+	if err != nil {
+		t.Fatalf("ListSessionsForTask: %v", err)
+	}
+	if sessions[0].Status != task.SessionWorking {
+		t.Errorf("Status = %q, want working", sessions[0].Status)
+	}
 }
 
 // A dead session (tmux gone) must never be captured at all — has-session
 // is the liveness authority, same as the recap drain's sessionAlive.
-func TestPollSessionStatusSkipsDeadSession(t *testing.T) {
+func TestPollSessionsSkipsDeadSession(t *testing.T) {
 	stubSessionAlive(t, false)
 	var mu sync.Mutex
 	called := false
@@ -61,7 +64,7 @@ func TestPollSessionStatusSkipsDeadSession(t *testing.T) {
 		return workingChromeFixture, nil
 	})
 	ctx := context.Background()
-	m, s := newTestApp(t)
+	_, s := newTestApp(t)
 	parent, err := s.AddTask(ctx, "do the thing")
 	if err != nil {
 		t.Fatalf("AddTask: %v", err)
@@ -70,7 +73,7 @@ func TestPollSessionStatusSkipsDeadSession(t *testing.T) {
 		t.Fatalf("CreateSession: %v", err)
 	}
 
-	drive(t, m, pollTickMsg{})
+	pollSessions(ctx, s, pollInterval)
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -86,16 +89,16 @@ func TestPollSessionStatusSkipsDeadSession(t *testing.T) {
 	}
 }
 
-// Pane chrome that doesn't match must leave whatever status a hook
-// already set alone — the poller is a refiner that only ever overrides
-// toward working, never a general-purpose status writer.
-func TestPollSessionStatusLeavesNonWorkingChromeAlone(t *testing.T) {
+// Idle chrome observed on a session a hook just marked blocked must leave
+// it alone within the same tick — the settle path only fires once
+// settleAfter has actually elapsed, not on first observation.
+func TestPollSessionsLeavesFreshBlockedAlone(t *testing.T) {
 	stubSessionAlive(t, true)
 	stubCapturePane(t, func(task.Session) (string, error) {
 		return idleChromeFixture, nil
 	})
 	ctx := context.Background()
-	m, s := newTestApp(t)
+	_, s := newTestApp(t)
 	parent, err := s.AddTask(ctx, "do the thing")
 	if err != nil {
 		t.Fatalf("AddTask: %v", err)
@@ -107,26 +110,126 @@ func TestPollSessionStatusLeavesNonWorkingChromeAlone(t *testing.T) {
 		t.Fatalf("SetSessionStatus: %v", err)
 	}
 
-	drive(t, m, pollTickMsg{})
+	pollSessions(ctx, s, pollInterval)
 
 	sessions, err := s.ListSessionsForTask(ctx, parent.ID)
 	if err != nil {
 		t.Fatalf("ListSessionsForTask: %v", err)
 	}
 	if sessions[0].Status != task.SessionBlocked {
-		t.Errorf("Status = %q, want blocked left standing — idle chrome must not touch it", sessions[0].Status)
+		t.Errorf("Status = %q, want blocked left standing — too soon to settle", sessions[0].Status)
 	}
 }
 
-// The race the CAS exists for, exercised through the poller rather than
-// the store directly: a hook lands in the window between
+// The bug this exists to fix: a session a hook marked blocked (e.g. a
+// Notification whose matching Stop never landed) and which has since sat
+// unchanged past settleAfter, with a pane showing neither working nor
+// blocked chrome, must settle back to idle — otherwise nothing ever
+// moves it off blocked again.
+func TestPollSessionsSettlesStaleBlockedToIdle(t *testing.T) {
+	stubSessionAlive(t, true)
+	stubCapturePane(t, func(task.Session) (string, error) {
+		return idleChromeFixture, nil
+	})
+	ctx := context.Background()
+	_, s := newTestApp(t)
+	parent, err := s.AddTask(ctx, "do the thing")
+	if err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	if _, err := s.CreateSession(ctx, parent.ID, "ext-1", "/tmp/work", parent.Title, "tend-ext-1"); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if err := s.SetSessionStatus(ctx, "ext-1", task.SessionBlocked); err != nil {
+		t.Fatalf("SetSessionStatus: %v", err)
+	}
+
+	// settleAfter: 0 stands in for "well past the floor" without a real
+	// sleep — pollSessions takes it as a parameter for exactly this.
+	pollSessions(ctx, s, 0)
+
+	sessions, err := s.ListSessionsForTask(ctx, parent.ID)
+	if err != nil {
+		t.Fatalf("ListSessionsForTask: %v", err)
+	}
+	if sessions[0].Status != task.SessionIdle {
+		t.Errorf("Status = %q, want settled to idle", sessions[0].Status)
+	}
+}
+
+// A pane that still shows recognized blocked chrome must never be
+// settled to idle, no matter how long the status has sat unchanged — a
+// session genuinely still waiting on the user must never lose that
+// signal just because time passed.
+func TestPollSessionsNeverSettlesWhileBlockedChromeShows(t *testing.T) {
+	stubSessionAlive(t, true)
+	stubCapturePane(t, func(task.Session) (string, error) {
+		return blockedChromeFixture, nil
+	})
+	ctx := context.Background()
+	_, s := newTestApp(t)
+	parent, err := s.AddTask(ctx, "do the thing")
+	if err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	if _, err := s.CreateSession(ctx, parent.ID, "ext-1", "/tmp/work", parent.Title, "tend-ext-1"); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if err := s.SetSessionStatus(ctx, "ext-1", task.SessionBlocked); err != nil {
+		t.Fatalf("SetSessionStatus: %v", err)
+	}
+
+	pollSessions(ctx, s, 0)
+
+	sessions, err := s.ListSessionsForTask(ctx, parent.ID)
+	if err != nil {
+		t.Fatalf("ListSessionsForTask: %v", err)
+	}
+	if sessions[0].Status != task.SessionBlocked {
+		t.Errorf("Status = %q, want blocked left standing — chrome still shows it's open", sessions[0].Status)
+	}
+}
+
+// A freshly-started session (SessionStart fired, nothing else yet) that
+// turns out to already be sitting idle settles the same way a stale
+// blocked does — 'starting' is just as eligible.
+func TestPollSessionsSettlesStaleStartingToIdle(t *testing.T) {
+	stubSessionAlive(t, true)
+	stubCapturePane(t, func(task.Session) (string, error) {
+		return idleChromeFixture, nil
+	})
+	ctx := context.Background()
+	_, s := newTestApp(t)
+	parent, err := s.AddTask(ctx, "do the thing")
+	if err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	if _, err := s.CreateSession(ctx, parent.ID, "ext-1", "/tmp/work", parent.Title, "tend-ext-1"); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if err := s.SetSessionStatus(ctx, "ext-1", task.SessionStarting); err != nil {
+		t.Fatalf("SetSessionStatus: %v", err)
+	}
+
+	pollSessions(ctx, s, 0)
+
+	sessions, err := s.ListSessionsForTask(ctx, parent.ID)
+	if err != nil {
+		t.Fatalf("ListSessionsForTask: %v", err)
+	}
+	if sessions[0].Status != task.SessionIdle {
+		t.Errorf("Status = %q, want settled to idle", sessions[0].Status)
+	}
+}
+
+// The race the CAS exists for: a hook lands in the window between
 // SessionsWithTmux's read and the poller's write (simulated here inside
 // the capturePane stub, which runs after that read and before the
 // write). The hook's status must win.
-func TestPollSessionStatusLosesRaceToConcurrentHook(t *testing.T) {
+func TestPollSessionsLosesRaceToConcurrentHook(t *testing.T) {
 	stubSessionAlive(t, true)
 	ctx := context.Background()
-	m, s := newTestApp(t)
+	_, s := newTestApp(t)
 	parent, err := s.AddTask(ctx, "do the thing")
 	if err != nil {
 		t.Fatalf("AddTask: %v", err)
@@ -141,12 +244,15 @@ func TestPollSessionStatusLosesRaceToConcurrentHook(t *testing.T) {
 		return workingChromeFixture, nil
 	})
 
-	drive(t, m, pollTickMsg{})
+	pollSessions(ctx, s, pollInterval)
 
-	waitFor(t, "the hook's status left standing", func() bool {
-		sessions, err := s.ListSessionsForTask(ctx, parent.ID)
-		return err == nil && len(sessions) == 1 && sessions[0].Status == task.SessionBlocked
-	})
+	sessions, err := s.ListSessionsForTask(ctx, parent.ID)
+	if err != nil {
+		t.Fatalf("ListSessionsForTask: %v", err)
+	}
+	if sessions[0].Status != task.SessionBlocked {
+		t.Errorf("Status = %q, want the hook's status left standing", sessions[0].Status)
+	}
 }
 
 // The self-correction case: a session already marked working (whether
@@ -154,13 +260,13 @@ func TestPollSessionStatusLosesRaceToConcurrentHook(t *testing.T) {
 // shows working chrome must be taken back down to idle. Without this, a
 // wrongly-set working status would stay pinned until the next hook fires
 // — which might never happen if the user simply stops interacting.
-func TestPollSessionStatusDemotesStaleWorkingToIdle(t *testing.T) {
+func TestPollSessionsDemotesStaleWorkingToIdle(t *testing.T) {
 	stubSessionAlive(t, true)
 	stubCapturePane(t, func(task.Session) (string, error) {
 		return idleChromeFixture, nil
 	})
 	ctx := context.Background()
-	m, s := newTestApp(t)
+	_, s := newTestApp(t)
 	parent, err := s.AddTask(ctx, "do the thing")
 	if err != nil {
 		t.Fatalf("AddTask: %v", err)
@@ -173,21 +279,24 @@ func TestPollSessionStatusDemotesStaleWorkingToIdle(t *testing.T) {
 		t.Fatalf("SetSessionWorkingIfUnchanged: %v", err)
 	}
 
-	drive(t, m, pollTickMsg{})
+	pollSessions(ctx, s, pollInterval)
 
-	waitFor(t, "status demoted to idle", func() bool {
-		sessions, err := s.ListSessionsForTask(ctx, parent.ID)
-		return err == nil && len(sessions) == 1 && sessions[0].Status == task.SessionIdle
-	})
+	sessions, err := s.ListSessionsForTask(ctx, parent.ID)
+	if err != nil {
+		t.Fatalf("ListSessionsForTask: %v", err)
+	}
+	if sessions[0].Status != task.SessionIdle {
+		t.Errorf("Status = %q, want demoted to idle", sessions[0].Status)
+	}
 }
 
 // The demotion path is guarded by the same CAS as the promotion path: a
 // hook landing in the window between SessionsWithTmux's read and the
 // poller's demotion write must win, not the poller's idle guess.
-func TestPollSessionStatusDemotionLosesRaceToConcurrentHook(t *testing.T) {
+func TestPollSessionsDemotionLosesRaceToConcurrentHook(t *testing.T) {
 	stubSessionAlive(t, true)
 	ctx := context.Background()
-	m, s := newTestApp(t)
+	_, s := newTestApp(t)
 	parent, err := s.AddTask(ctx, "do the thing")
 	if err != nil {
 		t.Fatalf("AddTask: %v", err)
@@ -212,10 +321,13 @@ func TestPollSessionStatusDemotionLosesRaceToConcurrentHook(t *testing.T) {
 		return idleChromeFixture, nil
 	})
 
-	drive(t, m, pollTickMsg{})
+	pollSessions(ctx, s, pollInterval)
 
-	waitFor(t, "the hook's status left standing", func() bool {
-		sessions, err := s.ListSessionsForTask(ctx, parent.ID)
-		return err == nil && len(sessions) == 1 && sessions[0].Status == task.SessionBlocked
-	})
+	sessions, err := s.ListSessionsForTask(ctx, parent.ID)
+	if err != nil {
+		t.Fatalf("ListSessionsForTask: %v", err)
+	}
+	if sessions[0].Status != task.SessionBlocked {
+		t.Errorf("Status = %q, want the hook's status left standing", sessions[0].Status)
+	}
 }
