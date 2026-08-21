@@ -30,6 +30,19 @@ var migrationsFS embed.FS
 // sqliteTimeLayout is the format datetime('now') writes (UTC, no zone).
 const sqliteTimeLayout = "2006-01-02 15:04:05"
 
+// statusTimeLayout is the format agent_sessions.status_updated_at is
+// written in — strftime('%Y-%m-%d %H:%M:%f', 'now'), millisecond
+// precision, not sqliteTimeLayout's whole seconds. This column doubles
+// as the freshness token section 8.3's poller CAS
+// (SetSessionWorkingIfUnchanged / SetSessionIdleIfUnchanged) compares
+// against, and whole-second resolution is provably too coarse for that:
+// two real writes — a hook and a poll tick — routinely land in the same
+// wall-clock second, at which point they produce byte-identical
+// sqliteTimeLayout strings and the CAS's "did anything change since I
+// read it" check goes blind to the race. Confirmed directly against a
+// live sqlite process, not assumed.
+const statusTimeLayout = "2006-01-02 15:04:05.000"
+
 // Store wraps the sqlc-generated Queries, owns the DB handle and
 // transactions, and translates between gen rows and task domain types.
 type Store struct {
@@ -544,18 +557,52 @@ func (s *Store) ClaimSessionRecap(ctx context.Context, externalID string) (bool,
 // the race was correctly lost to fresher, authoritative data, which is
 // the whole point of the compare-and-swap.
 func (s *Store) SetSessionWorkingIfUnchanged(ctx context.Context, externalID string, prevStatusUpdatedAt time.Time) (bool, error) {
-	var prev sql.NullString
-	if !prevStatusUpdatedAt.IsZero() {
-		prev = sql.NullString{String: prevStatusUpdatedAt.UTC().Format(sqliteTimeLayout), Valid: true}
-	}
 	n, err := s.q.SetSessionWorkingIfUnchanged(ctx, gen.SetSessionWorkingIfUnchangedParams{
 		ExternalID:      externalID,
-		StatusUpdatedAt: prev,
+		StatusUpdatedAt: statusUpdatedAtParam(prevStatusUpdatedAt),
 	})
 	if err != nil {
 		return false, fmt.Errorf("setting working status for session %s: %w", externalID, err)
 	}
 	return n > 0, nil
+}
+
+// SetSessionIdleIfUnchanged takes a session back from 'working' to 'idle',
+// the other half of the poller's CAS pair alongside
+// SetSessionWorkingIfUnchanged. Without this, a 'working' status the
+// poller wrote — whether from a genuine race against a Stop hook's own
+// write, or one trailing frame of stale chrome — has no way back down
+// until the *next* hook fires, which can be an arbitrarily long wait;
+// the caller only invokes this once it has already read status =
+// 'working' itself, so this closes that gap by re-checking on every
+// tick that still sees no working chrome.
+//
+// Same compare-and-swap contract as SetSessionWorkingIfUnchanged: a hook
+// (Stop/Notification/SessionEnd) landing between the caller's read and
+// this write moves status_updated_at first, so the underlying UPDATE
+// affects zero rows and the hook's own status — idle, blocked, ended,
+// whatever it set — is left standing untouched.
+func (s *Store) SetSessionIdleIfUnchanged(ctx context.Context, externalID string, prevStatusUpdatedAt time.Time) (bool, error) {
+	n, err := s.q.SetSessionIdleIfUnchanged(ctx, gen.SetSessionIdleIfUnchangedParams{
+		ExternalID:      externalID,
+		StatusUpdatedAt: statusUpdatedAtParam(prevStatusUpdatedAt),
+	})
+	if err != nil {
+		return false, fmt.Errorf("setting idle status for session %s: %w", externalID, err)
+	}
+	return n > 0, nil
+}
+
+// statusUpdatedAtParam converts a Session.StatusUpdatedAt value back into
+// the SQL parameter form the poller's CAS queries compare against. A zero
+// time means the caller observed the column as NULL — a session no hook
+// has ever touched — matched against SQL NULL via IS rather than a
+// sentinel string.
+func statusUpdatedAtParam(t time.Time) sql.NullString {
+	if t.IsZero() {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: t.UTC().Format(statusTimeLayout), Valid: true}
 }
 
 // GetTask loads a single task by id.
@@ -640,7 +687,7 @@ func sessionToDomain(row gen.AgentSession) (task.Session, error) {
 	// to the zero time (see task.SessionStatus).
 	var statusUpdated time.Time
 	if row.StatusUpdatedAt.Valid {
-		statusUpdated, _ = parseTime(row.StatusUpdatedAt.String)
+		statusUpdated, _ = parseStatusTime(row.StatusUpdatedAt.String)
 	}
 	return task.Session{
 		ID:              row.ID,
@@ -675,6 +722,17 @@ func eventToDomain(row gen.TaskEvent) (task.Event, error) {
 
 func parseTime(s string) (time.Time, error) {
 	t, err := time.Parse(sqliteTimeLayout, s)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("parsing %q: %w", s, err)
+	}
+	return t, nil
+}
+
+// parseStatusTime parses agent_sessions.status_updated_at, written in
+// statusTimeLayout's millisecond precision rather than sqliteTimeLayout's
+// whole seconds (see statusTimeLayout).
+func parseStatusTime(s string) (time.Time, error) {
+	t, err := time.Parse(statusTimeLayout, s)
 	if err != nil {
 		return time.Time{}, fmt.Errorf("parsing %q: %w", s, err)
 	}

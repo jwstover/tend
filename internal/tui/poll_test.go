@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jwstover/tend/internal/task"
 )
@@ -138,6 +139,77 @@ func TestPollSessionStatusLosesRaceToConcurrentHook(t *testing.T) {
 			t.Fatalf("SetSessionStatus: %v", err)
 		}
 		return workingChromeFixture, nil
+	})
+
+	drive(t, m, pollTickMsg{})
+
+	waitFor(t, "the hook's status left standing", func() bool {
+		sessions, err := s.ListSessionsForTask(ctx, parent.ID)
+		return err == nil && len(sessions) == 1 && sessions[0].Status == task.SessionBlocked
+	})
+}
+
+// The self-correction case: a session already marked working (whether
+// from a genuine prior tick or a stale/racy one) whose pane no longer
+// shows working chrome must be taken back down to idle. Without this, a
+// wrongly-set working status would stay pinned until the next hook fires
+// — which might never happen if the user simply stops interacting.
+func TestPollSessionStatusDemotesStaleWorkingToIdle(t *testing.T) {
+	stubSessionAlive(t, true)
+	stubCapturePane(t, func(task.Session) (string, error) {
+		return idleChromeFixture, nil
+	})
+	ctx := context.Background()
+	m, s := newTestApp(t)
+	parent, err := s.AddTask(ctx, "do the thing")
+	if err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	sess, err := s.CreateSession(ctx, parent.ID, "ext-1", "/tmp/work", parent.Title, "tend-ext-1")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if _, err := s.SetSessionWorkingIfUnchanged(ctx, sess.ExternalID, sess.StatusUpdatedAt); err != nil {
+		t.Fatalf("SetSessionWorkingIfUnchanged: %v", err)
+	}
+
+	drive(t, m, pollTickMsg{})
+
+	waitFor(t, "status demoted to idle", func() bool {
+		sessions, err := s.ListSessionsForTask(ctx, parent.ID)
+		return err == nil && len(sessions) == 1 && sessions[0].Status == task.SessionIdle
+	})
+}
+
+// The demotion path is guarded by the same CAS as the promotion path: a
+// hook landing in the window between SessionsWithTmux's read and the
+// poller's demotion write must win, not the poller's idle guess.
+func TestPollSessionStatusDemotionLosesRaceToConcurrentHook(t *testing.T) {
+	stubSessionAlive(t, true)
+	ctx := context.Background()
+	m, s := newTestApp(t)
+	parent, err := s.AddTask(ctx, "do the thing")
+	if err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	sess, err := s.CreateSession(ctx, parent.ID, "ext-1", "/tmp/work", parent.Title, "tend-ext-1")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if _, err := s.SetSessionWorkingIfUnchanged(ctx, sess.ExternalID, sess.StatusUpdatedAt); err != nil {
+		t.Fatalf("SetSessionWorkingIfUnchanged: %v", err)
+	}
+	stubCapturePane(t, func(sess task.Session) (string, error) {
+		// A real race always has at least this much separation — a hook and
+		// a poll tick are always distinct OS processes, each with several
+		// milliseconds of unavoidable spawn/exec overhead — so this sleep
+		// reflects reality rather than manufacturing an unrealistically
+		// tight race no real hook/poller pair could ever produce.
+		time.Sleep(2 * time.Millisecond)
+		if err := s.SetSessionStatus(ctx, sess.ExternalID, task.SessionBlocked); err != nil {
+			t.Fatalf("SetSessionStatus: %v", err)
+		}
+		return idleChromeFixture, nil
 	})
 
 	drive(t, m, pollTickMsg{})
