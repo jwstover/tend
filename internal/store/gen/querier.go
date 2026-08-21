@@ -75,7 +75,30 @@ type Querier interface {
 	ReassignProjectTasks(ctx context.Context, arg ReassignProjectTasksParams) error
 	RenameProject(ctx context.Context, arg RenameProjectParams) error
 	SetProjectArchived(ctx context.Context, arg SetProjectArchivedParams) error
+	// The other half of the poller's CAS pair: takes 'working' back down when
+	// a later tick no longer sees working chrome. Without this, a 'working'
+	// write that raced a Stop hook's own write within the same
+	// datetime('now') second -- or simply observed one trailing frame of
+	// stale chrome -- has no way back down until the *next* hook fires,
+	// which can be an arbitrarily long wait. The caller only ever invokes
+	// this when it just read status = 'working' itself, so the CAS here
+	// guards the same way SetSessionWorkingIfUnchanged does: a hook landing
+	// between the read and this write moves status_updated_at first, and
+	// this UPDATE affects zero rows, leaving the hook's fresher status
+	// (idle, blocked, ended -- whatever it set) standing untouched.
+	SetSessionIdleIfUnchanged(ctx context.Context, arg SetSessionIdleIfUnchangedParams) (int64, error)
 	SetSessionNeedsRecap(ctx context.Context, arg SetSessionNeedsRecapParams) error
+	// status_updated_at uses strftime with %f (millisecond precision), not
+	// plain datetime('now') (whole-second precision), because it doubles as
+	// the freshness token section 8.3's poller CAS compares against
+	// (SetSessionWorkingIfUnchanged / SetSessionIdleIfUnchanged below). Two
+	// real writes a hook and a poll tick apart routinely land in the same
+	// wall-clock second under real load -- confirmed directly: two
+	// back-to-back datetime('now') calls in the same test process produced
+	// byte-identical strings -- which would make the CAS's "did anything
+	// change" check blind to a same-second race and let a poller guess
+	// silently win against a hook it should always lose to. last_active_at
+	// has no such requirement and keeps second precision.
 	SetSessionStatus(ctx context.Context, arg SetSessionStatusParams) error
 	// Compare-and-swap write for section 8.3's poller: only takes effect if
 	// status_updated_at is still what the poller observed right before it

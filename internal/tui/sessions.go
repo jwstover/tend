@@ -317,12 +317,23 @@ var sessionAlive = func(sess task.Session) bool {
 //
 // For each candidate, HasSession decides liveness the same authoritative
 // way drainRecapsCmd's sessionAlive does; a dead session is skipped
-// outright rather than captured. A live one is captured and classified,
-// and only a working classification does anything: SetSessionWorkingIfUnchanged
-// writes it, but only if no hook updated the row's status_updated_at
-// between this tick's read (sess.StatusUpdatedAt, loaded moments earlier
-// by SessionsWithTmux) and this write — so a Stop/Notification/SessionEnd
+// outright rather than captured. A live one is captured and classified.
+// A working classification writes it via SetSessionWorkingIfUnchanged,
+// but only if no hook updated the row's status_updated_at between this
+// tick's read (sess.StatusUpdatedAt, loaded moments earlier by
+// SessionsWithTmux) and this write — so a Stop/Notification/SessionEnd
 // that lands mid-tick always wins the race, never the poller's guess.
+//
+// A non-working classification does the mirror-image thing when the row
+// we just read was itself 'working': SetSessionIdleIfUnchanged takes it
+// back down, guarded by the same compare-and-swap. Without this half, a
+// 'working' write that raced a Stop hook's own write within the same
+// datetime('now') second — or simply observed one trailing frame of
+// stale chrome — has no way back down until the *next* hook fires, which
+// can be an arbitrarily long wait; a session sits pinned to `working`
+// long after it's genuinely idle. Any status other than 'working' (idle,
+// blocked, ended, starting, unknown) is left alone in either branch —
+// the poller never invents a status a hook hasn't already claimed.
 //
 // Every failure is swallowed exactly like drainRecapsCmd's: a missed poll
 // costs nothing and is retried next tick.
@@ -341,10 +352,16 @@ func (a app) pollSessionStatusCmd() tea.Cmd {
 			if err != nil || pane == "" {
 				continue
 			}
-			if agent.ClassifyPane(pane) != task.SessionWorking {
+			working := agent.ClassifyPane(pane) == task.SessionWorking
+			var ok bool
+			switch {
+			case working:
+				ok, err = a.store.SetSessionWorkingIfUnchanged(a.ctx, sess.ExternalID, sess.StatusUpdatedAt)
+			case sess.Status == task.SessionWorking:
+				ok, err = a.store.SetSessionIdleIfUnchanged(a.ctx, sess.ExternalID, sess.StatusUpdatedAt)
+			default:
 				continue
 			}
-			ok, err := a.store.SetSessionWorkingIfUnchanged(a.ctx, sess.ExternalID, sess.StatusUpdatedAt)
 			if err == nil && ok {
 				changed = true
 			}
