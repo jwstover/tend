@@ -566,6 +566,51 @@ commands against a real running session) that found and fixed a real defect in t
 and restart any already-running `tend` process to pick up the fix — the poller silently no-op'd
 under the old binary and will keep doing so until it's replaced.
 
+**Second bug found the same way, same day: `working` had no way back down.** After rebuilding with
+the fix above, a live session was watched sitting at `working` for several minutes with no session
+activity at all — a design gap, not a repeat of the targeting bug. The poller only ever *wrote*
+`working`; a tick that saw no working chrome did nothing, so a `working` status — whether from a
+genuine observation or a narrow race against a `Stop` hook's own write — had no way back down except
+the *next* hook firing, which could be an arbitrarily long wait if the user simply stopped
+interacting.
+
+**Fix:** `SetSessionIdleIfUnchanged`, the mirror of `SetSessionWorkingIfUnchanged`, using the same
+CAS contract. The poller now takes a `working` session back to `idle` on the next tick that sees no
+working chrome, still deferring to a hook landing mid-tick exactly as the promotion path does. It
+only ever touches a row it just observed as `working` itself — idle/blocked/ended/starting/unknown
+are left alone in both directions, so the poller still never invents a status a hook hasn't already
+claimed.
+
+**A third, more fundamental bug surfaced while testing the fix above.** A test racing two *real*
+writes against each other (rather than one real write against a session no hook had ever touched)
+failed intermittently, exposing that `status_updated_at`'s CAS token had only whole-second
+resolution: `datetime('now')` truncates to the second, confirmed directly (`SELECT datetime('now'),
+datetime('now')` in the same statement produces byte-identical strings), so any two writes to the
+same session landing in the same wall-clock second are indistinguishable to the CAS — a hook and a
+poll tick racing within a second of each other could collide, and the poller could win a race it
+should always lose. This was latent in `SetSessionWorkingIfUnchanged` from the start; the original
+test for that path happened to race against a session's *never-observed* (`NULL`) state, which is
+timing-independent, so it never exercised two real timestamps colliding.
+
+**Fix:** every writer of `status_updated_at` (`SetSessionStatus`'s hook path, plus both CAS queries)
+switched from `datetime('now')` to `strftime('%Y-%m-%d %H:%M:%f', 'now')` — millisecond precision.
+The column is never displayed (grep-confirmed — it exists purely as this CAS token), so there was no
+format compatibility to preserve; `store.go` gained a dedicated `statusTimeLayout` and
+`parseStatusTime`, kept separate from `sqliteTimeLayout`/`parseTime` since `started_at`/
+`last_active_at` have no CAS role and don't need the extra precision. A pre-migration row's
+`status_updated_at` (old, whole-second format) fails to parse under the new layout and degrades to
+the zero time — the same "a bad timestamp reads as never-observed" convention this column already
+documented — so the poller simply no-ops for such a row until its next hook write refreshes it to
+the new format; not worth a backfill for a single-user local database.
+
+Millisecond precision was chosen over a monotonic version counter deliberately: a hook and a poll
+tick are always separate OS processes (a spawned `tend agent-hook` binary, or a spawned `tmux`
+subprocess), and process creation alone costs several milliseconds — real races in this system are
+never sub-millisecond. The two new tests that first exposed the collision call `SetSessionStatus`
+and the CAS write back-to-back with no real work between them, an in-process race no actual
+hook/poller pair could produce; both were fixed by inserting the small `time.Sleep` such a real race
+would always have for free, not by re-architecting the CAS token.
+
 ### 8.4 UI surfacing — implemented (2026-08-19)
 
 **Built before 8.3, reversing this section's original ordering.** 8.2 populates
