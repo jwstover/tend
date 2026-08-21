@@ -270,6 +270,19 @@ func (s *Store) SetDue(ctx context.Context, id int64, due *string) error {
 	return nil
 }
 
+// SetTitle renames a task; the new title is trimmed and blanks rejected,
+// the same validation capture uses.
+func (s *Store) SetTitle(ctx context.Context, id int64, title string) error {
+	t, err := task.NormalizeTitle(title)
+	if err != nil {
+		return err
+	}
+	if err := s.q.SetTaskTitle(ctx, gen.SetTaskTitleParams{Title: t, ID: id}); err != nil {
+		return fmt.Errorf("setting task %d title: %w", id, err)
+	}
+	return nil
+}
+
 // SetBody replaces a task's markdown body.
 func (s *Store) SetBody(ctx context.Context, id int64, body string) error {
 	if err := s.q.SetTaskBody(ctx, gen.SetTaskBodyParams{BodyMd: body, ID: id}); err != nil {

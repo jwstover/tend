@@ -90,6 +90,12 @@ SET due        = ?,
     updated_at = datetime('now')
 WHERE id = ?;
 
+-- name: SetTaskTitle :exec
+UPDATE tasks
+SET title      = ?,
+    updated_at = datetime('now')
+WHERE id = ?;
+
 -- name: SetTaskBody :exec
 UPDATE tasks
 SET body_md    = ?,

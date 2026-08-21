@@ -640,8 +640,12 @@ func TestLogEntryAltEnterSubmits(t *testing.T) {
 	}
 	_ = drive(t, m, tea.KeyPressMsg{Code: tea.KeyEnter, Mod: tea.ModAlt}) // alt+enter also submits
 
-	notes := allLogEntries(t, s)
-	if len(notes) != 1 || notes[0].Body != "new note" {
+	var notes []task.LogEntry
+	waitFor(t, "the alt+enter log entry to save", func() bool {
+		notes = allLogEntries(t, s)
+		return len(notes) == 1
+	})
+	if notes[0].Body != "new note" {
 		t.Errorf("log entries = %+v, want the alt+enter note", notes)
 	}
 }
@@ -1732,8 +1736,12 @@ func TestGlobalNoteKey(t *testing.T) {
 	if m.(app).mode != modeList {
 		t.Error("note capture should not change modes")
 	}
-	notes := allLogEntries(t, s)
-	if len(notes) != 1 || notes[0].Body != "from the list" || notes[0].TaskID != nil {
+	var notes []task.LogEntry
+	waitFor(t, "the freestanding note to save", func() bool {
+		notes = allLogEntries(t, s)
+		return len(notes) == 1
+	})
+	if notes[0].Body != "from the list" || notes[0].TaskID != nil {
 		t.Fatalf("log entries = %+v, want one freestanding note", notes)
 	}
 }

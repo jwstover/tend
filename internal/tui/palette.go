@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 
@@ -66,6 +67,14 @@ func (a app) paletteCommands() []paletteCommand {
 		{icon: "?", label: "Show keyboard help", hint: "?",
 			act: func(a app) (tea.Model, tea.Cmd) {
 				a.helpOpen = true
+				return a, nil
+			}},
+		{icon: "✎", label: "Rename selected task", hint: "R", aliases: []string{"rename"},
+			act: func(a app) (tea.Model, tea.Cmd) {
+				if t, ok := a.selected(); ok {
+					return a, a.openPromptWith(promptRename, fmt.Sprintf("rename #%d: ", t.ID), t.Title, t.ID)
+				}
+				a.status = flash{text: "nothing selected"}
 				return a, nil
 			}},
 		{icon: "✗", label: "Delete selected task", hint: "dd", aliases: []string{"delete", "rm"},

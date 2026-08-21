@@ -452,3 +452,20 @@ func (q *Queries) SetTaskState(ctx context.Context, arg SetTaskStateParams) erro
 	_, err := q.db.ExecContext(ctx, setTaskState, arg.State, arg.ID)
 	return err
 }
+
+const setTaskTitle = `-- name: SetTaskTitle :exec
+UPDATE tasks
+SET title      = ?,
+    updated_at = datetime('now')
+WHERE id = ?
+`
+
+type SetTaskTitleParams struct {
+	Title string
+	ID    int64
+}
+
+func (q *Queries) SetTaskTitle(ctx context.Context, arg SetTaskTitleParams) error {
+	_, err := q.db.ExecContext(ctx, setTaskTitle, arg.Title, arg.ID)
+	return err
+}
