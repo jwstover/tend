@@ -36,8 +36,19 @@ type Querier interface {
 	ListSessionStatuses(ctx context.Context) ([]ListSessionStatusesRow, error)
 	ListSessionsForTask(ctx context.Context, taskID int64) ([]AgentSession, error)
 	ListSessionsNeedingRecap(ctx context.Context) ([]AgentSession, error)
+	// Candidates for section 8.3's capture-pane poller: only sessions that
+	// were launched under tmux at all, and not ones already known to have
+	// ended (a session that already reported ended has nothing to poll).
+	ListSessionsWithTmux(ctx context.Context) ([]AgentSession, error)
 	SetSessionNeedsRecap(ctx context.Context, arg SetSessionNeedsRecapParams) error
 	SetSessionStatus(ctx context.Context, arg SetSessionStatusParams) error
+	// Compare-and-swap write for section 8.3's poller: only takes effect if
+	// status_updated_at is still what the poller observed right before it
+	// captured the pane. A hook (Stop/Notification/SessionEnd) firing in
+	// between moves the timestamp first, so this UPDATE affects zero rows
+	// and the hook's authoritative status wins. Same idiom as
+	// ClaimSessionRecap's compare-and-clear.
+	SetSessionWorkingIfUnchanged(ctx context.Context, arg SetSessionWorkingIfUnchangedParams) (int64, error)
 	SetTaskBody(ctx context.Context, arg SetTaskBodyParams) error
 	SetTaskDue(ctx context.Context, arg SetTaskDueParams) error
 	SetTaskPriority(ctx context.Context, arg SetTaskPriorityParams) error

@@ -46,3 +46,23 @@ WHERE external_id = ? AND needs_recap = 1;
 SELECT task_id, status
 FROM agent_sessions
 ORDER BY last_active_at ASC, id ASC;
+
+-- name: ListSessionsWithTmux :many
+-- Candidates for section 8.3's capture-pane poller: only sessions that
+-- were launched under tmux at all, and not ones already known to have
+-- ended (a session that already reported ended has nothing to poll).
+SELECT *
+FROM agent_sessions
+WHERE tmux_session != '' AND status != 'ended'
+ORDER BY last_active_at DESC, id DESC;
+
+-- name: SetSessionWorkingIfUnchanged :execrows
+-- Compare-and-swap write for section 8.3's poller: only takes effect if
+-- status_updated_at is still what the poller observed right before it
+-- captured the pane. A hook (Stop/Notification/SessionEnd) firing in
+-- between moves the timestamp first, so this UPDATE affects zero rows
+-- and the hook's authoritative status wins. Same idiom as
+-- ClaimSessionRecap's compare-and-clear.
+UPDATE agent_sessions
+SET status = 'working', status_updated_at = datetime('now')
+WHERE external_id = ? AND status_updated_at IS ?;

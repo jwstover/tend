@@ -2,9 +2,11 @@ package agent
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSessionName(t *testing.T) {
@@ -75,6 +77,85 @@ func TestAttachCmd(t *testing.T) {
 func TestHasSessionEmptyName(t *testing.T) {
 	if HasSession("", "/cfg/tmux.conf") {
 		t.Error("HasSession(\"\") = true, want false — an unnamed session is never live")
+	}
+}
+
+// CapturePane runs tmux directly rather than returning an *exec.Cmd, so
+// there's no Args slice to inspect the way TestWrapTmux/TestAttachCmd do
+// — same constraint HasSession is already under. This exercises the
+// degrade-quietly contract instead: a session that isn't there returns
+// "" and no error, never a panic or a surfaced failure.
+func TestCapturePaneMissingSessionDegradesQuietly(t *testing.T) {
+	if !TmuxInstalled() {
+		t.Skip("tmux not on PATH")
+	}
+	got, err := CapturePane("tend-does-not-exist", "/cfg/tmux.conf")
+	if err != nil {
+		t.Fatalf("CapturePane: %v, want a swallowed error", err)
+	}
+	if got != "" {
+		t.Errorf("CapturePane(missing session) = %q, want empty", got)
+	}
+}
+
+// TestCapturePaneLiveSession runs CapturePane against a real, live tmux
+// session on tend's own socket — the gap that let a real bug reach a
+// running tend process undetected: CapturePane originally targeted -t
+// with the same "=exact-name" form HasSession/KillSession use for a
+// target-session, but capture-pane's -t is a target-pane, where tmux
+// rejects "=name" with "can't find pane" even though the named session
+// is unquestionably alive. TestCapturePaneMissingSessionDegradesQuietly
+// only ever exercised a session that was never there, so it degraded to
+// "", nil either way and could not tell a real failure from the correct
+// missing-session behavior. This test would have failed against that
+// bug: it asserts the captured text actually contains what the live
+// session printed, not just that CapturePane returned without error.
+func TestCapturePaneLiveSession(t *testing.T) {
+	if !TmuxInstalled() {
+		t.Skip("tmux not on PATH")
+	}
+	cfgPath, err := WriteConfig()
+	if err != nil {
+		t.Fatalf("WriteConfig: %v", err)
+	}
+	name := "tend-capturepane-live-test"
+	kill := exec.Command(tmuxBinary, "-L", SocketName, "-f", cfgPath, "kill-session", "-t", "="+name)
+	_ = kill.Run() // best-effort: clear a session left behind by a prior failed run
+
+	const marker = "CAPTURE_PANE_LIVE_TEST_MARKER"
+	newSession := exec.Command(tmuxBinary, "-L", SocketName, "-f", cfgPath,
+		"new-session", "-d", "-s", name, "--", "sh", "-c", "printf '"+marker+"'; sleep 5")
+	if err := newSession.Run(); err != nil {
+		t.Fatalf("starting live test session: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = exec.Command(tmuxBinary, "-L", SocketName, "-f", cfgPath, "kill-session", "-t", "="+name).Run()
+	})
+
+	// new-session returns once tmux has created the session, not once the
+	// pane's child process has actually run — poll briefly rather than
+	// racing a single capture against sh's own startup time.
+	deadline := time.Now().Add(2 * time.Second)
+	var got string
+	for {
+		got, err = CapturePane(name, cfgPath)
+		if err != nil {
+			t.Fatalf("CapturePane: %v", err)
+		}
+		if strings.Contains(got, marker) || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !strings.Contains(got, marker) {
+		t.Errorf("CapturePane(live session) = %q, want it to contain %q", got, marker)
+	}
+}
+
+func TestCapturePaneEmptyName(t *testing.T) {
+	got, err := CapturePane("", "/cfg/tmux.conf")
+	if err != nil || got != "" {
+		t.Errorf("CapturePane(\"\") = (%q, %v), want (\"\", nil) — an unnamed session is never live", got, err)
 	}
 }
 

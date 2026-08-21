@@ -7,6 +7,7 @@ package gen
 
 import (
 	"context"
+	"database/sql"
 )
 
 const claimSessionRecap = `-- name: ClaimSessionRecap :execrows
@@ -182,6 +183,51 @@ func (q *Queries) ListSessionsNeedingRecap(ctx context.Context) ([]AgentSession,
 	return items, nil
 }
 
+const listSessionsWithTmux = `-- name: ListSessionsWithTmux :many
+SELECT id, task_id, external_id, cwd, label, started_at, last_active_at, tmux_session, needs_recap, status, status_updated_at
+FROM agent_sessions
+WHERE tmux_session != '' AND status != 'ended'
+ORDER BY last_active_at DESC, id DESC
+`
+
+// Candidates for section 8.3's capture-pane poller: only sessions that
+// were launched under tmux at all, and not ones already known to have
+// ended (a session that already reported ended has nothing to poll).
+func (q *Queries) ListSessionsWithTmux(ctx context.Context) ([]AgentSession, error) {
+	rows, err := q.db.QueryContext(ctx, listSessionsWithTmux)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AgentSession{}
+	for rows.Next() {
+		var i AgentSession
+		if err := rows.Scan(
+			&i.ID,
+			&i.TaskID,
+			&i.ExternalID,
+			&i.Cwd,
+			&i.Label,
+			&i.StartedAt,
+			&i.LastActiveAt,
+			&i.TmuxSession,
+			&i.NeedsRecap,
+			&i.Status,
+			&i.StatusUpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const setSessionNeedsRecap = `-- name: SetSessionNeedsRecap :exec
 UPDATE agent_sessions
 SET needs_recap = ?
@@ -212,6 +258,31 @@ type SetSessionStatusParams struct {
 func (q *Queries) SetSessionStatus(ctx context.Context, arg SetSessionStatusParams) error {
 	_, err := q.db.ExecContext(ctx, setSessionStatus, arg.Status, arg.ExternalID)
 	return err
+}
+
+const setSessionWorkingIfUnchanged = `-- name: SetSessionWorkingIfUnchanged :execrows
+UPDATE agent_sessions
+SET status = 'working', status_updated_at = datetime('now')
+WHERE external_id = ? AND status_updated_at IS ?
+`
+
+type SetSessionWorkingIfUnchangedParams struct {
+	ExternalID      string
+	StatusUpdatedAt sql.NullString
+}
+
+// Compare-and-swap write for section 8.3's poller: only takes effect if
+// status_updated_at is still what the poller observed right before it
+// captured the pane. A hook (Stop/Notification/SessionEnd) firing in
+// between moves the timestamp first, so this UPDATE affects zero rows
+// and the hook's authoritative status wins. Same idiom as
+// ClaimSessionRecap's compare-and-clear.
+func (q *Queries) SetSessionWorkingIfUnchanged(ctx context.Context, arg SetSessionWorkingIfUnchangedParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, setSessionWorkingIfUnchanged, arg.ExternalID, arg.StatusUpdatedAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const touchSession = `-- name: TouchSession :exec
