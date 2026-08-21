@@ -11,7 +11,7 @@ import (
 
 // Server binds tend's MCP tool surface to one task — the load-bearing
 // piece that lets "update the current task" resolve without the model
-// guessing an id (docs/agent-sessions-plan.md §9.3).
+// guessing an id.
 type Server struct {
 	store  Store
 	taskID int64

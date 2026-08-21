@@ -197,8 +197,7 @@ func (s *Store) ChildCounts(ctx context.Context) (map[int64]task.ChildCount, err
 
 // SessionStatuses returns the status of each task's most-recently-active
 // agent session, keyed by task id — what the list row renders so a
-// background session's state is visible without opening the task
-// (docs/agent-sessions-plan.md 8.4).
+// background session's state is visible without opening the task.
 //
 // The query returns every session oldest-first and the map keeps the
 // last write per task, which is the most recent one. That's cheaper to
@@ -423,10 +422,10 @@ func (s *Store) TouchSession(ctx context.Context, id int64) error {
 }
 
 // UpdateSessionLabel replaces a session's label with a short description
-// of what it actually did, derived from the post-session recap call
-// (see docs/agent-sessions-plan.md §5) — the auto-naming fix for the
-// static task-title snapshot not distinguishing sessions on the same
-// task. Keyed by external_id rather than the row id: it's the identifier
+// of what it actually did, derived from the post-session recap call —
+// the auto-naming fix for the static task-title snapshot not
+// distinguishing sessions on the same task. Keyed by external_id rather
+// than the row id: it's the identifier
 // recapSessionCmd already has in hand for both a freshly launched
 // session (whose row id it never sees, since CreateSession's caller
 // discards the result) and a resumed one alike.
@@ -439,10 +438,10 @@ func (s *Store) UpdateSessionLabel(ctx context.Context, externalID, label string
 
 // SetSessionNeedsRecap flags a session as still owing a recap, set when
 // a session is backgrounded rather than exited so the recap call is
-// deliberately skipped while it's live (docs/agent-sessions-plan.md
-// §8.1). Keyed by external_id for the same reason UpdateSessionLabel is:
-// it's what the TUI has in hand on both the launch and resume paths.
-// Nothing clears the flag yet — Phase 4.2's SessionEnd hook drains it.
+// deliberately skipped while it's live. Keyed by external_id for the
+// same reason UpdateSessionLabel is: it's what the TUI has in hand on
+// both the launch and resume paths. The SessionEnd hook drains the flag
+// once the session is really over.
 func (s *Store) SetSessionNeedsRecap(ctx context.Context, externalID string, needs bool) error {
 	var v int64
 	if needs {
@@ -455,9 +454,9 @@ func (s *Store) SetSessionNeedsRecap(ctx context.Context, externalID string, nee
 }
 
 // SetSessionStatus records what a session's Claude Code hooks last
-// reported about it (docs/agent-sessions-plan.md §8.2), keyed by
-// external_id — the id the hook payload carries as session_id, which is
-// what makes the correlation a lookup rather than a join.
+// reported about it, keyed by external_id — the id the hook payload
+// carries as session_id, which is what makes the correlation a lookup
+// rather than a join.
 //
 // A session id with no row is not an error: agent_sessions rows are only
 // written once a session's first terminal handoff *returns*, so hooks
@@ -479,7 +478,7 @@ func (s *Store) SetSessionStatus(ctx context.Context, externalID string, status 
 
 // ListSessionsNeedingRecap returns every session still owing a recap:
 // one that was backgrounded rather than exited, so the recap call was
-// deliberately skipped while it was live (§8.1).
+// deliberately skipped while it was live.
 //
 // Deliberately not filtered to status = 'ended'. A host that dies takes
 // its tmux server and its chance to fire SessionEnd with it, and such a
@@ -504,9 +503,9 @@ func (s *Store) ListSessionsNeedingRecap(ctx context.Context) ([]task.Session, e
 }
 
 // SessionsWithTmux returns every session tend could plausibly still poll
-// for pane-based status (docs/agent-sessions-plan.md §8.3): launched
-// under tmux at all, and not already known to have ended — a session
-// already reporting ended has nothing left to poll.
+// for pane-based status: launched under tmux at all, and not already
+// known to have ended — a session already reporting ended has nothing
+// left to poll.
 func (s *Store) SessionsWithTmux(ctx context.Context) ([]task.Session, error) {
 	rows, err := s.q.ListSessionsWithTmux(ctx)
 	if err != nil {
@@ -531,8 +530,9 @@ func (s *Store) SessionsWithTmux(ctx context.Context) ([]task.Session, error) {
 //
 // Claiming before running the recap rather than after means a recap that
 // then fails loses the debt. That's the intended trade: it bounds the
-// work to one attempt instead of retrying forever, and per §5's existing
-// convention a lost automatic recap isn't something the user can act on.
+// work to one attempt instead of retrying forever, consistent with the
+// existing convention that a lost automatic recap isn't something the
+// user can act on.
 func (s *Store) ClaimSessionRecap(ctx context.Context, externalID string) (bool, error) {
 	n, err := s.q.ClaimSessionRecap(ctx, externalID)
 	if err != nil {

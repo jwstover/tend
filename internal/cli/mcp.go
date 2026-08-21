@@ -16,10 +16,10 @@ type MCPStoreFactory func(ctx context.Context, dbPath string) (mcpserver.Store, 
 
 // newMcpCmd wires the hidden `tend mcp` command: one process per Claude
 // Code session, spawned by `claude` itself via --mcp-config (see
-// internal/agent.WriteMCPConfig), serving the task-scoped tool surface
-// of docs/agent-sessions-plan.md §9 over stdio until stdin closes.
-// Hidden because it's internal plumbing a launched session's
-// --mcp-config points at, not something a user is meant to run by hand.
+// internal/agent.WriteMCPConfig), serving the task-scoped MCP tool
+// surface over stdio until stdin closes. Hidden because it's internal
+// plumbing a launched session's --mcp-config points at, not something a
+// user is meant to run by hand.
 func newMcpCmd(open func(ctx context.Context) (mcpserver.Store, error)) *cobra.Command {
 	var taskID int64
 	cmd := &cobra.Command{

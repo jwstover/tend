@@ -848,7 +848,7 @@ func TestSetSessionNeedsRecap(t *testing.T) {
 		t.Fatalf("sessions = %+v, want NeedsRecap true", got)
 	}
 
-	// Phase 4.2 clears it; make sure the round trip works both ways now.
+	// The SessionEnd hook clears it; make sure the round trip works both ways now.
 	if err := s.SetSessionNeedsRecap(ctx, "ext-1", false); err != nil {
 		t.Fatalf("SetSessionNeedsRecap(false): %v", err)
 	}
