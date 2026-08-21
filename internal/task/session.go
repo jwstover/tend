@@ -6,8 +6,8 @@ import "time"
 // own state. It is a cache of something watched from outside the
 // process, not a workflow the user moves a row through — which is why
 // it's a plain string column with no states-table foreign key the way
-// Task.State has (docs/agent-sessions-plan.md §8.2). A value tend
-// doesn't recognize reads as SessionUnknown rather than failing.
+// Task.State has. A value tend doesn't recognize reads as SessionUnknown
+// rather than failing.
 type SessionStatus string
 
 const (
@@ -20,7 +20,7 @@ const (
 	// but nothing has been observed about what it's doing yet.
 	SessionStarting SessionStatus = "starting"
 	// SessionWorking means claude is mid-turn. No hook reports this;
-	// Claude Code fires nothing during a tool call, so only §8.3's
+	// Claude Code fires nothing during a tool call, so only the
 	// capture-pane poller ever writes it.
 	SessionWorking SessionStatus = "working"
 	// SessionIdle is set by the Stop hook — claude finished a turn and
@@ -43,16 +43,16 @@ const (
 //
 // TmuxSession is the name of the tmux session wrapping this one, empty
 // when it wasn't launched under tmux (no tmux on $PATH, or a row written
-// before docs/agent-sessions-plan.md §8.1). A non-empty name is a
+// before tmux-backed launch/attach existed). A non-empty name is a
 // candidate for attaching, not a promise the session is still alive —
 // only `tmux has-session` answers that.
 //
 // NeedsRecap marks a session that was backgrounded rather than exited,
 // so its recap was deliberately skipped and is still owed. Any tend
-// instance drains it once the session is really gone (§8.2).
+// instance drains it once the session is really gone.
 //
-// Status is hook-reported (§8.2) and StatusUpdatedAt is when it last
-// changed, zero if never. Both are a convenience indicator, deliberately
+// Status is hook-reported and StatusUpdatedAt is when it last changed,
+// zero if never. Both are a convenience indicator, deliberately
 // not a source of truth: a session's row isn't written until its first
 // terminal handoff *returns*, so hook events fired during a brand-new
 // session's first run land on no row at all and are dropped.

@@ -14,8 +14,7 @@ import (
 // one short-lived process per Claude Code hook firing, spawned by
 // `claude` itself via the generated --settings file (see
 // agent.WriteHookSettings), reading the hook's JSON payload from stdin
-// and recording what it implies about the session's status
-// (docs/agent-sessions-plan.md §8.2).
+// and recording what it implies about the session's status.
 //
 // No socket server and no daemon — tend already owns a WAL-mode sqlite
 // database every instance can write to, which is the whole reason this
