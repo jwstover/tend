@@ -42,6 +42,13 @@ type logOut struct {
 	Body   string `json:"body"`
 }
 
+// subtasksOut wraps the sub-task list in an object: MCP's outputSchema
+// describes the structuredContent object, so a bare slice generates a
+// top-level array schema that clients reject.
+type subtasksOut struct {
+	Tasks []taskOut `json:"tasks"`
+}
+
 // registerTools wires the nine tools of docs/agent-sessions-plan.md §9.3
 // onto srv. Every mutating tool accepts an explicit task_id override —
 // the bound task is a convenience default, not a hard sandbox (tend is
@@ -69,16 +76,16 @@ func registerTools(srv *mcp.Server, store Store, boundTaskID int64) {
 		Description: "List the sub-tasks of a task; defaults to the bound task.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in struct {
 		TaskID *int64 `json:"task_id,omitempty" jsonschema:"parent task id; defaults to the session's bound task"`
-	}) (*mcp.CallToolResult, []taskOut, error) {
+	}) (*mcp.CallToolResult, subtasksOut, error) {
 		children, err := store.ListChildren(ctx, resolveID(in.TaskID, boundTaskID))
 		if err != nil {
-			return nil, nil, err
+			return nil, subtasksOut{}, err
 		}
 		out := make([]taskOut, len(children))
 		for i, c := range children {
 			out[i] = toTaskOut(c)
 		}
-		return nil, out, nil
+		return nil, subtasksOut{Tasks: out}, nil
 	})
 
 	mcp.AddTool(srv, &mcp.Tool{

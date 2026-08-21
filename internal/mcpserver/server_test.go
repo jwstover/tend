@@ -263,9 +263,45 @@ func TestListSubtasksDefaultsToBoundTask(t *testing.T) {
 	)
 	cs := dial(t, store, 1)
 
-	got := callTool[[]taskOut](t, cs, "list_subtasks", nil)
-	if len(got) != 1 || got[0].ID != 2 {
-		t.Errorf("list_subtasks = %+v, want one child (id=2)", got)
+	got := callTool[subtasksOut](t, cs, "list_subtasks", nil)
+	if len(got.Tasks) != 1 || got.Tasks[0].ID != 2 {
+		t.Errorf("list_subtasks = %+v, want one child (id=2)", got.Tasks)
+	}
+}
+
+// TestEveryOutputSchemaIsAnObject guards the whole tool surface against
+// the failure that took it down once: MCP's outputSchema describes the
+// structuredContent object, so a handler returning a bare slice yields a
+// top-level array schema. Clients validate the entire tools/list
+// response, so one such tool makes every tend tool unavailable.
+func TestEveryOutputSchemaIsAnObject(t *testing.T) {
+	cs := dial(t, newFakeStore(task.Task{ID: 1, Title: "bound"}), 1)
+
+	tools, err := cs.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	if len(tools.Tools) == 0 {
+		t.Fatal("ListTools returned no tools")
+	}
+
+	for _, tool := range tools.Tools {
+		if tool.OutputSchema == nil {
+			continue
+		}
+		b, err := json.Marshal(tool.OutputSchema)
+		if err != nil {
+			t.Fatalf("marshaling %s output schema: %v", tool.Name, err)
+		}
+		var schema struct {
+			Type any `json:"type"`
+		}
+		if err := json.Unmarshal(b, &schema); err != nil {
+			t.Fatalf("unmarshaling %s output schema: %v", tool.Name, err)
+		}
+		if schema.Type != "object" {
+			t.Errorf("%s outputSchema type = %v, want \"object\"", tool.Name, schema.Type)
+		}
 	}
 }
 
