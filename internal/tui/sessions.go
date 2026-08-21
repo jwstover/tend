@@ -116,11 +116,10 @@ func (a app) chooseSessionPickerRow(row int) (tea.Model, tea.Cmd) {
 
 // wrapInTmux rewrites a direct claude command to run inside a named tmux
 // session on tend's own server, so detaching backgrounds it instead of
-// ending it (docs/agent-sessions-plan.md §8.1). Returns the unmodified
-// command with an empty name when tmux isn't installed or its config
-// can't be written — launch and resume then behave exactly as they did
-// before §8.1, just without backgrounding. tmux is a capability here,
-// never a requirement.
+// ending it. Returns the unmodified command with an empty name when
+// tmux isn't installed or its config can't be written — launch and
+// resume then behave exactly as they would without tmux, just without
+// backgrounding. tmux is a capability here, never a requirement.
 func wrapInTmux(c *exec.Cmd, externalID string) (wrapped *exec.Cmd, name, confPath string) {
 	if !agent.TmuxInstalled() {
 		return c, "", ""
@@ -138,10 +137,9 @@ func wrapInTmux(c *exec.Cmd, externalID string) (wrapped *exec.Cmd, name, confPa
 // detach chord backgrounds the session rather than ending it. The store
 // row is written only once the process returns cleanly (see
 // sessionFinishedMsg), mirroring editBodyCmd's don't-save-on-error
-// handling for $EDITOR. dbPath wires the session's task-bound MCP tools
-// (docs/agent-sessions-plan.md §9.2); a config write failure just means
-// no MCP tools this session, not a failure to launch, so it's swallowed
-// rather than surfaced as errCmd.
+// handling for $EDITOR. dbPath wires the session's task-bound MCP tools;
+// a config write failure just means no MCP tools this session, not a
+// failure to launch, so it's swallowed rather than surfaced as errCmd.
 //
 // The MCP config is only cleaned up when the session is really over. A
 // backgrounded session still has a live claude process holding that
@@ -199,8 +197,9 @@ func resumeSessionCmd(sess task.Session, dbPath string) tea.Cmd {
 	}
 	since, _ := agent.TranscriptLineCount(sess.Cwd, sess.ExternalID)
 
-	// A pre-§8.1 row has no stored name; derive the one it would have
-	// had, so an old session becomes attachable from its first resume.
+	// A row from before tmux-backed sessions has no stored name; derive
+	// the one it would have had, so an old session becomes attachable
+	// from its first resume.
 	name := sess.TmuxSession
 	if name == "" {
 		name = agent.SessionName(sess.ExternalID)
@@ -243,17 +242,16 @@ func resumeSessionCmd(sess task.Session, dbPath string) tea.Cmd {
 }
 
 // drainRecapsCmd settles recap debts left by sessions that were
-// backgrounded and never re-attached — the known gap
-// docs/agent-sessions-plan.md §8.1 left open, closed here rather than by
-// a daemon: any tend instance that refreshes picks up whatever is owed.
+// backgrounded and never re-attached, closed here rather than by a
+// daemon: any tend instance that refreshes picks up whatever is owed.
 //
 // Liveness is decided by `tmux has-session`, not by the stored status.
 // A host that dies takes its tmux server and its chance to fire
 // SessionEnd with it, so a status-only gate would strand those sessions
 // forever; and /clear fires SessionEnd while the process keeps running,
 // so a status-only gate would also fire a recap against a live session —
-// exactly the two-processes-on-one-transcript hazard §8.1 exists to
-// avoid. has-session is right in both directions.
+// exactly the two-processes-on-one-transcript hazard tmux-backed
+// backgrounding exists to avoid. has-session is right in both directions.
 //
 // The debt is claimed before the recap runs, not after, so two tend
 // instances draining concurrently can't both fire the same expensive
@@ -298,7 +296,8 @@ func (a app) drainRecapsCmd() tea.Cmd {
 var sessionAlive = func(sess task.Session) bool {
 	name := sess.TmuxSession
 	if name == "" {
-		// A pre-§8.1 row stored no name; derive the one it would have had.
+		// A row from before tmux-backed sessions stored no name; derive
+		// the one it would have had.
 		name = agent.SessionName(sess.ExternalID)
 	}
 	confPath, err := agent.WriteConfig()
@@ -308,65 +307,95 @@ var sessionAlive = func(sess task.Session) bool {
 	return agent.HasSession(name, confPath)
 }
 
-// pollSessionStatusCmd is section 8.3's capture-pane poller: the only way
-// tend ever observes a session mid-tool-call, since Claude Code fires no
-// hook for it (§8.2). Runs only while this tend process is foregrounded,
-// consistent with tend's no-daemon model, and only against
-// SessionsWithTmux's candidates — sessions launched under tmux and not
-// already known to have ended.
+// pollSessions is the capture-pane poller: the only way tend ever
+// observes a session mid-tool-call, since Claude Code fires no hook for
+// it. Runs on its own goroutine (see runSessionPoller in app.go) rather
+// than as a tea.Cmd, against SessionsWithTmux's candidates — sessions
+// launched under tmux and not already known to have ended.
 //
 // For each candidate, HasSession decides liveness the same authoritative
 // way drainRecapsCmd's sessionAlive does; a dead session is skipped
-// outright rather than captured. A live one is captured and classified.
-// A working classification writes it via SetSessionWorkingIfUnchanged,
-// but only if no hook updated the row's status_updated_at between this
-// tick's read (sess.StatusUpdatedAt, loaded moments earlier by
-// SessionsWithTmux) and this write — so a Stop/Notification/SessionEnd
-// that lands mid-tick always wins the race, never the poller's guess.
+// outright rather than captured. A live one is captured and classified
+// into working, blocked, or neither (agent.ClassifyPane):
 //
-// A non-working classification does the mirror-image thing when the row
-// we just read was itself 'working': SetSessionIdleIfUnchanged takes it
-// back down, guarded by the same compare-and-swap. Without this half, a
-// 'working' write that raced a Stop hook's own write within the same
-// datetime('now') second — or simply observed one trailing frame of
-// stale chrome — has no way back down until the *next* hook fires, which
-// can be an arbitrarily long wait; a session sits pinned to `working`
-// long after it's genuinely idle. Any status other than 'working' (idle,
-// blocked, ended, starting, unknown) is left alone in either branch —
-// the poller never invents a status a hook hasn't already claimed.
+//   - working chrome writes 'working' via SetSessionWorkingIfUnchanged,
+//     guarded by a compare-and-swap on status_updated_at so a
+//     Stop/Notification/SessionEnd that lands mid-tick always wins the
+//     race, never the poller's guess.
+//   - blocked chrome is left completely alone in every branch below —
+//     the poller only ever withholds judgment on it, never asserts or
+//     clears it itself. A false negative there would silently drop the
+//     one status that means "needs you," which is a worse failure than
+//     leaving a stale status exactly as it is.
+//   - neither: a row we just read as 'working' is taken back down via
+//     SetSessionIdleIfUnchanged, the same CAS in the other direction.
+//     Without this, a 'working' write that raced a Stop hook's own write
+//     within the same wall-clock instant — or simply observed one
+//     trailing frame of stale chrome — has no way back down until the
+//     *next* hook fires, which can be an arbitrarily long wait.
+//
+// A row we read as blocked, starting, or unknown (settleable) gets the
+// same idle demotion once it's sat unchanged for a full settleAfter —
+// long enough that a hook which was going to fire already would have.
+// This exists because hooks are not, in practice, fully reliable: a
+// Notification's matching Stop can simply fail to land, and without this
+// there is nothing else that will ever move such a row off 'blocked'.
+// The time floor plus the blocked-chrome exclusion above are what keep
+// this from clearing a session that's genuinely still waiting on the
+// user — it only fires once neither working nor blocked chrome has shown
+// up for a full interval. Production always passes pollInterval; tests
+// pass their own to avoid a real-time sleep.
 //
 // Every failure is swallowed exactly like drainRecapsCmd's: a missed poll
-// costs nothing and is retried next tick.
-func (a app) pollSessionStatusCmd() tea.Cmd {
-	return func() tea.Msg {
-		sessions, err := a.store.SessionsWithTmux(a.ctx)
-		if err != nil {
-			return sessionsPolledMsg{}
+// costs nothing and is retried next tick. Reports whether anything
+// changed, so the caller (runSessionPoller) knows whether a reload is
+// worth triggering.
+func pollSessions(ctx context.Context, store Store, settleAfter time.Duration) bool {
+	sessions, err := store.SessionsWithTmux(ctx)
+	if err != nil {
+		return false
+	}
+	var changed bool
+	for _, sess := range sessions {
+		if !sessionAlive(sess) {
+			continue
 		}
-		var changed bool
-		for _, sess := range sessions {
-			if !sessionAlive(sess) {
-				continue
-			}
-			pane, err := capturePane(sess)
-			if err != nil || pane == "" {
-				continue
-			}
-			working := agent.ClassifyPane(pane) == task.SessionWorking
-			var ok bool
-			switch {
-			case working:
-				ok, err = a.store.SetSessionWorkingIfUnchanged(a.ctx, sess.ExternalID, sess.StatusUpdatedAt)
-			case sess.Status == task.SessionWorking:
-				ok, err = a.store.SetSessionIdleIfUnchanged(a.ctx, sess.ExternalID, sess.StatusUpdatedAt)
-			default:
-				continue
-			}
-			if err == nil && ok {
-				changed = true
-			}
+		pane, err := capturePane(sess)
+		if err != nil || pane == "" {
+			continue
 		}
-		return sessionsPolledMsg{changed: changed}
+		var ok bool
+		switch class := agent.ClassifyPane(pane); {
+		case class == task.SessionWorking:
+			ok, err = store.SetSessionWorkingIfUnchanged(ctx, sess.ExternalID, sess.StatusUpdatedAt)
+		case class == task.SessionBlocked:
+			continue
+		case sess.Status == task.SessionWorking:
+			ok, err = store.SetSessionIdleIfUnchanged(ctx, sess.ExternalID, sess.StatusUpdatedAt)
+		case settleable(sess.Status) && time.Since(sess.StatusUpdatedAt) >= settleAfter:
+			ok, err = store.SetSessionIdleIfUnchanged(ctx, sess.ExternalID, sess.StatusUpdatedAt)
+		default:
+			continue
+		}
+		if err == nil && ok {
+			changed = true
+		}
+	}
+	return changed
+}
+
+// settleable reports whether a status is eligible for pollSessions' idle
+// settle path once its pane has shown neither working nor blocked chrome
+// for a full settleAfter — every non-terminal status a hook can set other
+// than 'working', which already has its own unconditional (no time
+// floor) demotion path. 'ended' is excluded because SessionsWithTmux
+// already filters it out, and 'idle' because it's already the target.
+func settleable(st task.SessionStatus) bool {
+	switch st {
+	case task.SessionBlocked, task.SessionStarting, task.SessionUnknown:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -390,8 +419,7 @@ var capturePane = func(sess task.Session) (string, error) {
 
 // recapNotePrefix marks a log entry as an auto-generated session recap,
 // not hand-typed, so the LOG section reads sensibly next to manual
-// notes — a plain-text convention, not a schema change (see
-// docs/agent-sessions-plan.md §5).
+// notes — a plain-text convention, not a schema change.
 const recapNotePrefix = "[Claude] Session recap — "
 
 // runRecap executes the headless recap call and returns its trimmed
@@ -413,8 +441,8 @@ var runRecap = func(ctx context.Context, cwd, externalID, excerpt string) (strin
 // recapSessionCmd fires the headless claude -p follow-up after a
 // session's tea.ExecProcess handoff returns, and stores a successful
 // result as a log entry on the task via Store.AddLogEntry — the fix for
-// "I took a break and lost the thread" (docs/agent-sessions-plan.md §5).
-// It runs fully async and off the update loop, exactly like
+// "I took a break and lost the thread". It runs fully async and off the
+// update loop, exactly like
 // captureTask's Jira lookup, and swallows any failure — claude
 // erroring, timing out, or returning nothing — by wrapping a bare
 // recapDoneMsg{} rather than an error flash: losing an automatic recap
@@ -424,7 +452,7 @@ var runRecap = func(ctx context.Context, cwd, externalID, excerpt string) (strin
 // warn before quitting drops a call still in flight (see handleKey's
 // quitPending chord).
 //
-// The same call also drives auto-naming (§5): agent.ParseRecapResponse
+// The same call also drives auto-naming: agent.ParseRecapResponse
 // splits the reply into the recap body and a short label describing what
 // the session actually did, and a successfully-parsed label is persisted
 // via Store.UpdateSessionLabel, replacing the static task-title snapshot
@@ -467,15 +495,14 @@ func (a app) recapSessionCmd(taskID int64, cwd, externalID string, since *int) t
 }
 
 // sessionStatusCell resolves a session's status marker — the glyph and
-// the style to render it in (docs/agent-sessions-plan.md §8.4). Shared by
-// the detail pane's SESSIONS section, the picker, and the list row so the
-// three can't drift apart.
+// the style to render it in. Shared by the detail pane's SESSIONS
+// section, the picker, and the list row so the three can't drift apart.
 //
 // An unrecognized status falls back to unknown rather than rendering
-// nothing: §8.2 stores status as plain TEXT with no foreign key
-// precisely so an out-of-band value degrades to "not observed" instead
-// of failing. Unknown's glyph is a blank of the same width, so a row
-// with no status still aligns with one that has it.
+// nothing: status is stored as plain TEXT with no foreign key precisely
+// so an out-of-band value degrades to "not observed" instead of failing.
+// Unknown's glyph is a blank of the same width, so a row with no status
+// still aligns with one that has it.
 func sessionStatusCell(s Styles, st task.SessionStatus) (string, lipgloss.Style) {
 	glyph, ok := s.Glyphs.Session[st]
 	if !ok {
