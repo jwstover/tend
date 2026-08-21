@@ -308,6 +308,69 @@ var sessionAlive = func(sess task.Session) bool {
 	return agent.HasSession(name, confPath)
 }
 
+// pollSessionStatusCmd is section 8.3's capture-pane poller: the only way
+// tend ever observes a session mid-tool-call, since Claude Code fires no
+// hook for it (§8.2). Runs only while this tend process is foregrounded,
+// consistent with tend's no-daemon model, and only against
+// SessionsWithTmux's candidates — sessions launched under tmux and not
+// already known to have ended.
+//
+// For each candidate, HasSession decides liveness the same authoritative
+// way drainRecapsCmd's sessionAlive does; a dead session is skipped
+// outright rather than captured. A live one is captured and classified,
+// and only a working classification does anything: SetSessionWorkingIfUnchanged
+// writes it, but only if no hook updated the row's status_updated_at
+// between this tick's read (sess.StatusUpdatedAt, loaded moments earlier
+// by SessionsWithTmux) and this write — so a Stop/Notification/SessionEnd
+// that lands mid-tick always wins the race, never the poller's guess.
+//
+// Every failure is swallowed exactly like drainRecapsCmd's: a missed poll
+// costs nothing and is retried next tick.
+func (a app) pollSessionStatusCmd() tea.Cmd {
+	return func() tea.Msg {
+		sessions, err := a.store.SessionsWithTmux(a.ctx)
+		if err != nil {
+			return sessionsPolledMsg{}
+		}
+		var changed bool
+		for _, sess := range sessions {
+			if !sessionAlive(sess) {
+				continue
+			}
+			pane, err := capturePane(sess)
+			if err != nil || pane == "" {
+				continue
+			}
+			if agent.ClassifyPane(pane) != task.SessionWorking {
+				continue
+			}
+			ok, err := a.store.SetSessionWorkingIfUnchanged(a.ctx, sess.ExternalID, sess.StatusUpdatedAt)
+			if err == nil && ok {
+				changed = true
+			}
+		}
+		return sessionsPolledMsg{changed: changed}
+	}
+}
+
+// capturePane resolves a session's tmux name (deriving one for a pre-8.1
+// row the same way sessionAlive and resumeSessionCmd already do) and
+// captures its pane. A package-level var for the same reason sessionAlive
+// is one: pollSessionStatusCmd fires from the same Update path this
+// file's tests already drive with drive(), and without a seam every
+// poller test would need a real tmux server.
+var capturePane = func(sess task.Session) (string, error) {
+	name := sess.TmuxSession
+	if name == "" {
+		name = agent.SessionName(sess.ExternalID)
+	}
+	confPath, err := agent.WriteConfig()
+	if err != nil {
+		return "", err
+	}
+	return agent.CapturePane(name, confPath)
+}
+
 // recapNotePrefix marks a log entry as an auto-generated session recap,
 // not hand-typed, so the LOG section reads sensibly next to manual
 // notes — a plain-text convention, not a schema change (see

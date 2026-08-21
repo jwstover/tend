@@ -205,3 +205,52 @@ func KillSession(sessionName, configPath string) error {
 	}
 	return nil
 }
+
+// CapturePane returns the visible contents of a live tmux session's pane,
+// the raw material §8.3's classifyPane pattern-matches against to detect
+// the one status no Claude Code hook can report: a session mid-tool-call.
+// `-p` prints to stdout instead of a tmux buffer.
+//
+// No -S/-E: tmux's own default for capture-pane with neither flag is "the
+// visible contents of the pane", which is exactly the on-screen chrome
+// classifyPane needs. §8.3's original design sketch called for `-S -5` to
+// grab "the tail", but that reads tmux's line numbering backwards —
+// verified against tmux 3.7b's own man page: "zero is the first line of
+// the visible pane and negative numbers are lines in the history", so
+// `-S -5` starts 5 lines *above the top* of the screen, not 5 lines above
+// the bottom, and with no -E the capture still runs to the bottom of the
+// pane regardless. Confirmed by direct probe: `-S -5` and `-S -20`
+// produced byte-identical output (the whole visible pane, history_size
+// 0), while `-S -5 -E -1` produced nothing — an empty range under the
+// same numbering. Omitting -S/-E entirely gives the correct "just what's
+// on screen" capture with no history at all.
+//
+// Errors are swallowed to "" rather than returned to the caller's flow —
+// a poller tick that can't read a pane just skips that session until the
+// next tick, the same degrade-quietly convention HasSession and
+// CapturePane's other tmux siblings already follow.
+//
+// No "=" prefix on -t, unlike HasSession/KillSession. Those target a
+// *session* (target-session), where "=" forces an exact-string match
+// instead of tmux's fnmatch-style prefix matching. capture-pane's -t
+// takes a *pane* (target-pane); tmux resolves a bare session name to
+// that session's active pane, but "=exact-name" is not accepted the same
+// way for a pane target — verified by direct probe against tmux 3.7b:
+// `-t "=tend-<id>"` fails with "can't find pane" on a session that is
+// unquestionably alive (has-session with the same "=<id>" target
+// succeeds against it), while `-t "tend-<id>"` (no "=") succeeds and
+// returns the expected chrome. Caught live: the poller was silently
+// no-op-ing on every tick with the "=" form, since CapturePane's own
+// convention is to swallow the resulting exec error to "" rather than
+// surface it, and no test exercised a real tmux server to catch it.
+func CapturePane(sessionName, configPath string) (string, error) {
+	if sessionName == "" || !TmuxInstalled() {
+		return "", nil
+	}
+	args := append(serverArgs(configPath), "capture-pane", "-t", sessionName, "-p")
+	out, err := exec.Command(tmuxBinary, args...).Output()
+	if err != nil {
+		return "", nil
+	}
+	return string(out), nil
+}

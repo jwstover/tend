@@ -66,6 +66,10 @@ type Querier interface {
 	ListSessionsNeedingRecap(ctx context.Context) ([]AgentSession, error)
 	ListTags(ctx context.Context) ([]Tag, error)
 	ListTagsForTask(ctx context.Context, taskID int64) ([]string, error)
+	// Candidates for section 8.3's capture-pane poller: only sessions that
+	// were launched under tmux at all, and not ones already known to have
+	// ended (a session that already reported ended has nothing to poll).
+	ListSessionsWithTmux(ctx context.Context) ([]AgentSession, error)
 	// Half of Store.DeleteProject's transaction: project_id carries no foreign
 	// key (see 00007's comment), so orphan prevention is explicit here.
 	ReassignProjectTasks(ctx context.Context, arg ReassignProjectTasksParams) error
@@ -73,6 +77,13 @@ type Querier interface {
 	SetProjectArchived(ctx context.Context, arg SetProjectArchivedParams) error
 	SetSessionNeedsRecap(ctx context.Context, arg SetSessionNeedsRecapParams) error
 	SetSessionStatus(ctx context.Context, arg SetSessionStatusParams) error
+	// Compare-and-swap write for section 8.3's poller: only takes effect if
+	// status_updated_at is still what the poller observed right before it
+	// captured the pane. A hook (Stop/Notification/SessionEnd) firing in
+	// between moves the timestamp first, so this UPDATE affects zero rows
+	// and the hook's authoritative status wins. Same idiom as
+	// ClaimSessionRecap's compare-and-clear.
+	SetSessionWorkingIfUnchanged(ctx context.Context, arg SetSessionWorkingIfUnchangedParams) (int64, error)
 	SetSetting(ctx context.Context, arg SetSettingParams) error
 	SetTaskBody(ctx context.Context, arg SetTaskBodyParams) error
 	SetTaskDue(ctx context.Context, arg SetTaskDueParams) error

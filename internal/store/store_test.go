@@ -1086,3 +1086,144 @@ func TestSessionStatusesTakesLatestPerTask(t *testing.T) {
 		t.Errorf("len(statuses) = %d, want 2 — a task with no sessions must not appear", len(statuses))
 	}
 }
+
+// SessionsWithTmux is section 8.3's poller candidate list: only sessions
+// with a stored tmux name at all, and not ones already known to have
+// ended.
+func TestSessionsWithTmux(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	parent := mustAdd(t, s, "do the thing")
+
+	if _, err := s.CreateSession(ctx, parent.ID, "no-tmux", "/tmp/work", parent.Title, ""); err != nil {
+		t.Fatalf("CreateSession(no-tmux): %v", err)
+	}
+	if _, err := s.CreateSession(ctx, parent.ID, "live", "/tmp/work", parent.Title, "tend-live"); err != nil {
+		t.Fatalf("CreateSession(live): %v", err)
+	}
+	if _, err := s.CreateSession(ctx, parent.ID, "ended", "/tmp/work", parent.Title, "tend-ended"); err != nil {
+		t.Fatalf("CreateSession(ended): %v", err)
+	}
+	if err := s.SetSessionStatus(ctx, "ended", task.SessionEnded); err != nil {
+		t.Fatalf("SetSessionStatus(ended): %v", err)
+	}
+
+	got, err := s.SessionsWithTmux(ctx)
+	if err != nil {
+		t.Fatalf("SessionsWithTmux: %v", err)
+	}
+	if len(got) != 1 || got[0].ExternalID != "live" {
+		t.Fatalf("SessionsWithTmux = %+v, want just the live session", got)
+	}
+}
+
+// The compare-and-swap succeeds when nothing has moved status_updated_at
+// since the caller's read — a session no hook has ever touched, matched
+// here against SQL NULL via a zero time.Time.
+func TestSetSessionWorkingIfUnchangedSucceedsWhenNeverObserved(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	parent := mustAdd(t, s, "do the thing")
+	sess, err := s.CreateSession(ctx, parent.ID, "ext-1", "/tmp/work", parent.Title, "tend-ext-1")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if !sess.StatusUpdatedAt.IsZero() {
+		t.Fatalf("StatusUpdatedAt = %v, want zero for a brand-new session", sess.StatusUpdatedAt)
+	}
+
+	ok, err := s.SetSessionWorkingIfUnchanged(ctx, "ext-1", sess.StatusUpdatedAt)
+	if err != nil {
+		t.Fatalf("SetSessionWorkingIfUnchanged: %v", err)
+	}
+	if !ok {
+		t.Fatal("SetSessionWorkingIfUnchanged = false, want true — nothing raced it")
+	}
+
+	sessions, err := s.ListSessionsForTask(ctx, parent.ID)
+	if err != nil {
+		t.Fatalf("ListSessionsForTask: %v", err)
+	}
+	if sessions[0].Status != task.SessionWorking {
+		t.Errorf("Status = %q, want %q", sessions[0].Status, task.SessionWorking)
+	}
+}
+
+// The CAS also succeeds against a non-null prior timestamp, as long as it
+// still matches — the ordinary case of one poll tick following another
+// with no hook in between.
+func TestSetSessionWorkingIfUnchangedSucceedsAgainstStablePriorStatus(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	parent := mustAdd(t, s, "do the thing")
+	if _, err := s.CreateSession(ctx, parent.ID, "ext-1", "/tmp/work", parent.Title, "tend-ext-1"); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if err := s.SetSessionStatus(ctx, "ext-1", task.SessionIdle); err != nil {
+		t.Fatalf("SetSessionStatus: %v", err)
+	}
+	sessions, err := s.ListSessionsForTask(ctx, parent.ID)
+	if err != nil {
+		t.Fatalf("ListSessionsForTask: %v", err)
+	}
+	observed := sessions[0].StatusUpdatedAt
+	if observed.IsZero() {
+		t.Fatal("StatusUpdatedAt is zero after a status write")
+	}
+
+	ok, err := s.SetSessionWorkingIfUnchanged(ctx, "ext-1", observed)
+	if err != nil {
+		t.Fatalf("SetSessionWorkingIfUnchanged: %v", err)
+	}
+	if !ok {
+		t.Fatal("SetSessionWorkingIfUnchanged = false, want true — the timestamp still matched")
+	}
+}
+
+// The race the whole CAS exists for: a hook fires between the poller's
+// read and its write, moving status_updated_at first. The poller's write
+// must then be a no-op, leaving the hook's authoritative status standing.
+func TestSetSessionWorkingIfUnchangedLosesToAConcurrentHook(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	parent := mustAdd(t, s, "do the thing")
+	sess, err := s.CreateSession(ctx, parent.ID, "ext-1", "/tmp/work", parent.Title, "tend-ext-1")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	staleObserved := sess.StatusUpdatedAt // zero — as the poller would have read it pre-hook
+
+	// Simulate a Notification hook landing mid-tick.
+	if err := s.SetSessionStatus(ctx, "ext-1", task.SessionBlocked); err != nil {
+		t.Fatalf("SetSessionStatus: %v", err)
+	}
+
+	ok, err := s.SetSessionWorkingIfUnchanged(ctx, "ext-1", staleObserved)
+	if err != nil {
+		t.Fatalf("SetSessionWorkingIfUnchanged: %v", err)
+	}
+	if ok {
+		t.Fatal("SetSessionWorkingIfUnchanged = true, want false — the hook should have won")
+	}
+
+	sessions, err := s.ListSessionsForTask(ctx, parent.ID)
+	if err != nil {
+		t.Fatalf("ListSessionsForTask: %v", err)
+	}
+	if sessions[0].Status != task.SessionBlocked {
+		t.Errorf("Status = %q, want %q — the poller must not have clobbered the hook's write",
+			sessions[0].Status, task.SessionBlocked)
+	}
+}
+
+func TestSetSessionWorkingIfUnchangedUnknownSessionIsNotAnError(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	ok, err := s.SetSessionWorkingIfUnchanged(ctx, "never-seen", time.Time{})
+	if err != nil {
+		t.Fatalf("SetSessionWorkingIfUnchanged: %v", err)
+	}
+	if ok {
+		t.Error("SetSessionWorkingIfUnchanged reported success for a session that doesn't exist")
+	}
+}

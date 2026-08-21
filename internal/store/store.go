@@ -597,6 +597,26 @@ func (s *Store) ListSessionsNeedingRecap(ctx context.Context) ([]task.Session, e
 	return sessions, nil
 }
 
+// SessionsWithTmux returns every session tend could plausibly still poll
+// for pane-based status (docs/agent-sessions-plan.md §8.3): launched
+// under tmux at all, and not already known to have ended — a session
+// already reporting ended has nothing left to poll.
+func (s *Store) SessionsWithTmux(ctx context.Context) ([]task.Session, error) {
+	rows, err := s.q.ListSessionsWithTmux(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("listing sessions with tmux: %w", err)
+	}
+	sessions := make([]task.Session, 0, len(rows))
+	for _, row := range rows {
+		sess, err := sessionToDomain(row)
+		if err != nil {
+			return nil, err
+		}
+		sessions = append(sessions, sess)
+	}
+	return sessions, nil
+}
+
 // ClaimSessionRecap atomically takes ownership of a session's owed
 // recap, reporting whether this caller is the one that got it. The
 // UPDATE clears needs_recap only if it was still set, so of two tend
@@ -611,6 +631,36 @@ func (s *Store) ClaimSessionRecap(ctx context.Context, externalID string) (bool,
 	n, err := s.q.ClaimSessionRecap(ctx, externalID)
 	if err != nil {
 		return false, fmt.Errorf("claiming recap for session %s: %w", externalID, err)
+	}
+	return n > 0, nil
+}
+
+// SetSessionWorkingIfUnchanged writes 'working' for section 8.3's
+// capture-pane poller, but only if no hook has updated the session's
+// status since prevStatusUpdatedAt — the value the caller read from the
+// row right before it captured the pane. A hook (Stop/Notification/
+// SessionEnd) landing in between moves status_updated_at first, so the
+// underlying CAS UPDATE affects zero rows and the hook's authoritative
+// status is left standing; the poller's guess never overwrites it.
+//
+// A zero prevStatusUpdatedAt means the caller observed the column as
+// NULL — a session no hook has ever touched — matched here against SQL
+// NULL via IS rather than a sentinel string.
+//
+// Reports whether the write took effect. false is not an error: it means
+// the race was correctly lost to fresher, authoritative data, which is
+// the whole point of the compare-and-swap.
+func (s *Store) SetSessionWorkingIfUnchanged(ctx context.Context, externalID string, prevStatusUpdatedAt time.Time) (bool, error) {
+	var prev sql.NullString
+	if !prevStatusUpdatedAt.IsZero() {
+		prev = sql.NullString{String: prevStatusUpdatedAt.UTC().Format(sqliteTimeLayout), Valid: true}
+	}
+	n, err := s.q.SetSessionWorkingIfUnchanged(ctx, gen.SetSessionWorkingIfUnchangedParams{
+		ExternalID:      externalID,
+		StatusUpdatedAt: prev,
+	})
+	if err != nil {
+		return false, fmt.Errorf("setting working status for session %s: %w", externalID, err)
 	}
 	return n > 0, nil
 }
