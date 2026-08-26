@@ -1,6 +1,6 @@
 # Projects & tags — design & phased plan
 
-> Status: **Phases 0-3 implemented (2026-08-26)** — migration `00007`, the domain types, and the whole
+> Status: **Complete — all five phases implemented (2026-08-26)** — migration `00007`, the domain types, and the whole
 > `Store` surface are in, with the fixture-based migration test of §2.2 passing and the full suite,
 > lint and formatting green. Rehearsed against a copy of the real database (74 tasks, schema 6):
 > both project strings migrated to tags with matching counts, every task landed in `Unsorted`, and
@@ -9,7 +9,8 @@
 > suite, lint and gofmt green, and the whole flow re-verified end to end on a fresh copy of the
 > real database. Phase 2 turned out to be mostly delivered already; the one real gap (tag
 > overflow) is closed. Phase 3 added the `tend projects` group, `ls`/`add` scoping flags and
-> three MCP project tools. Phase 4 is unstarted. This is a
+> three MCP project tools. Phase 4 added triage scoping, the header's project label and the
+> `project` event kind. This is a
 > project-specific addendum to `AGENTS.md`, not a replacement for it — the layering (§4), Go conventions (§8), and commit rules (§0.1) still govern everything
 > built here. It supersedes `AGENTS.md` §10's "Project hierarchy beyond a single flat `project`
 > string" exclusion, which §7 below replaces with a narrower one.
@@ -425,11 +426,31 @@ rows), while `tend ls` prints every live task including sub-tasks flat. So the n
 project is smaller than the rows `tend ls` prints for it. Both are defensible alone; making them
 agree means deciding how `tend ls` should represent a tree, which is its own question.
 
-**Phase 4 — Scoping and polish.** Triage scopes to the selected project (`All` triages
-everything); a `project` kind for `task_events` so standup can report moves; project archiving;
-`AGENTS.md` §5/§10 updated to match reality.
+**Phase 4 — Scoping and polish. Done (2026-08-26).**
 
-Standup stays global: it is a time report, not a project view. Easy to revisit.
+- **Triage scoping was already working** — it inherited `projectFilter` in Phase 0, so `i` on a
+  selected project triages only its inbox and `All` triages everything. What was missing was any
+  sign of it on screen, since triage never shows the projects column and the column hides on a
+  narrow terminal. The header now reads `tend · triage · alpha`.
+- **`task_events` gained a `project` kind** (migration `00008`) and standup reports moves.
+- **Project archiving** shipped in Phase 1; **`AGENTS.md` §5/§6/§10** were corrected as each phase
+  invalidated them, rather than left to the end.
+
+Two choices worth recording:
+
+- **The rebuild's statement order is load-bearing.** Renaming a table makes SQLite re-parse every
+  trigger to fix up references, and a trigger naming a table that does not exist at that moment
+  fails the rename outright. The three triggers on `tasks` write into `task_events`, so they must
+  be dropped before the old table goes and recreated after the new one takes its name. Unlike
+  §2.1's rejected rebuild this one is transaction-safe: nothing references `task_events` by
+  foreign key and it holds none itself.
+- **The move event is written in Go, not by a trigger** — the opposite of what `00002` chose for
+  state changes, for the same underlying reason. A trigger fires per row and a move takes the
+  whole sub-tree, so a trigger would log one entry per descendant for one user action. The store
+  knows which task the user actually moved. Old/new hold project *names*, snapshotted the way
+  `task_title` already is, so the log survives a rename or a delete.
+
+Standup stays global: it is a time report, not a project view.
 
 ## 7. Out of scope
 
