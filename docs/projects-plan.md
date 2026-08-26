@@ -1,10 +1,13 @@
 # Projects & tags — design & phased plan
 
-> Status: **Phase 0 implemented (2026-08-26)** — migration `00007`, the domain types, and the whole
+> Status: **Phases 0 and 1 implemented (2026-08-26)** — migration `00007`, the domain types, and the whole
 > `Store` surface are in, with the fixture-based migration test of §2.2 passing and the full suite,
 > lint and formatting green. Rehearsed against a copy of the real database (74 tasks, schema 6):
 > both project strings migrated to tags with matching counts, every task landed in `Unsorted`, and
-> `tasks.project` is gone. Phases 1-4 are unstarted. This is a
+> `tasks.project` is gone. Phase 1 added the projects column, the focus refactor, `h`/`l`
+> fallthrough, list scoping, capture-target persistence, project CRUD and the `P` move picker;
+> suite, lint and gofmt green, and the whole flow re-verified end to end on a fresh copy of the
+> real database. Phases 2-4 are unstarted. This is a
 > project-specific addendum to `AGENTS.md`, not a replacement for it — the layering (§4), Go conventions (§8), and commit rules (§0.1) still govern everything
 > built here. It supersedes `AGENTS.md` §10's "Project hierarchy beyond a single flat `project`
 > string" exclusion, which §7 below replaces with a narrower one.
@@ -352,11 +355,23 @@ through every query and left `nil`, so the views behave exactly as they did befo
 database (74 tasks at schema 6) migrated with both project strings intact as tags at matching
 counts.
 
-**Phase 1 — The projects column.** `internal/tui/projects.go`, the focus refactor, pane widths,
-`h`/`l`, task-list scoping, active-project persistence, and project create/rename/delete. This is
-the gate the owner actually dogfoods.
-*Acceptance:* projects can be created and switched with `h`/`j`/`k`/`l`; the task list shows only
-the selected project; `tend add` from a shell lands in the last-selected project and says so.
+**Phase 1 — The projects column. Done (2026-08-26).** `internal/tui/projects.go`, the focus
+refactor (landed on its own first, as planned), `paneWidths`, `h`/`l`, task-list scoping,
+capture-target persistence, project create/rename/delete/archive, and the `P` move picker
+(`internal/tui/projectpicker.go`).
+*Acceptance — met:* projects create and switch with `h`/`j`/`k`/`l`; the task list scopes to the
+selection; `tend add` from a bare shell lands in the last-selected project and names it.
+
+Two refinements the plan didn't anticipate:
+
+- **`Unsorted` is pinned above user projects** (`sort_order = -1` in the seed) rather than sorting
+  into the alphabet. It is the bucket everything lands in and every delete falls back to, so it
+  belongs next to `All`; letting it float to wherever "U" lands made the one fixed point in the
+  column move around.
+- **The column yields to the detail split, not the other way round.** Below 100 columns it hides
+  outright (as designed), and it *also* hides whenever keeping it would push the detail pane into
+  replacing the task list. The list is the primary surface. `resize` moves focus off the column
+  whenever it disappears, so the keyboard is never stranded on a pane nobody can see.
 
 **Phase 2 — Tags UI.** The `T` prompt, the multi-tag list cell, tags in the detail pane, and tags
 in the list's `/` filter value.
