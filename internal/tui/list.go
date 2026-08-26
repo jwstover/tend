@@ -334,7 +334,7 @@ func (d taskDelegate) renderRow(it listItem, selected bool, width int) string {
 	// alignment holds across rows.
 	var meta []seg
 	if width >= compactMetaWidth {
-		meta = append(meta, d.tagsCell(d.tags[t.ID], 10))
+		meta = append(meta, d.tagsCell(d.tags[t.ID], tagsCellWidth))
 		meta = append(meta, seg{" ", s.Normal})
 		meta = append(meta, d.dueCell(t.Due, 7))
 		meta = append(meta, seg{" ", s.Normal})
@@ -464,23 +464,51 @@ func (d taskDelegate) priCell(p *int64) seg {
 	return seg{d.styles.Glyphs.Flag + letter, d.styles.Priority[*p]}
 }
 
-// tagsCell is the 10-col `#a #b` column, tail-ellipsis. A task can carry
-// any number of tags but the column is fixed width, so the overflow is
-// truncated like a long single tag always was -- the detail pane is where
-// the full list is readable.
+// tagsCellWidth is the fixed width of the `#a #b` meta column. Twelve
+// rather than the ten the single-value project column used: it is the
+// narrowest that still fits a realistic tag beside an overflow counter
+// ("#support +2") without chopping into the tag itself.
+const tagsCellWidth = 12
+
+// tagsCell is the fixed-width `#a #b` column. Fixed so the meta columns
+// stay aligned down the list; the detail pane is where the complete tag
+// list is always readable.
 func (d taskDelegate) tagsCell(tags []string, w int) seg {
 	if len(tags) == 0 {
 		return seg{strings.Repeat(" ", w), d.styles.Normal}
 	}
-	var b strings.Builder
-	for i, tag := range tags {
-		if i > 0 {
-			b.WriteString(" ")
-		}
-		b.WriteString("#")
-		b.WriteString(tag)
+	return seg{padRight(fitTags(tags, w, d.styles.Glyphs.Ellipsis), w), d.styles.Tag}
+}
+
+// fitTags renders as many whole tags as fit in w and collapses the rest
+// into a `+N` counter.
+//
+// The counter is the point: truncating the joined list instead turns
+// three tags into "#customer...", which loses both which tags a task
+// carries and that there is more than one. "#support +2" keeps one tag
+// legible and is honest about the remainder.
+func fitTags(tags []string, w int, ell string) string {
+	hashed := make([]string, len(tags))
+	for i, t := range tags {
+		hashed[i] = "#" + t
 	}
-	return seg{padRight(truncTail(b.String(), w, d.styles.Glyphs.Ellipsis), w), d.styles.Tag}
+	if full := strings.Join(hashed, " "); runeWidth(full) <= w {
+		return full
+	}
+	// Drop tags from the right until the survivors plus the counter fit.
+	for k := len(hashed) - 1; k >= 1; k-- {
+		candidate := fmt.Sprintf("%s +%d", strings.Join(hashed[:k], " "), len(hashed)-k)
+		if runeWidth(candidate) <= w {
+			return candidate
+		}
+	}
+	// Not even one whole tag plus the counter fits: keep the counter and
+	// truncate the first tag, so the row still reports how many there are.
+	suffix := ""
+	if len(hashed) > 1 {
+		suffix = fmt.Sprintf(" +%d", len(hashed)-1)
+	}
+	return truncTail(hashed[0], max(w-runeWidth(suffix), 1), ell) + suffix
 }
 
 // dueCell is the right-aligned due column, colored by urgency.
