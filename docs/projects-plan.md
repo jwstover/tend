@@ -1,13 +1,14 @@
 # Projects & tags — design & phased plan
 
-> Status: **Phases 0 and 1 implemented (2026-08-26)** — migration `00007`, the domain types, and the whole
+> Status: **Phases 0-2 implemented (2026-08-26)** — migration `00007`, the domain types, and the whole
 > `Store` surface are in, with the fixture-based migration test of §2.2 passing and the full suite,
 > lint and formatting green. Rehearsed against a copy of the real database (74 tasks, schema 6):
 > both project strings migrated to tags with matching counts, every task landed in `Unsorted`, and
 > `tasks.project` is gone. Phase 1 added the projects column, the focus refactor, `h`/`l`
 > fallthrough, list scoping, capture-target persistence, project CRUD and the `P` move picker;
 > suite, lint and gofmt green, and the whole flow re-verified end to end on a fresh copy of the
-> real database. Phases 2-4 are unstarted. This is a
+> real database. Phase 2 turned out to be mostly delivered already; the one real gap (tag
+> overflow) is closed. Phases 3-4 are unstarted. This is a
 > project-specific addendum to `AGENTS.md`, not a replacement for it — the layering (§4), Go conventions (§8), and commit rules (§0.1) still govern everything
 > built here. It supersedes `AGENTS.md` §10's "Project hierarchy beyond a single flat `project`
 > string" exclusion, which §7 below replaces with a narrower one.
@@ -373,9 +374,25 @@ Two refinements the plan didn't anticipate:
   replacing the task list. The list is the primary surface. `resize` moves focus off the column
   whenever it disappears, so the keyboard is never stranded on a pane nobody can see.
 
-**Phase 2 — Tags UI.** The `T` prompt, the multi-tag list cell, tags in the detail pane, and tags
-in the list's `/` filter value.
-*Acceptance:* a task carries several tags, all visible in the row and editable in one prompt.
+**Phase 2 — Tags UI. Done (2026-08-26).** Mostly delivered ahead of schedule: removing
+`Task.Project` in Phase 0 made the `T` prompt, the detail-pane tag line and tag text in the `/`
+filter the minimum that kept the tree compiling. Checking the gate's acceptance rather than
+assuming it left one real gap, now closed.
+
+**The gap:** the tag cell inherited the single-value project column's join-and-truncate, so three
+tags rendered as `#customer…` — losing both which tags a task carries and that there is more than
+one. That is strictly worse than the string it replaced, which had nothing to lose. `fitTags` now
+fills the column with whole tags and collapses the rest into `+N` (`#support +2`), truncating the
+first tag only when not even one fits beside the counter — the counter always survives. Column
+widened 10 → 12.
+
+*Acceptance — met:* a task carries several tags, editable in one prompt, with the row honest about
+what it could not fit and the detail pane always showing the complete list.
+
+Not a gap, but written up as a follow-up in `CHILD-ROW-PARITY.md`: child rows render no tags, due
+date, priority or sub-task count, and are excluded from `/` entirely. That is pre-existing —
+`renderChildRow` is byte-identical to its state at the branch point — but a sub-task now carries
+tags of its own, which makes the exclusion worth revisiting.
 
 **Phase 3 — CLI and MCP surface.** `tend projects` (`ls`/`add`/`use`/`rm`), `tend add -p`,
 `tend ls --project/--all`, and the MCP tool changes. The MCP change is breaking — `feat(mcp)!`,
