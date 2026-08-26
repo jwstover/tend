@@ -81,18 +81,17 @@ func migrate(ctx context.Context, db *sql.DB) error {
 	return nil
 }
 
-// AddTask captures a task into the active project: a bare title,
+// AddTask captures a task into the default project: a bare title,
 // everything else defaulted by the schema (state inbox, empty body).
 //
-// The project is resolved here rather than asked for, because capture must
-// require nothing (AGENTS.md §2). ActiveProjectID never fails on a bad
-// stored value, so the extra read can't break the capture path.
+// Deliberately not "the active project". A capture with no project named
+// lands somewhere fixed and predictable, so `tend add` from any shell
+// behaves the same way every time; callers that know where a task belongs
+// (the TUI, `tend add -p`) say so through AddTaskIn. This is the same
+// principle as AGENTS.md §2 -- capture requires nothing and organization
+// is a later, separate act -- applied to the project as well as the state.
 func (s *Store) AddTask(ctx context.Context, title string) (task.Task, error) {
-	projectID, err := s.ActiveProjectID(ctx)
-	if err != nil {
-		return task.Task{}, err
-	}
-	return s.AddTaskIn(ctx, projectID, title)
+	return s.AddTaskIn(ctx, task.DefaultProjectID, title)
 }
 
 // AddTaskIn captures a task into a named project, for `tend add -p` and
@@ -113,11 +112,7 @@ func (s *Store) AddTaskIn(ctx context.Context, projectID int64, title string) (t
 // attached (e.g. an imported Jira ticket): title plus a markdown body,
 // everything else defaulted by the schema.
 func (s *Store) AddTaskWithBody(ctx context.Context, title, body string) (task.Task, error) {
-	projectID, err := s.ActiveProjectID(ctx)
-	if err != nil {
-		return task.Task{}, err
-	}
-	return s.AddTaskWithBodyIn(ctx, projectID, title, body)
+	return s.AddTaskWithBodyIn(ctx, task.DefaultProjectID, title, body)
 }
 
 // AddTaskWithBodyIn is AddTaskWithBody against an explicit project.

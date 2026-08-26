@@ -146,6 +146,7 @@ func TestListProjectsCountsLiveTopLevelTasks(t *testing.T) {
 	t.Fatalf("project %d missing from ListProjects", p.ID)
 }
 
+// The setting is the TUI's memory of where it was, not a capture target.
 func TestActiveProjectRoundTripAndFallbacks(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
@@ -167,17 +168,7 @@ func TestActiveProjectRoundTripAndFallbacks(t *testing.T) {
 		t.Errorf("ActiveProjectID = %d, want %d", got, p.ID)
 	}
 
-	// Capture targets the active project, so AddTask follows it without
-	// being told (docs/projects-plan.md §3).
-	captured, err := s.AddTask(ctx, "lands in the active project")
-	if err != nil {
-		t.Fatalf("AddTask: %v", err)
-	}
-	if captured.ProjectID != p.ID {
-		t.Errorf("captured into project %d, want the active %d", captured.ProjectID, p.ID)
-	}
-
-	// Deleting the active project must not strand capture.
+	// Deleting the remembered project must not strand the TUI's restore.
 	if err := s.DeleteProject(ctx, p.ID); err != nil {
 		t.Fatalf("DeleteProject: %v", err)
 	}
@@ -185,8 +176,8 @@ func TestActiveProjectRoundTripAndFallbacks(t *testing.T) {
 		t.Errorf("ActiveProjectID after its project was deleted = (%d, %v), want the default", got, err)
 	}
 
-	// A corrupt stored value degrades the same way rather than failing:
-	// capture is the one path that must not break (AGENTS.md §2).
+	// A corrupt stored value degrades the same way rather than failing: a
+	// bad UI preference must not stop the TUI from starting.
 	if err := s.q.SetSetting(ctx, gen.SetSettingParams{
 		Key: settingActiveProject, Value: "not a number",
 	}); err != nil {
@@ -295,5 +286,39 @@ func TestListLiveScopesToProject(t *testing.T) {
 	}
 	if n != 1 {
 		t.Errorf("CountInbox(scoped) = %d, want 1", n)
+	}
+}
+
+// A bare capture never consults the remembered project. The shell has no
+// hidden state steering it, so `tend add` behaves identically in every
+// terminal regardless of what the TUI is looking at.
+func TestAddTaskIgnoresTheRememberedProject(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	p, err := s.CreateProject(ctx, "elsewhere")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	if err := s.SetActiveProject(ctx, p.ID); err != nil {
+		t.Fatalf("SetActiveProject: %v", err)
+	}
+
+	captured, err := s.AddTask(ctx, "bare capture")
+	if err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	if captured.ProjectID != task.DefaultProjectID {
+		t.Errorf("AddTask landed in %d, want the default project %d",
+			captured.ProjectID, task.DefaultProjectID)
+	}
+
+	withBody, err := s.AddTaskWithBody(ctx, "with a body", "context")
+	if err != nil {
+		t.Fatalf("AddTaskWithBody: %v", err)
+	}
+	if withBody.ProjectID != task.DefaultProjectID {
+		t.Errorf("AddTaskWithBody landed in %d, want the default project %d",
+			withBody.ProjectID, task.DefaultProjectID)
 	}
 }

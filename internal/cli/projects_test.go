@@ -30,7 +30,7 @@ func runOn(cmd *cobra.Command, args []string) (string, error) {
 	return out.String(), err
 }
 
-func TestProjectsListMarksTheCaptureTarget(t *testing.T) {
+func TestProjectsListShowsCounts(t *testing.T) {
 	ctx := context.Background()
 	s := newFakeStore("tend", "hapi")
 	if _, err := s.AddTask(ctx, "in unsorted"); err != nil {
@@ -45,10 +45,6 @@ func TestProjectsListMarksTheCaptureTarget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("projects: %v", err)
 	}
-	// Unsorted is the default capture target, so it carries the marker.
-	if !strings.Contains(out, "*") {
-		t.Errorf("listing should mark the capture target:\n%s", out)
-	}
 	for _, want := range []string{"Unsorted", "tend", "hapi"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("listing missing %q:\n%s", want, out)
@@ -56,43 +52,49 @@ func TestProjectsListMarksTheCaptureTarget(t *testing.T) {
 	}
 }
 
-func TestProjectsAddAndUse(t *testing.T) {
+func TestProjectsAdd(t *testing.T) {
 	ctx := context.Background()
 	s := newFakeStore()
 
 	if _, err := runProjects(t, s, "add", "gardening"); err != nil {
 		t.Fatalf("projects add: %v", err)
 	}
-	p, err := s.ProjectByName(ctx, "gardening")
-	if err != nil {
+	if _, err := s.ProjectByName(ctx, "gardening"); err != nil {
 		t.Fatalf("project was not created: %v", err)
 	}
+}
 
-	if _, err := runProjects(t, s, "use", "gardening"); err != nil {
-		t.Fatalf("projects use: %v", err)
-	}
-	active, err := s.ActiveProjectID(ctx)
-	if err != nil || active != p.ID {
-		t.Errorf("active project = %d (err %v), want %d", active, err, p.ID)
+// The shell reads no stored project state: a bare capture always lands in
+// the default project, whatever the TUI happens to be looking at.
+func TestBareAddAlwaysLandsInTheDefaultProject(t *testing.T) {
+	ctx := context.Background()
+	s := newFakeStore("tend")
+	tend, _ := s.ProjectByName(ctx, "tend")
+	// Even with the TUI's remembered project pointing elsewhere.
+	if err := s.SetActiveProject(ctx, tend.ID); err != nil {
+		t.Fatalf("SetActiveProject: %v", err)
 	}
 
-	// ...and capture follows it without being told.
-	captured, err := s.AddTask(ctx, "plant the bulbs")
+	stdout, _, err := runAdd(t, s, "buy milk")
 	if err != nil {
-		t.Fatalf("AddTask: %v", err)
+		t.Fatalf("add: %v", err)
 	}
-	if captured.ProjectID != p.ID {
-		t.Errorf("captured into %d, want %d", captured.ProjectID, p.ID)
+	if s.tasks[0].ProjectID != task.DefaultProjectID {
+		t.Errorf("captured into %d, want the default project %d",
+			s.tasks[0].ProjectID, task.DefaultProjectID)
+	}
+	if !strings.Contains(stdout, "to Unsorted:") {
+		t.Errorf("stdout = %q, want the destination named", stdout)
 	}
 }
 
 // A name that doesn't resolve is an error with a hint, never a silently
 // created project -- a typo must not spawn one.
-func TestProjectsUseUnknownNameErrorsWithAHint(t *testing.T) {
+func TestUnknownNameErrorsWithAHint(t *testing.T) {
 	s := newFakeStore("tend")
-	out, err := runProjects(t, s, "use", "tned")
+	out, err := runProjects(t, s, "rename", "tned", "whatever")
 	if err == nil {
-		t.Fatal("using an unknown project should fail")
+		t.Fatal("renaming an unknown project should fail")
 	}
 	msg := err.Error() + out
 	if !strings.Contains(msg, "tend projects add") {
@@ -178,9 +180,8 @@ func TestProjectNameJoinsUnquotedArgs(t *testing.T) {
 	}
 }
 
-// `tend ls` shows the project new captures land in, so it agrees with the
-// TUI looking at the same database; --all and --project override that.
-func TestLsScopesToTheActiveProject(t *testing.T) {
+// `tend ls` dumps every project by default; --project narrows it.
+func TestLsShowsEveryProjectUntilNarrowed(t *testing.T) {
 	ctx := context.Background()
 	s := newFakeStore("tend")
 	tend, _ := s.ProjectByName(ctx, "tend")
@@ -191,19 +192,18 @@ func TestLsScopesToTheActiveProject(t *testing.T) {
 		t.Fatalf("AddTaskIn: %v", err)
 	}
 
+	// Pointing the TUI's remembered project elsewhere must not change what
+	// the shell prints.
+	if err := s.SetActiveProject(ctx, tend.ID); err != nil {
+		t.Fatalf("SetActiveProject: %v", err)
+	}
+
 	out, err := runLs(t, s)
 	if err != nil {
 		t.Fatalf("ls: %v", err)
 	}
-	if !strings.Contains(out, "in unsorted") || strings.Contains(out, "in tend") {
-		t.Errorf("ls should show only the active project:\n%s", out)
-	}
-
-	if out, err = runLs(t, s, "--all"); err != nil {
-		t.Fatalf("ls --all: %v", err)
-	}
 	if !strings.Contains(out, "in unsorted") || !strings.Contains(out, "in tend") {
-		t.Errorf("ls --all should show every project:\n%s", out)
+		t.Errorf("ls should show every project by default:\n%s", out)
 	}
 
 	if out, err = runLs(t, s, "--project", "tend"); err != nil {
@@ -239,9 +239,13 @@ func TestAddProjectFlagIsAOneShotOverride(t *testing.T) {
 		t.Errorf("captured into %d, want tend %d", s.tasks[0].ProjectID, tend.ID)
 	}
 
-	active, _ := s.ActiveProjectID(ctx)
-	if active != task.DefaultProjectID {
-		t.Errorf("-p changed the capture target to %d; it should be a one-shot", active)
+	// A later bare capture is unaffected: -p is one invocation, not a mode.
+	if _, _, err := runAdd(t, s, "later"); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	if s.tasks[1].ProjectID != task.DefaultProjectID {
+		t.Errorf("the next bare capture went to %d; -p should be a one-shot",
+			s.tasks[1].ProjectID)
 	}
 }
 

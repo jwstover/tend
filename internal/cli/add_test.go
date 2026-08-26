@@ -143,18 +143,18 @@ func (f *fakeStore) SetActiveProject(_ context.Context, id int64) error {
 	return nil
 }
 
-func (f *fakeStore) AddTask(ctx context.Context, title string) (task.Task, error) {
-	id, _ := f.ActiveProjectID(ctx)
-	return f.add(id, title, "")
+// AddTask mirrors the store: a capture with no project named lands in the
+// default project, never in whatever the TUI last had selected.
+func (f *fakeStore) AddTask(_ context.Context, title string) (task.Task, error) {
+	return f.add(task.DefaultProjectID, title, "")
 }
 
 func (f *fakeStore) AddTaskIn(_ context.Context, projectID int64, title string) (task.Task, error) {
 	return f.add(projectID, title, "")
 }
 
-func (f *fakeStore) AddTaskWithBody(ctx context.Context, title, body string) (task.Task, error) {
-	id, _ := f.ActiveProjectID(ctx)
-	return f.add(id, title, body)
+func (f *fakeStore) AddTaskWithBody(_ context.Context, title, body string) (task.Task, error) {
+	return f.add(task.DefaultProjectID, title, body)
 }
 
 func (f *fakeStore) AddTaskWithBodyIn(_ context.Context, projectID int64, title, body string) (task.Task, error) {
@@ -240,28 +240,6 @@ func TestAddPlainTitleUnaffected(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "added #1 to Unsorted: buy milk") {
 		t.Errorf("stdout = %q", stdout)
-	}
-}
-
-// Capture targets whichever project the TUI last selected, so a task
-// captured from a bare shell can land somewhere the user wasn't picturing.
-// Echoing the destination is the whole mitigation (docs/projects-plan.md
-// §3), so it has to name the actual project, not a hardcoded default.
-func TestAddEchoesDestinationProject(t *testing.T) {
-	s := newFakeStore("tend")
-	tend, err := s.ProjectByName(context.Background(), "tend")
-	if err != nil {
-		t.Fatalf("ProjectByName: %v", err)
-	}
-	if err := s.SetActiveProject(context.Background(), tend.ID); err != nil {
-		t.Fatalf("SetActiveProject: %v", err)
-	}
-	stdout, _, addErr := runAdd(t, s, "ship", "gate", "0")
-	if addErr != nil {
-		t.Fatalf("add: %v", addErr)
-	}
-	if !strings.Contains(stdout, "added #1 to tend: ship gate 0") {
-		t.Errorf("stdout = %q, want the destination project named", stdout)
 	}
 }
 

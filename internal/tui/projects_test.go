@@ -181,29 +181,85 @@ func TestSelectingAProjectScopesTheTaskList(t *testing.T) {
 	}
 }
 
-// Selecting a project makes it the capture target, so `tend add` from a
-// bare shell lands where the TUI is pointing (docs/projects-plan.md §3).
-func TestSelectingAProjectPersistsTheCaptureTarget(t *testing.T) {
+// Selecting a project is remembered, so reopening the TUI lands where you
+// left off. This is UI state only -- the shell never reads it.
+func TestSelectingAProjectIsRemembered(t *testing.T) {
 	ctx := context.Background()
 	m, s := newTestApp(t)
 	m, made := seedProjects(t, m, s, "alpha")
 
 	focusProjectRow(t, m, "alpha")
 
-	waitFor(t, "active project persisted", func() bool {
+	waitFor(t, "selected project remembered", func() bool {
 		got, err := s.ActiveProjectID(ctx)
 		return err == nil && got == made[0].ID
 	})
 
-	// A task captured now lands there without being told.
-	captured, err := s.AddTask(ctx, "lands in alpha")
+	// ...but a bare capture still goes to the default project: the
+	// remembered selection steers the TUI, not the shell.
+	captured, err := s.AddTask(ctx, "captured from a shell")
 	if err != nil {
 		t.Fatalf("AddTask: %v", err)
 	}
-	if captured.ProjectID != made[0].ID {
-		t.Errorf("captured into %d, want alpha %d", captured.ProjectID, made[0].ID)
+	if captured.ProjectID != task.DefaultProjectID {
+		t.Errorf("bare capture landed in %d, want the default project %d",
+			captured.ProjectID, task.DefaultProjectID)
 	}
 }
+
+// Quick-add in the TUI captures into the project on screen. This is the
+// counterpart to the shell rule: the TUI has a selection, so it says
+// where the task goes rather than relying on stored state.
+func TestQuickAddCapturesIntoTheSelectedProject(t *testing.T) {
+	ctx := context.Background()
+	m, s := newTestApp(t)
+	m, made := seedProjects(t, m, s, "alpha")
+
+	m = focusProjectRow(t, m, "alpha")
+	m = drive(t, m, keyPress('l')) // back to the task list
+	m = drive(t, m, keyPress('n'))
+	for _, r := range "in alpha" {
+		m = drive(t, m, keyPress(r))
+	}
+	_ = drive(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	waitFor(t, "quick-add landed in the selected project", func() bool {
+		tasks, err := s.ListLive(ctx, &made[0].ID)
+		return err == nil && len(tasks) == 1 && tasks[0].Title == "in alpha"
+	})
+}
+
+// On the All row there is no project on screen to capture into, so it
+// falls back to the default rather than guessing.
+func TestQuickAddOnAllRowUsesTheDefaultProject(t *testing.T) {
+	ctx := context.Background()
+	m, s := newTestApp(t)
+	m, _ = seedProjects(t, m, s, "alpha")
+
+	m = focusProjectRow(t, m, "alpha")
+	m = drive(t, m, keyPress('g')) // straight to All
+	m = drive(t, m, keyPress('l'))
+	m = drive(t, m, keyPress('n'))
+	for _, r := range "no project" {
+		m = drive(t, m, keyPress(r))
+	}
+	_ = drive(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	waitFor(t, "quick-add on All landed in the default project", func() bool {
+		tasks, err := s.ListLive(ctx, ptrID(task.DefaultProjectID))
+		if err != nil {
+			return false
+		}
+		for _, tk := range tasks {
+			if tk.Title == "no project" {
+				return true
+			}
+		}
+		return false
+	})
+}
+
+func ptrID(id int64) *int64 { return &id }
 
 // The All row is a view, not a destination: moving onto it must not
 // redirect capture.

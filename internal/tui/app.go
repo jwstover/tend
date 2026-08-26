@@ -24,8 +24,8 @@ import (
 
 // Store is the slice of the persistence layer the TUI needs.
 type Store interface {
-	AddTask(ctx context.Context, title string) (task.Task, error)
-	AddTaskWithBody(ctx context.Context, title, body string) (task.Task, error)
+	AddTaskIn(ctx context.Context, projectID int64, title string) (task.Task, error)
+	AddTaskWithBodyIn(ctx context.Context, projectID int64, title, body string) (task.Task, error)
 	AddChild(ctx context.Context, parentID int64, title string) (task.Task, error)
 	AddLogEntry(ctx context.Context, taskID *int64, body string) (task.LogEntry, error)
 	ListLogEntries(ctx context.Context, from, to time.Time) ([]task.LogEntry, error)
@@ -1640,17 +1640,31 @@ func (a app) loadChildren(parentID int64) tea.Cmd {
 // title, link in the body. The lookup runs inside the Cmd's goroutine,
 // so a slow or unreachable Jira never blocks the UI, and any lookup
 // failure degrades to the bare key with the reason in the flash.
+// captureProjectID is where a task captured in the TUI lands: the project
+// the column is on. The All row falls back to the default project -- All
+// is a way of looking at everything, not a place to put a new task.
+//
+// Read from the selection rather than from the stored setting, so what a
+// capture does is exactly what the screen shows.
+func (a app) captureProjectID() int64 {
+	if p, ok := a.selectedProject(); ok {
+		return p.ID
+	}
+	return task.DefaultProjectID
+}
+
 func (a app) captureTask(value string) tea.Cmd {
+	projectID := a.captureProjectID()
 	iss, ok := jira.ParseIssueURL(value)
 	if !ok {
 		return a.mutate(flash{kind: flashAdd, text: "captured to inbox: " + value}, func() error {
-			_, err := a.store.AddTask(a.ctx, value)
+			_, err := a.store.AddTaskIn(a.ctx, projectID, value)
 			return err
 		})
 	}
 	return func() tea.Msg {
 		title, warn := jira.Expand(a.ctx, iss)
-		if _, err := a.store.AddTaskWithBody(a.ctx, title, iss.URL+"\n"); err != nil {
+		if _, err := a.store.AddTaskWithBodyIn(a.ctx, projectID, title, iss.URL+"\n"); err != nil {
 			return errMsg{err}
 		}
 		text := "captured to inbox: " + title

@@ -40,7 +40,7 @@ Settled with the owner before design (2026-08-26):
 | # | Question | Decision |
 |---|---|---|
 | 1 | Tag shape | **Real many-to-many** — `tags` + `task_tags`. A task carries 0..N tags. |
-| 2 | Capture target | **The selected project.** The TUI's focused project is the capture target; `tend add` uses a persisted active project. |
+| 2 | Capture target | ~~The selected project, persisted for `tend add`.~~ **Revised 2026-08-26 — see §3.** The TUI captures into the project on screen; the shell captures into the default project unless `-p` names one. |
 | 3 | Existing `project` values | **Become tags only.** Every task lands in a seeded default project; the project list starts effectively empty and is built by hand. |
 | 4 | `h`/`l` semantics | **Fall through when there's nothing to collapse** — mirrors the existing `l`-on-a-leaf-opens-detail idiom rather than rebinding the tree keys. |
 
@@ -168,30 +168,37 @@ alongside the tasks and passed to the delegate — `ChildCounts` and `SessionSta
 way (`internal/tui/app.go:106-113`). So: `Store.TagsByTask(ctx) (map[int64][]string, error)` for
 lists, `Store.TagsForTask(ctx, id) ([]string, error)` for the detail pane and MCP.
 
-## 3. Active project & capture
+## 3. Where a capture lands
 
-Decision (2) says capture targets the selected project. The TUI knows its selection; `tend add`
-running in a bare shell does not — so the selection has to be persisted.
+**Revised after Phase 3 shipped.** The original design made the TUI's selected project a persisted
+capture target that `tend add` read from the `settings` table. It worked, and this section as
+written flagged the footgun it created honestly — but flagging a footgun is not the same as not
+building one, and the owner called it: a `tend add` in some forgotten terminal landing in whatever
+project the TUI last touched is exactly the kind of surprise that erodes trust in a capture inbox.
 
-- `settings['active_project_id']` holds it. The TUI writes it (in a `tea.Cmd`, never inline in
-  `Update`) whenever the projects-column cursor lands on a real project.
-- **Selecting the `All` row does not write it.** `All` is a view, not a place to put things;
-  capture continues to target whichever real project was last selected.
-- `tend add` resolves the active project, falling back to `Unsorted` if the key is missing or
-  points at a deleted row.
+The rule now splits by surface, because the two surfaces genuinely differ:
 
-**This is a footgun and the plan should say so plainly:** capturing from an arbitrary shell now
-lands the task wherever the TUI last pointed, which may not be where the owner is thinking.
-`AGENTS.md` §2 forbids making capture *ask*, so the mitigation is feedback and an override, not a
-prompt:
+- **The TUI captures into the project on screen.** It has a selection, so it simply says where the
+  task goes (`captureProjectID`, read from the cursor rather than from storage). Quick-add on the
+  `All` row falls back to the default project — `All` is a way of looking at everything, not a
+  place to put a new task.
+- **The shell captures into the default project.** `tend add` with no `-p` always lands in
+  `Unsorted`, in every terminal, regardless of anything the TUI has done. `tend add -p <name>`
+  names a project for that one invocation and changes nothing afterwards.
 
-- `tend add` echoes the destination: `added #42 to Unsorted: buy milk`.
-- `tend add -p/--project <name>` overrides for one invocation. It **resolves only** — an unknown
-  name is an error with a `tend projects add` hint, so a typo can't silently create a project.
-- `tend projects use <name>` sets the active project from the shell.
+This fits `AGENTS.md` §2 better than the original: capture requires nothing and lands somewhere
+fixed, and organization stays a separate later act. It also *deletes* the footgun rather than
+mitigating it — the destination echo (`added #42 to Unsorted: buy milk`) survives as plain
+confirmation rather than as a warning system.
 
-If this proves annoying in practice, the escape hatch is cwd-based inference (a project gains an
-optional `cwd` prefix, and `tend add` prefers a match) — designed later, not now.
+`settings['active_project_id']` survives but changed meaning: it is now **the TUI's memory of which
+project it was on**, so reopening lands where you left off. It is written and read by the TUI
+alone. `tend projects use` was removed along with the capture-target concept it existed to serve,
+and `tend projects` no longer marks a row with `*` — there is no target left to mark.
+
+`tend ls` follows the same principle: it dumps every project by default and `-p/--project` narrows
+it. The shell reads no stored project state at all, so the same command in any terminal prints the
+same thing.
 
 ## 4. TUI layout & focus
 
@@ -396,8 +403,8 @@ date, priority or sub-task count, and are excluded from `/` entirely. That is pr
 tags of its own, which makes the exclusion worth revisiting.
 
 **Phase 3 — CLI and MCP surface. Done (2026-08-26).** `tend projects`
-(`ls`/`add`/`use`/`rename`/`rm`/`archive`/`unarchive`), `tend add -p`, `tend ls -p/--all`, and
-three MCP tools: `get_current_project`, `list_projects`, `set_task_project`.
+(`ls`/`add`/`rename`/`rm`/`archive`/`unarchive`), `tend add -p`, `tend ls -p`, and three MCP
+tools: `get_current_project`, `list_projects`, `set_task_project`.
 *Acceptance — met:* a session bound to a task reads its project through `get_current_project` and
 sets tags through `set_task_tags`; verified end to end against a fresh copy of the real database.
 
@@ -406,12 +413,12 @@ Decisions worth recording:
 - **Names resolve, they never create.** Every name-taking command errors on a miss and names the
   `tend projects add` that would fix it. A typo must not quietly spawn a project — the same reason
   the MCP `set_task_project` resolves rather than upserts.
-- **`add -p` is a one-shot override**, deliberately distinct from `tend projects use`. Overriding
-  one capture should not silently move where every later one lands. It also resolves *before* the
-  capture loop, so a bad name fails the command outright rather than capturing the first stdin
-  line and erroring on the second.
-- **`tend ls` scoping is a breaking change**, called out as such. It now shows the capture target's
-  project so it agrees with the TUI against the same database; `--all` restores the old dump.
+- **`add -p` is a one-shot override**: it targets one invocation and changes nothing afterwards.
+  It resolves *before* the capture loop, so a bad name fails the command outright rather than
+  capturing the first stdin line and erroring on the second.
+- **The shell holds no project state** (§3, revised). `tend ls` dumps everything by default and
+  `-p` narrows it; `tend add` lands in the default project and `-p` overrides for one invocation.
+  `tend projects use` and the `*` capture-target marker were removed with the concept.
 
 One inconsistency left standing: `tend projects` counts live *top-level* tasks (matching the TUI's
 rows), while `tend ls` prints every live task including sub-tasks flat. So the number beside a
@@ -445,5 +452,5 @@ Replaces `AGENTS.md` §10's flat-project exclusion with a narrower one. Do not b
 | sqlc's SQLite parser rejects `narg` or the recursive CTE (§5.1) | Run `sqlc generate` as the *first* task of Phase 0; both fallbacks are named and cheap |
 | The focus refactor touches 11 `detailFocused` sites and several TUI tests | Mechanical and compiler-checked; do it as one isolated commit before adding the pane |
 | Three panes need ~120 cols to be comfortable | Projects pane auto-hides below 100; `[` toggles it manually |
-| Shell capture lands in a surprising project (§3) | `tend add` echoes the destination; `-p` override; `tend projects use` |
+| ~~Shell capture lands in a surprising project (§3)~~ | **Resolved by design change**, not mitigation: the shell no longer reads any stored project. See §3. |
 | New TUI tests hit the known `collect()` 100ms race | Use the established `waitFor` + `drive(t, m, refreshMsg{})` pattern (vault note, 2026-07-09) |

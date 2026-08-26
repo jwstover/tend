@@ -12,10 +12,12 @@ import (
 	"github.com/jwstover/tend/internal/task"
 )
 
-// settingActiveProject is the settings key holding the project new
-// captures land in. The TUI writes it as the projects-column cursor
-// moves; `tend add` reads it, because a bare shell has no TUI selection
-// to consult (docs/projects-plan.md §3).
+// settingActiveProject remembers which project the TUI's projects column
+// was last on, so reopening the TUI lands where you left off.
+//
+// It is deliberately NOT a capture target. Capture with no project named
+// goes to the default project, so the shell has no hidden state steering
+// it; this key is read and written by the TUI alone.
 const settingActiveProject = "active_project_id"
 
 // inTx runs fn inside a transaction and commits, rolling back on any
@@ -174,10 +176,11 @@ func (s *Store) DeleteProject(ctx context.Context, id int64) error {
 	})
 }
 
-// ActiveProjectID returns the project new captures land in, falling back
-// to the default project whenever the stored value is missing, unparseable
-// or points at a project that has since been deleted. It never fails on a
-// bad value: capture is the one path that must not break (AGENTS.md §2).
+// ActiveProjectID returns the project the TUI should reopen on, falling
+// back to the default project whenever the stored value is missing,
+// unparseable or points at a project that has since been deleted. It
+// never fails on a bad value -- a corrupt UI preference should not stop
+// the TUI from starting.
 func (s *Store) ActiveProjectID(ctx context.Context) (int64, error) {
 	v, err := s.q.GetSetting(ctx, settingActiveProject)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -199,7 +202,7 @@ func (s *Store) ActiveProjectID(ctx context.Context) (int64, error) {
 	return id, nil
 }
 
-// SetActiveProject records the project new captures land in.
+// SetActiveProject records the project the TUI should reopen on.
 func (s *Store) SetActiveProject(ctx context.Context, id int64) error {
 	if err := s.q.SetSetting(ctx, gen.SetSettingParams{
 		Key:   settingActiveProject,

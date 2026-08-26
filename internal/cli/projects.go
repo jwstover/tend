@@ -17,8 +17,7 @@ func newProjectsCmd(open func(context.Context) (Store, error)) *cobra.Command {
 		Aliases: []string{"project", "proj"},
 		Short:   "List and manage projects",
 		Long: "Projects group tasks; every task belongs to exactly one. With no " +
-			"subcommand, lists them with their live task counts and marks the one " +
-			"new captures land in.",
+			"subcommand, lists them with their live task counts.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error { return listProjects(cmd, open) },
 	}
@@ -40,27 +39,6 @@ func newProjectsCmd(open func(context.Context) (Store, error)) *cobra.Command {
 						return err
 					}
 					fmt.Fprintf(cmd.OutOrStdout(), "created project %s\n", p.Name)
-					return nil
-				})
-			},
-		},
-		&cobra.Command{
-			Use:   "use <name>",
-			Short: "Set the project new captures land in",
-			Long: "Point capture at a project. `tend add` running in a bare shell has " +
-				"no TUI selection to read, so it uses this; moving the cursor in the " +
-				"TUI's projects column sets it too.",
-			Args: cobra.MinimumNArgs(1),
-			RunE: func(cmd *cobra.Command, args []string) error {
-				return withStore(cmd, open, func(ctx context.Context, s Store) error {
-					p, err := resolveProject(ctx, s, joinArgs(args))
-					if err != nil {
-						return err
-					}
-					if err := s.SetActiveProject(ctx, p.ID); err != nil {
-						return err
-					}
-					fmt.Fprintf(cmd.OutOrStdout(), "capturing to %s\n", p.Name)
 					return nil
 				})
 			},
@@ -141,24 +119,13 @@ func listProjects(cmd *cobra.Command, open func(context.Context) (Store, error))
 		if err != nil {
 			return err
 		}
-		active, err := s.ActiveProjectID(ctx)
-		if err != nil {
-			return err
-		}
-
 		w := tabwriter.NewWriter(cmd.OutOrStdout(), 2, 4, 2, ' ', 0)
 		for _, p := range projects {
-			// `*` marks where a bare `tend add` will put a task -- the one
-			// piece of state a project list can't otherwise show.
-			marker := " "
-			if p.ID == active {
-				marker = "*"
-			}
 			suffix := ""
 			if p.Archived() {
 				suffix = "  (archived)"
 			}
-			fmt.Fprintf(w, "%s\t%d\t%s\t%d%s\n", marker, p.ID, p.Name, p.LiveCount, suffix)
+			fmt.Fprintf(w, "%d\t%s\t%d%s\n", p.ID, p.Name, p.LiveCount, suffix)
 		}
 		return w.Flush()
 	})
