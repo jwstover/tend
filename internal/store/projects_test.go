@@ -1,0 +1,299 @@
+package store
+
+import (
+	"context"
+	"errors"
+	"testing"
+
+	"github.com/jwstover/tend/internal/store/gen"
+	"github.com/jwstover/tend/internal/task"
+)
+
+func TestProjectCRUD(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	p, err := s.CreateProject(ctx, "  tend  ")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	if p.Name != "tend" {
+		t.Errorf("Name = %q, want the trimmed %q", p.Name, "tend")
+	}
+
+	if _, err := s.CreateProject(ctx, "   "); !errors.Is(err, task.ErrEmptyProjectName) {
+		t.Errorf("CreateProject(blank) = %v, want ErrEmptyProjectName", err)
+	}
+	// Unique is NOCASE, so this is the same project.
+	if _, err := s.CreateProject(ctx, "TEND"); err == nil {
+		t.Error("CreateProject with a case-variant duplicate should fail")
+	}
+
+	// ...and lookup is case-insensitive in the same way.
+	found, err := s.ProjectByName(ctx, "TeNd")
+	if err != nil {
+		t.Fatalf("ProjectByName: %v", err)
+	}
+	if found.ID != p.ID {
+		t.Errorf("ProjectByName resolved to %d, want %d", found.ID, p.ID)
+	}
+	if _, err := s.ProjectByName(ctx, "nope"); !errors.Is(err, task.ErrProjectNotFound) {
+		t.Errorf("ProjectByName(unknown) = %v, want ErrProjectNotFound", err)
+	}
+
+	if err := s.RenameProject(ctx, p.ID, "tend-cli"); err != nil {
+		t.Fatalf("RenameProject: %v", err)
+	}
+	got, err := s.GetProject(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("GetProject: %v", err)
+	}
+	if got.Name != "tend-cli" {
+		t.Errorf("Name after rename = %q", got.Name)
+	}
+
+	if err := s.SetProjectArchived(ctx, p.ID, true); err != nil {
+		t.Fatalf("SetProjectArchived: %v", err)
+	}
+	if got, _ = s.GetProject(ctx, p.ID); !got.Archived() {
+		t.Error("project should read archived")
+	}
+	if err := s.SetProjectArchived(ctx, p.ID, false); err != nil {
+		t.Fatalf("SetProjectArchived(false): %v", err)
+	}
+	if got, _ = s.GetProject(ctx, p.ID); got.Archived() {
+		t.Error("project should read unarchived")
+	}
+}
+
+// project_id carries no foreign key (migration 00007), so the store is
+// what stops a delete from orphaning tasks. This is that guarantee.
+func TestDeleteProjectReassignsItsTasks(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	p, err := s.CreateProject(ctx, "doomed")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	stranded, err := s.AddTaskIn(ctx, p.ID, "do not orphan me")
+	if err != nil {
+		t.Fatalf("AddTaskIn: %v", err)
+	}
+
+	if err := s.DeleteProject(ctx, p.ID); err != nil {
+		t.Fatalf("DeleteProject: %v", err)
+	}
+	got, err := s.GetTask(ctx, stranded.ID)
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if got.ProjectID != task.DefaultProjectID {
+		t.Errorf("ProjectID after its project was deleted = %d, want the default %d",
+			got.ProjectID, task.DefaultProjectID)
+	}
+	if _, err := s.GetProject(ctx, p.ID); !errors.Is(err, task.ErrProjectNotFound) {
+		t.Errorf("GetProject(deleted) = %v, want ErrProjectNotFound", err)
+	}
+}
+
+func TestDeleteDefaultProjectRefused(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.DeleteProject(context.Background(), task.DefaultProjectID); !errors.Is(err, task.ErrProtectedProject) {
+		t.Errorf("DeleteProject(default) = %v, want ErrProtectedProject", err)
+	}
+}
+
+func TestListProjectsCountsLiveTopLevelTasks(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	p, err := s.CreateProject(ctx, "counted")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	parent, err := s.AddTaskIn(ctx, p.ID, "top level")
+	if err != nil {
+		t.Fatalf("AddTaskIn: %v", err)
+	}
+	// A sub-task must not inflate the count: the number beside a project
+	// is what selecting it puts on screen as rows.
+	if _, err := s.AddChild(ctx, parent.ID, "sub"); err != nil {
+		t.Fatalf("AddChild: %v", err)
+	}
+	// Nor should a completed one, which the live view filters out.
+	done, err := s.AddTaskIn(ctx, p.ID, "finished")
+	if err != nil {
+		t.Fatalf("AddTaskIn: %v", err)
+	}
+	if err := s.SetState(ctx, done.ID, task.StateDone); err != nil {
+		t.Fatalf("SetState: %v", err)
+	}
+
+	projects, err := s.ListProjects(ctx)
+	if err != nil {
+		t.Fatalf("ListProjects: %v", err)
+	}
+	for _, got := range projects {
+		if got.ID != p.ID {
+			continue
+		}
+		if got.LiveCount != 1 {
+			t.Errorf("LiveCount = %d, want 1 (top-level and live only)", got.LiveCount)
+		}
+		return
+	}
+	t.Fatalf("project %d missing from ListProjects", p.ID)
+}
+
+func TestActiveProjectRoundTripAndFallbacks(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	// Never set: the default, not an error.
+	got, err := s.ActiveProjectID(ctx)
+	if err != nil || got != task.DefaultProjectID {
+		t.Fatalf("ActiveProjectID on a fresh db = (%d, %v), want the default", got, err)
+	}
+
+	p, err := s.CreateProject(ctx, "active")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	if err := s.SetActiveProject(ctx, p.ID); err != nil {
+		t.Fatalf("SetActiveProject: %v", err)
+	}
+	if got, _ = s.ActiveProjectID(ctx); got != p.ID {
+		t.Errorf("ActiveProjectID = %d, want %d", got, p.ID)
+	}
+
+	// Capture targets the active project, so AddTask follows it without
+	// being told (docs/projects-plan.md §3).
+	captured, err := s.AddTask(ctx, "lands in the active project")
+	if err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	if captured.ProjectID != p.ID {
+		t.Errorf("captured into project %d, want the active %d", captured.ProjectID, p.ID)
+	}
+
+	// Deleting the active project must not strand capture.
+	if err := s.DeleteProject(ctx, p.ID); err != nil {
+		t.Fatalf("DeleteProject: %v", err)
+	}
+	if got, err = s.ActiveProjectID(ctx); err != nil || got != task.DefaultProjectID {
+		t.Errorf("ActiveProjectID after its project was deleted = (%d, %v), want the default", got, err)
+	}
+
+	// A corrupt stored value degrades the same way rather than failing:
+	// capture is the one path that must not break (AGENTS.md §2).
+	if err := s.q.SetSetting(ctx, gen.SetSettingParams{
+		Key: settingActiveProject, Value: "not a number",
+	}); err != nil {
+		t.Fatalf("seeding a corrupt setting: %v", err)
+	}
+	if got, err = s.ActiveProjectID(ctx); err != nil || got != task.DefaultProjectID {
+		t.Errorf("ActiveProjectID with a corrupt value = (%d, %v), want the default", got, err)
+	}
+}
+
+func TestSetProjectMovesWholeSubtree(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	dest, err := s.CreateProject(ctx, "destination")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	root, err := s.AddTask(ctx, "root")
+	if err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	child, err := s.AddChild(ctx, root.ID, "child")
+	if err != nil {
+		t.Fatalf("AddChild: %v", err)
+	}
+	// Three levels deep: the walk replaces a recursive CTE, so depth is
+	// exactly what could regress.
+	grandchild, err := s.AddChild(ctx, child.ID, "grandchild")
+	if err != nil {
+		t.Fatalf("AddChild: %v", err)
+	}
+
+	if err := s.SetProject(ctx, root.ID, dest.ID); err != nil {
+		t.Fatalf("SetProject: %v", err)
+	}
+	for _, id := range []int64{root.ID, child.ID, grandchild.ID} {
+		got, err := s.GetTask(ctx, id)
+		if err != nil {
+			t.Fatalf("GetTask(%d): %v", id, err)
+		}
+		if got.ProjectID != dest.ID {
+			t.Errorf("task %d ProjectID = %d, want %d (the whole sub-tree moves)",
+				id, got.ProjectID, dest.ID)
+		}
+	}
+}
+
+// A sub-task can never sit in a different project from its parent, so the
+// insert copies the parent's project rather than defaulting.
+func TestAddChildInheritsParentProject(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	p, err := s.CreateProject(ctx, "parent project")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	parent, err := s.AddTaskIn(ctx, p.ID, "parent")
+	if err != nil {
+		t.Fatalf("AddTaskIn: %v", err)
+	}
+	child, err := s.AddChild(ctx, parent.ID, "child")
+	if err != nil {
+		t.Fatalf("AddChild: %v", err)
+	}
+	if child.ProjectID != p.ID {
+		t.Errorf("child ProjectID = %d, want the parent's %d", child.ProjectID, p.ID)
+	}
+}
+
+func TestListLiveScopesToProject(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	p, err := s.CreateProject(ctx, "scoped")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	if _, err := s.AddTaskIn(ctx, p.ID, "in scope"); err != nil {
+		t.Fatalf("AddTaskIn: %v", err)
+	}
+	if _, err := s.AddTaskIn(ctx, task.DefaultProjectID, "out of scope"); err != nil {
+		t.Fatalf("AddTaskIn: %v", err)
+	}
+
+	all, err := s.ListLive(ctx, nil)
+	if err != nil {
+		t.Fatalf("ListLive(nil): %v", err)
+	}
+	if len(all) != 2 {
+		t.Errorf("ListLive(nil) returned %d tasks, want both", len(all))
+	}
+
+	scoped, err := s.ListLive(ctx, &p.ID)
+	if err != nil {
+		t.Fatalf("ListLive(scoped): %v", err)
+	}
+	if len(scoped) != 1 || scoped[0].Title != "in scope" {
+		t.Errorf("ListLive(scoped) = %+v, want only the in-scope task", scoped)
+	}
+
+	n, err := s.CountInbox(ctx, &p.ID)
+	if err != nil {
+		t.Fatalf("CountInbox: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("CountInbox(scoped) = %d, want 1", n)
+	}
+}

@@ -41,7 +41,7 @@ func helpGroups() []helpGroup {
 			{"c", "change state (chord)"},
 			{"p", "set priority (chord)"},
 			{"dd", "delete task (chord)"},
-			{"P", "set project"},
+			{"T", "set tags"},
 			{"u", "set due (triage)"},
 			{"R", "rename task"},
 			{"e", "edit body in $EDITOR"},

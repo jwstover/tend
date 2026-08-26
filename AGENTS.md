@@ -135,6 +135,12 @@ tui ─┘
 
 ## 5. Data model (SQLite)
 
+> **Superseded in part by `docs/projects-plan.md`.** As of migration `00007`, `tasks.project` (the
+> flat string below) no longer exists: it became a many-to-many `tags`/`task_tags` pair, and tasks
+> gained `project_id INTEGER NOT NULL DEFAULT 1` pointing at a new first-class `projects` table.
+> There is also a `settings` key/value table. The rest of this section still holds — read the plan
+> doc for the parts that don't.
+
 Two tables. **Links and notes are NOT a separate table** — they live inline in the markdown body (`body_md`) as plain markdown. This was a deliberate simplification.
 
 ```sql
@@ -159,7 +165,8 @@ CREATE TABLE tasks (
   body_md      TEXT NOT NULL DEFAULT '',         -- long-form description + links + notes; rendered with glamour
   state        TEXT NOT NULL DEFAULT 'inbox' REFERENCES states(name),
   parent_id    INTEGER REFERENCES tasks(id) ON DELETE CASCADE,  -- sub-tasks via self-reference
-  project      TEXT,                             -- flat string, nullable (no hierarchy in v1)
+  -- project   TEXT,                             -- REMOVED by migration 00007; see docs/projects-plan.md
+  project_id   INTEGER NOT NULL DEFAULT 1,       -- added by 00007; deliberately no FK (plan §2.1)
   priority     INTEGER,                          -- nullable; 1 = highest
   due          TEXT,                             -- ISO 8601 date, nullable
   snooze_until TEXT,                             -- ISO date; while set and in the future, hide from the live view
@@ -222,7 +229,7 @@ Built on Bubble Tea v2 + Bubbles v2 + Lip Gloss v2; Glamour v2 renders the body.
 
 - **List view (default).** Shows the live view only (see filter in §5). Vim navigation (`j`/`k`/`gg`/`G`), `/` to search, `:` / `Ctrl-P` command palette, `n` for in-app quick add.
 - **Detail pane (`]` toggles).** The heart of the tool: glamour-rendered markdown body (where links, notes, and context live), plus a sub-task checklist. Include simple URL detection so the user can open a link found in the body (under the cursor, or all of them) via the OS opener.
-- **Triage view.** Filtered to `inbox`. Fast keys to set state, assign a project/due, open the body in `$EDITOR` to flesh it out, or send to `someday`/`done`. This is the batched processing pass.
+- **Triage view.** Filtered to `inbox`. Fast keys to set state, assign tags/due, open the body in `$EDITOR` to flesh it out, or send to `someday`/`done`. This is the batched processing pass.
 - **Editing the body.** Shell out to `$EDITOR` (do not build an in-terminal markdown editor in v1).
 
 ## 8. Conventions (Go, for a developer new to Go)
@@ -260,7 +267,7 @@ Anything past Gate 3 is a *wanted* feature — which is exactly when to be suspi
 - The external append-only inbox-file drain (schema supports it; build later)
 - Recurrence
 - Natural-language parsing of the add prompt
-- Project hierarchy beyond a single flat `project` string
+- ~~Project hierarchy beyond a single flat `project` string~~ — superseded; see `docs/projects-plan.md` §7 for the narrower exclusion that replaces it
 - Themes, densities, saved searches
 - Anything requiring a network call
 

@@ -16,6 +16,9 @@ import (
 // Store methods are unused by the commands under test.
 type fakeStore struct {
 	tasks     []task.Task
+	tags      map[int64][]string
+	projects  map[int64]task.Project
+	nextID    int64 // project new captures land in; 0 means the default
 	statuses  map[string]task.SessionStatus
 	statusErr error
 }
@@ -33,12 +36,42 @@ func (f *fakeStore) add(title, body string) (task.Task, error) {
 	if err != nil {
 		return task.Task{}, err
 	}
-	captured := task.Task{ID: int64(len(f.tasks) + 1), Title: t, BodyMD: body}
+	projectID := f.nextID
+	if projectID == 0 {
+		projectID = task.DefaultProjectID
+	}
+	captured := task.Task{
+		ID: int64(len(f.tasks) + 1), Title: t, BodyMD: body,
+		ProjectID: projectID,
+	}
 	f.tasks = append(f.tasks, captured)
 	return captured, nil
 }
 
-func (f *fakeStore) ListLive(context.Context) ([]task.Task, error) { return f.tasks, nil }
+func (f *fakeStore) ListLive(_ context.Context, projectID *int64) ([]task.Task, error) {
+	if projectID == nil {
+		return f.tasks, nil
+	}
+	var out []task.Task
+	for _, t := range f.tasks {
+		if t.ProjectID == *projectID {
+			out = append(out, t)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeStore) TagsByTask(context.Context) (map[int64][]string, error) { return f.tags, nil }
+
+func (f *fakeStore) GetProject(_ context.Context, id int64) (task.Project, error) {
+	if p, ok := f.projects[id]; ok {
+		return p, nil
+	}
+	if id == task.DefaultProjectID {
+		return task.Project{ID: task.DefaultProjectID, Name: "Unsorted"}, nil
+	}
+	return task.Project{}, task.ErrProjectNotFound
+}
 func (f *fakeStore) ListEvents(context.Context, time.Time, time.Time) ([]task.Event, error) {
 	return nil, nil
 }
@@ -80,8 +113,26 @@ func TestAddPlainTitleUnaffected(t *testing.T) {
 	if len(s.tasks) != 1 || s.tasks[0].Title != "buy milk" || s.tasks[0].BodyMD != "" {
 		t.Errorf("tasks = %+v, want one bare task %q", s.tasks, "buy milk")
 	}
-	if !strings.Contains(stdout, "added #1: buy milk") {
+	if !strings.Contains(stdout, "added #1 to Unsorted: buy milk") {
 		t.Errorf("stdout = %q", stdout)
+	}
+}
+
+// Capture targets whichever project the TUI last selected, so a task
+// captured from a bare shell can land somewhere the user wasn't picturing.
+// Echoing the destination is the whole mitigation (docs/projects-plan.md
+// §3), so it has to name the actual project, not a hardcoded default.
+func TestAddEchoesDestinationProject(t *testing.T) {
+	s := &fakeStore{
+		projects: map[int64]task.Project{7: {ID: 7, Name: "tend"}},
+		nextID:   7,
+	}
+	stdout, _, err := runAdd(t, s, "ship", "gate", "0")
+	if err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	if !strings.Contains(stdout, "added #1 to tend: ship gate 0") {
+		t.Errorf("stdout = %q, want the destination project named", stdout)
 	}
 }
 
@@ -103,7 +154,7 @@ func TestAddJiraURLDegradesWithoutCredentials(t *testing.T) {
 	if !strings.Contains(s.tasks[0].BodyMD, url) {
 		t.Errorf("BodyMD = %q, want it to contain the link", s.tasks[0].BodyMD)
 	}
-	if !strings.Contains(stdout, "added #1: PROJ-42") {
+	if !strings.Contains(stdout, "added #1 to Unsorted: PROJ-42") {
 		t.Errorf("stdout = %q", stdout)
 	}
 	if !strings.Contains(stderr, "tend auth jira login") {

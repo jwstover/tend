@@ -16,12 +16,13 @@ import (
 // real SQLite file.
 type fakeStore struct {
 	tasks  map[int64]task.Task
+	tags   map[int64][]string
 	nextID int64
 	logs   []task.LogEntry
 }
 
 func newFakeStore(seed ...task.Task) *fakeStore {
-	s := &fakeStore{tasks: make(map[int64]task.Task)}
+	s := &fakeStore{tasks: make(map[int64]task.Task), tags: make(map[int64][]string)}
 	for _, t := range seed {
 		s.tasks[t.ID] = t
 		if t.ID >= s.nextID {
@@ -87,14 +88,20 @@ func (s *fakeStore) SetState(_ context.Context, id int64, st task.State) error {
 	return nil
 }
 
-func (s *fakeStore) SetProject(_ context.Context, id int64, project *string) error {
-	t, ok := s.tasks[id]
-	if !ok {
+func (s *fakeStore) SetTags(_ context.Context, id int64, tags []string) error {
+	if _, ok := s.tasks[id]; !ok {
 		return errors.New("no such task")
 	}
-	t.Project = project
-	s.tasks[id] = t
+	if len(tags) == 0 {
+		delete(s.tags, id)
+		return nil
+	}
+	s.tags[id] = tags
 	return nil
+}
+
+func (s *fakeStore) TagsForTask(_ context.Context, id int64) ([]string, error) {
+	return s.tags[id], nil
 }
 
 func (s *fakeStore) SetPriority(_ context.Context, id int64, p *int64) error {
@@ -231,14 +238,26 @@ func TestSetTaskStateRejectsUnknownState(t *testing.T) {
 	}
 }
 
-func TestSetTaskProjectEmptyStringClears(t *testing.T) {
-	proj := "tend"
-	store := newFakeStore(task.Task{ID: 1, Title: "bound", Project: &proj})
+func TestSetTaskTagsEmptyListClears(t *testing.T) {
+	store := newFakeStore(task.Task{ID: 1, Title: "bound"})
+	store.tags[1] = []string{"tend"}
 	cs := dial(t, store, 1)
 
-	got := callTool[taskOut](t, cs, "set_task_project", map[string]any{"project": ""})
-	if got.Project != nil {
-		t.Errorf("set_task_project with empty string should clear, got %v", *got.Project)
+	got := callTool[taskOut](t, cs, "set_task_tags", map[string]any{"tags": []string{}})
+	if len(got.Tags) != 0 {
+		t.Errorf("set_task_tags with an empty list should clear, got %v", got.Tags)
+	}
+}
+
+func TestSetTaskTagsReplacesWholeList(t *testing.T) {
+	store := newFakeStore(task.Task{ID: 1, Title: "bound"})
+	store.tags[1] = []string{"old"}
+	cs := dial(t, store, 1)
+
+	got := callTool[taskOut](t, cs, "set_task_tags",
+		map[string]any{"tags": []string{"alpha", "beta"}})
+	if len(got.Tags) != 2 || got.Tags[0] != "alpha" || got.Tags[1] != "beta" {
+		t.Errorf("Tags = %v, want [alpha beta] replacing the old list", got.Tags)
 	}
 }
 

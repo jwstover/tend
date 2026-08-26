@@ -47,7 +47,8 @@ func newAddCmd(open func(context.Context) (Store, error)) *cobra.Command {
 				if err != nil {
 					return fmt.Errorf("adding %q: %w", title, err)
 				}
-				fmt.Fprintf(cmd.OutOrStdout(), "added #%d: %s\n", t.ID, t.Title)
+				fmt.Fprintf(cmd.OutOrStdout(), "added #%d%s: %s\n",
+					t.ID, projectSuffix(ctx, s, t.ProjectID), t.Title)
 			}
 			return nil
 		},
@@ -75,8 +76,25 @@ func addJiraTask(cmd *cobra.Command, open func(context.Context) (Store, error), 
 	if err != nil {
 		return fmt.Errorf("adding %q: %w", title, err)
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "added #%d: %s\n", t.ID, t.Title)
+	fmt.Fprintf(cmd.OutOrStdout(), "added #%d%s: %s\n",
+		t.ID, projectSuffix(ctx, s, t.ProjectID), t.Title)
 	return nil
+}
+
+// projectSuffix renders " to <project>" for the capture confirmation.
+// Capture now targets whichever project the TUI last selected
+// (docs/projects-plan.md §3), so a task captured from a bare shell can
+// land somewhere the user wasn't picturing — echoing the destination is
+// the mitigation, since AGENTS.md §2 forbids making capture ask.
+//
+// A lookup failure yields "": the task is already saved, and failing the
+// command over a cosmetic label would be worse than staying quiet.
+func projectSuffix(ctx context.Context, s Store, projectID int64) string {
+	p, err := s.GetProject(ctx, projectID)
+	if err != nil {
+		return ""
+	}
+	return " to " + p.Name
 }
 
 // gatherTitles turns the invocation into task titles: arguments join into

@@ -20,7 +20,9 @@ import (
 type Store interface {
 	AddTask(ctx context.Context, title string) (task.Task, error)
 	AddTaskWithBody(ctx context.Context, title, body string) (task.Task, error)
-	ListLive(ctx context.Context) ([]task.Task, error)
+	ListLive(ctx context.Context, projectID *int64) ([]task.Task, error)
+	TagsByTask(ctx context.Context) (map[int64][]string, error)
+	GetProject(ctx context.Context, id int64) (task.Project, error)
 	ListEvents(ctx context.Context, from, to time.Time) ([]task.Event, error)
 	AddLogEntry(ctx context.Context, taskID *int64, body string) (task.LogEntry, error)
 	ListLogEntries(ctx context.Context, from, to time.Time) ([]task.LogEntry, error)

@@ -21,7 +21,15 @@ func newLsCmd(open func(context.Context) (Store, error)) *cobra.Command {
 			}
 			defer s.Close()
 
-			tasks, err := s.ListLive(ctx)
+			// nil = every project. Scoping ls to the active project (with
+			// an --all escape) lands with the rest of the project CLI in
+			// Phase 3; until then it keeps its current global behaviour.
+			tasks, err := s.ListLive(ctx, nil)
+			if err != nil {
+				return err
+			}
+
+			tags, err := s.TagsByTask(ctx)
 			if err != nil {
 				return err
 			}
@@ -29,8 +37,8 @@ func newLsCmd(open func(context.Context) (Store, error)) *cobra.Command {
 			w := tabwriter.NewWriter(cmd.OutOrStdout(), 2, 4, 2, ' ', 0)
 			for _, t := range tasks {
 				extra := ""
-				if t.Project != nil {
-					extra += " @" + *t.Project
+				for _, tag := range tags[t.ID] {
+					extra += " #" + tag
 				}
 				if t.Due != nil {
 					extra += " due:" + *t.Due

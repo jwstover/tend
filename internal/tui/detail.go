@@ -35,7 +35,7 @@ func newBodyRenderer(width int) (*glamour.TermRenderer, error) {
 // to where t sits in the tree: a sub-task renders exactly like a top-level
 // task. width wraps the log entries to the pane.
 func renderDetail(t task.Task, children []task.Task, log []task.LogEntry, sessions []task.Session,
-	renderer *glamour.TermRenderer, styles Styles, width int) string {
+	tags []string, renderer *glamour.TermRenderer, styles Styles, width int) string {
 	g := styles.Glyphs
 	var b strings.Builder
 
@@ -44,10 +44,16 @@ func renderDetail(t task.Task, children []task.Task, log []task.LogEntry, sessio
 	b.WriteString(styles.State[t.State].Bold(true).Render(g.State[t.State] + " " + string(t.State)))
 	b.WriteString("\n")
 
-	// Line 2: project · due · priority — only what's set.
+	// Line 2: tags · due · priority — only what's set. Unlike the list
+	// row's fixed-width cell, every tag is shown here.
 	var meta []string
-	if t.Project != nil {
-		meta = append(meta, styles.DetailLabel.Render("project ")+styles.Dimmed.Render("#"+*t.Project))
+	if len(tags) > 0 {
+		shown := make([]string, len(tags))
+		for i, tag := range tags {
+			shown[i] = "#" + tag
+		}
+		meta = append(meta, styles.DetailLabel.Render("tags ")+
+			styles.Dimmed.Render(strings.Join(shown, " ")))
 	}
 	if t.Due != nil {
 		label, style := dueLabel(*t.Due, styles, time.Now())

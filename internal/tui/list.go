@@ -20,13 +20,14 @@ type listItem struct {
 	t           task.Task
 	done, total int64
 	expanded    bool
+	tags        []string // carried on the item so `/` can match tag text
 }
 
 // FilterValue feeds the list's built-in `/` filtering.
 func (i listItem) FilterValue() string {
 	v := i.t.Title
-	if i.t.Project != nil {
-		v += " " + *i.t.Project
+	for _, tag := range i.tags {
+		v += " " + tag
 	}
 	return v
 }
@@ -85,7 +86,7 @@ var stateOrder = []task.State{
 // Expanded branches slide their (cached) children in below the parent,
 // recursively; collapsed children surface only as the N/M count.
 func toGroupedItems(tasks []task.Task, counts map[int64]task.ChildCount,
-	expanded map[int64]bool, children map[int64][]task.Task) []list.Item {
+	expanded map[int64]bool, children map[int64][]task.Task, tags map[int64][]string) []list.Item {
 	groups := make(map[task.State][]task.Task)
 	for _, t := range tasks {
 		if t.ParentID != nil {
@@ -104,7 +105,7 @@ func toGroupedItems(tasks []task.Task, counts map[int64]task.ChildCount,
 		}
 		items = append(items, sectionItem{state: s, count: len(group)})
 		for _, t := range group {
-			items = appendTaskRows(items, t, counts, expanded, children)
+			items = appendTaskRows(items, t, counts, expanded, children, tags)
 		}
 		delete(groups, s)
 	}
@@ -115,7 +116,7 @@ func toGroupedItems(tasks []task.Task, counts map[int64]task.ChildCount,
 			continue
 		}
 		if _, leftover := groups[t.State]; leftover {
-			items = appendTaskRows(items, t, counts, expanded, children)
+			items = appendTaskRows(items, t, counts, expanded, children, tags)
 		}
 	}
 	return items
@@ -124,11 +125,11 @@ func toGroupedItems(tasks []task.Task, counts map[int64]task.ChildCount,
 // appendTaskRows emits a top-level task row plus, when expanded, its
 // child rows.
 func appendTaskRows(items []list.Item, t task.Task, counts map[int64]task.ChildCount,
-	expanded map[int64]bool, children map[int64][]task.Task) []list.Item {
+	expanded map[int64]bool, children map[int64][]task.Task, tags map[int64][]string) []list.Item {
 	c := counts[t.ID]
 	_, loaded := children[t.ID]
 	items = append(items, listItem{
-		t: t, done: c.Done, total: c.Total,
+		t: t, done: c.Done, total: c.Total, tags: tags[t.ID],
 		// The caret reflects what's actually showing: a branch awaiting
 		// its first children load still reads closed.
 		expanded: expanded[t.ID] && c.Total > 0 && loaded,
@@ -201,6 +202,10 @@ type taskDelegate struct {
 	// the row marker (docs/agent-sessions-plan.md 8.4). Nil is a normal
 	// state, not an error: it just means no row carries a marker.
 	sessions map[int64]task.SessionStatus
+	// tags is every task's tags by id, for the #tag meta column. Like
+	// sessions it rides on the delegate rather than the item: it is purely
+	// visual, so only the renderer needs it.
+	tags map[int64][]string
 }
 
 // sessionCell renders the agent-session marker for a task row: a
@@ -329,7 +334,7 @@ func (d taskDelegate) renderRow(it listItem, selected bool, width int) string {
 	// alignment holds across rows.
 	var meta []seg
 	if width >= compactMetaWidth {
-		meta = append(meta, d.projectCell(t.Project, 10))
+		meta = append(meta, d.tagsCell(d.tags[t.ID], 10))
 		meta = append(meta, seg{" ", s.Normal})
 		meta = append(meta, d.dueCell(t.Due, 7))
 		meta = append(meta, seg{" ", s.Normal})
@@ -459,12 +464,23 @@ func (d taskDelegate) priCell(p *int64) seg {
 	return seg{d.styles.Glyphs.Flag + letter, d.styles.Priority[*p]}
 }
 
-// projectCell is the 10-col `#name` column, tail-ellipsis.
-func (d taskDelegate) projectCell(project *string, w int) seg {
-	if project == nil {
+// tagsCell is the 10-col `#a #b` column, tail-ellipsis. A task can carry
+// any number of tags but the column is fixed width, so the overflow is
+// truncated like a long single tag always was -- the detail pane is where
+// the full list is readable.
+func (d taskDelegate) tagsCell(tags []string, w int) seg {
+	if len(tags) == 0 {
 		return seg{strings.Repeat(" ", w), d.styles.Normal}
 	}
-	return seg{padRight(truncTail("#"+*project, w, d.styles.Glyphs.Ellipsis), w), d.styles.Project}
+	var b strings.Builder
+	for i, tag := range tags {
+		if i > 0 {
+			b.WriteString(" ")
+		}
+		b.WriteString("#")
+		b.WriteString(tag)
+	}
+	return seg{padRight(truncTail(b.String(), w, d.styles.Glyphs.Ellipsis), w), d.styles.Tag}
 }
 
 // dueCell is the right-aligned due column, colored by urgency.

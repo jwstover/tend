@@ -51,7 +51,7 @@ type keyMap struct {
 	SetBlocked key.Binding
 	SetDone    key.Binding
 	SetSomeday key.Binding
-	SetProject key.Binding
+	SetTags    key.Binding
 	SetDue     key.Binding
 
 	// Priority mutations: the second key of the `p` chord.
@@ -106,7 +106,7 @@ func defaultKeyMap() keyMap {
 		SetBlocked: key.NewBinding(key.WithKeys("b"), key.WithHelp("b", "blocked")),
 		SetDone:    key.NewBinding(key.WithKeys("x"), key.WithHelp("x", "done")),
 		SetSomeday: key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "someday")),
-		SetProject: key.NewBinding(key.WithKeys("P"), key.WithHelp("P", "project")),
+		SetTags:    key.NewBinding(key.WithKeys("T"), key.WithHelp("T", "tags")),
 		SetDue:     key.NewBinding(key.WithKeys("u"), key.WithHelp("u", "due")),
 
 		PriorityA:    key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "A (highest)")),

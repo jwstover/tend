@@ -29,11 +29,30 @@ type LogEntry struct {
 	CreatedAt string
 }
 
+type Project struct {
+	ID         int64
+	Name       string
+	SortOrder  int64
+	ArchivedAt sql.NullString
+	CreatedAt  string
+	UpdatedAt  string
+}
+
+type Setting struct {
+	Key   string
+	Value string
+}
+
 type State struct {
 	Name            string
 	SortOrder       int64
 	IsTerminal      int64
 	HiddenByDefault int64
+}
+
+type Tag struct {
+	ID   int64
+	Name string
 }
 
 type Task struct {
@@ -42,13 +61,13 @@ type Task struct {
 	BodyMd      string
 	State       string
 	ParentID    sql.NullInt64
-	Project     sql.NullString
 	Priority    sql.NullInt64
 	Due         sql.NullString
 	SnoozeUntil sql.NullString
 	CreatedAt   string
 	UpdatedAt   string
 	CompletedAt sql.NullString
+	ProjectID   int64
 }
 
 type TaskEvent struct {
@@ -59,4 +78,9 @@ type TaskEvent struct {
 	OldValue  sql.NullString
 	NewValue  sql.NullString
 	CreatedAt string
+}
+
+type TaskTag struct {
+	TaskID int64
+	TagID  int64
 }

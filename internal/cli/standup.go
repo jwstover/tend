@@ -46,7 +46,9 @@ func newStandupCmd(open func(context.Context) (Store, error)) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			live, err := s.ListLive(ctx)
+			// nil = every project: standup is a time report, not a
+			// project view (docs/projects-plan.md Phase 4).
+			live, err := s.ListLive(ctx, nil)
 			if err != nil {
 				return err
 			}

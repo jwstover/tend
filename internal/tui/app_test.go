@@ -106,6 +106,17 @@ func waitForTask(t *testing.T, s *store.Store, id int64, what string, check func
 	})
 }
 
+// waitForTags is waitForTask for tags, which live beside the task row
+// rather than on it.
+func waitForTags(t *testing.T, s *store.Store, id int64, what string, check func([]string) bool) {
+	t.Helper()
+	ctx := context.Background()
+	waitFor(t, what, func() bool {
+		got, err := s.TagsForTask(ctx, id)
+		return err == nil && check(got)
+	})
+}
+
 func newTestApp(t *testing.T) (tea.Model, *store.Store) {
 	t.Helper()
 	ctx := context.Background()
@@ -408,10 +419,10 @@ func TestTriageActionsTargetCurrentCard(t *testing.T) {
 	}
 
 	// The prompt-based actions target the current card too.
-	m = drive(t, m, keyPress('P'))
+	m = drive(t, m, keyPress('T'))
 	a := m.(app)
-	if a.promptKind != promptProject || a.promptTarget != first.ID {
-		t.Errorf("P prompt targets (%v, %d), want (promptProject, %d)",
+	if a.promptKind != promptTags || a.promptTarget != first.ID {
+		t.Errorf("T prompt targets (%v, %d), want (promptTags, %d)",
 			a.promptKind, a.promptTarget, first.ID)
 	}
 }
@@ -539,7 +550,7 @@ func TestPriorityChord(t *testing.T) {
 	})
 }
 
-func TestProjectPromptFromListView(t *testing.T) {
+func TestTagPromptFromListView(t *testing.T) {
 	ctx := context.Background()
 	m, s := newTestApp(t)
 	captured, err := s.AddTask(ctx, "file me")
@@ -548,18 +559,39 @@ func TestProjectPromptFromListView(t *testing.T) {
 	}
 	m = drive(t, m, refreshMsg{})
 
-	m = drive(t, m, keyPress('P'))
-	if m.(app).promptKind != promptProject {
-		t.Fatalf("promptKind after P = %v, want promptProject", m.(app).promptKind)
+	m = drive(t, m, keyPress('T'))
+	if m.(app).promptKind != promptTags {
+		t.Fatalf("promptKind after T = %v, want promptTags", m.(app).promptKind)
 	}
-	for _, r := range "home" {
+	// Two tags in one prompt: the whole point of the many-to-many move.
+	for _, r := range "home errands" {
 		m = drive(t, m, keyPress(r))
 	}
 	_ = drive(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
-	waitForTask(t, s, captured.ID, "project home after P prompt", func(got task.Task) bool {
-		return got.Project != nil && *got.Project == "home"
+	waitForTags(t, s, captured.ID, "tags home+errands after T prompt", func(got []string) bool {
+		return len(got) == 2 && got[0] == "errands" && got[1] == "home"
 	})
+}
+
+// The prompt replaces the whole tag list, so it opens seeded with the
+// current tags -- otherwise editing one would mean retyping the rest.
+func TestTagPromptSeedsCurrentTags(t *testing.T) {
+	ctx := context.Background()
+	m, s := newTestApp(t)
+	captured, err := s.AddTask(ctx, "already tagged")
+	if err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	if err := s.SetTags(ctx, captured.ID, []string{"alpha", "beta"}); err != nil {
+		t.Fatalf("SetTags: %v", err)
+	}
+	m = drive(t, m, refreshMsg{})
+	m = drive(t, m, keyPress('T'))
+
+	if got := m.(app).prompt.Value(); got != "alpha beta" {
+		t.Errorf("seeded prompt = %q, want %q", got, "alpha beta")
+	}
 }
 
 func TestQuickAddPrompt(t *testing.T) {
@@ -571,7 +603,7 @@ func TestQuickAddPrompt(t *testing.T) {
 	}
 	m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
-	live, err := s.ListLive(context.Background())
+	live, err := s.ListLive(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("ListLive: %v", err)
 	}
@@ -1346,7 +1378,7 @@ func TestPaletteAddWithArgument(t *testing.T) {
 	}
 	m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
-	inbox, err := s.ListInbox(context.Background())
+	inbox, err := s.ListInbox(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("ListInbox: %v", err)
 	}
@@ -2103,7 +2135,7 @@ func TestQuickAddJiraURLDegradesWithoutCredentials(t *testing.T) {
 	var live []task.Task
 	waitFor(t, "the capture to land", func() bool {
 		var err error
-		live, err = s.ListLive(context.Background())
+		live, err = s.ListLive(context.Background(), nil)
 		if err != nil {
 			t.Fatalf("ListLive: %v", err)
 		}
@@ -2143,7 +2175,7 @@ func TestQuickAddJiraURLFetchesTitle(t *testing.T) {
 	var live []task.Task
 	waitFor(t, "the expanded capture to land", func() bool {
 		var err error
-		live, err = s.ListLive(context.Background())
+		live, err = s.ListLive(context.Background(), nil)
 		if err != nil {
 			t.Fatalf("ListLive: %v", err)
 		}

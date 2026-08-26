@@ -31,15 +31,18 @@ type Store interface {
 	ListLogEntries(ctx context.Context, from, to time.Time) ([]task.LogEntry, error)
 	ListTaskLog(ctx context.Context, taskID int64) ([]task.LogEntry, error)
 	ListEvents(ctx context.Context, from, to time.Time) ([]task.Event, error)
-	ListLive(ctx context.Context) ([]task.Task, error)
-	ListLiveWithCompleted(ctx context.Context) ([]task.Task, error)
-	ListInbox(ctx context.Context) ([]task.Task, error)
+	ListLive(ctx context.Context, projectID *int64) ([]task.Task, error)
+	ListLiveWithCompleted(ctx context.Context, projectID *int64) ([]task.Task, error)
+	ListInbox(ctx context.Context, projectID *int64) ([]task.Task, error)
 	ListChildren(ctx context.Context, parentID int64) ([]task.Task, error)
 	ChildCounts(ctx context.Context) (map[int64]task.ChildCount, error)
 	SessionStatuses(ctx context.Context) (map[int64]task.SessionStatus, error)
-	CountInbox(ctx context.Context) (int64, error)
+	CountInbox(ctx context.Context, projectID *int64) (int64, error)
 	SetState(ctx context.Context, id int64, st task.State) error
-	SetProject(ctx context.Context, id int64, project *string) error
+	SetProject(ctx context.Context, taskID, projectID int64) error
+	SetTags(ctx context.Context, taskID int64, tags []string) error
+	TagsByTask(ctx context.Context) (map[int64][]string, error)
+	TagsForTask(ctx context.Context, taskID int64) ([]string, error)
 	SetPriority(ctx context.Context, id int64, p *int64) error
 	SetDue(ctx context.Context, id int64, due *string) error
 	SetTitle(ctx context.Context, id int64, title string) error
@@ -79,7 +82,7 @@ const (
 	promptNone promptKind = iota
 	promptAdd
 	promptChild
-	promptProject
+	promptTags
 	promptDue
 	promptSessionCwd
 	promptRename
@@ -112,6 +115,7 @@ type (
 		mode     viewMode
 		tasks    []task.Task
 		counts   map[int64]task.ChildCount
+		tags     map[int64][]string
 		sessions map[int64]task.SessionStatus
 		inbox    int64
 	}
@@ -207,11 +211,17 @@ type app struct {
 	// rebuilt from these whenever any of them changes.
 	tasks         []task.Task
 	counts        map[int64]task.ChildCount
+	tags          map[int64][]string           // tags per task, for the list row's #tag cell
 	sessionStatus map[int64]task.SessionStatus // latest session status per task, for the list row
-	expanded      map[int64]bool               // branch disclosure, by task ID, session-scoped
-	childCache    map[int64][]task.Task        // loaded children per parent
-	logCache      map[int64][]task.LogEntry    // loaded task notes, for the detail pane
-	sessionsCache map[int64][]task.Session     // loaded claude sessions per task, for the detail pane
+
+	// projectFilter scopes every task query: nil is the projects column's
+	// All row. Phase 1 drives it from that column; until then it stays nil
+	// and the views behave exactly as they did before projects existed.
+	projectFilter *int64
+	expanded      map[int64]bool            // branch disclosure, by task ID, session-scoped
+	childCache    map[int64][]task.Task     // loaded children per parent
+	logCache      map[int64][]task.LogEntry // loaded task notes, for the detail pane
+	sessionsCache map[int64][]task.Session  // loaded claude sessions per task, for the detail pane
 
 	startCwd string // tend's own working directory at startup; the launch-prompt fallback
 
@@ -251,12 +261,12 @@ type app struct {
 	showDetail    bool
 	detailFocused bool // pane owns j/k/scroll keys; list cursor is frozen
 	detail        viewport.Model
-	detailID   int64 // task currently rendered in the pane; 0 = none
-	renderer   *glamour.TermRenderer
+	detailID      int64 // task currently rendered in the pane; 0 = none
+	renderer      *glamour.TermRenderer
 
 	prompt       textinput.Model
 	promptKind   promptKind
-	promptTarget int64  // task the prompt acts on (project/due/sub-task/session)
+	promptTarget int64  // task the prompt acts on (tags/due/sub-task/session)
 	sessionLabel string // pending session-cwd prompt's -n arg (task title)
 
 	modal modal // centered floating input (log entries)
@@ -342,6 +352,7 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 		a.inboxCount = msg.inbox
+		a.tags = msg.tags
 		if msg.mode == modeTriage {
 			// "Processed" means the current card left the inbox; skips and
 			// metadata edits keep it in place across reloads.
@@ -850,9 +861,13 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		return a, nil
 
-	case key.Matches(msg, a.keys.SetProject):
+	case key.Matches(msg, a.keys.SetTags):
 		if t, ok := a.selected(); ok {
-			return a, a.openPrompt(promptProject, fmt.Sprintf("project for #%d (empty clears): ", t.ID), t.ID)
+			// Seeded with the current tags so editing one doesn't mean
+			// retyping the rest: the prompt replaces the whole list.
+			return a, a.openPromptWith(promptTags,
+				fmt.Sprintf("tags for #%d (space separated, empty clears): ", t.ID),
+				task.FormatTags(a.tags[t.ID]), t.ID)
 		}
 		return a, nil
 
@@ -1127,8 +1142,8 @@ func (a *app) rebuildList() tea.Cmd {
 	// way counts does: counts drives disclosure logic as well as
 	// rendering, whereas a session marker is purely visual, so the
 	// renderer is the one thing that needs it.
-	a.list.SetDelegate(taskDelegate{styles: a.styles, sessions: a.sessionStatus})
-	cmds := []tea.Cmd{a.list.SetItems(toGroupedItems(a.tasks, a.counts, a.expanded, a.childCache))}
+	a.list.SetDelegate(taskDelegate{styles: a.styles, sessions: a.sessionStatus, tags: a.tags})
+	cmds := []tea.Cmd{a.list.SetItems(toGroupedItems(a.tasks, a.counts, a.expanded, a.childCache, a.tags))}
 	for id := range a.expanded {
 		if _, ok := a.childCache[id]; !ok {
 			cmds = append(cmds, a.loadChildren(id))
@@ -1191,7 +1206,7 @@ func (a *app) syncDetail(force bool) tea.Cmd {
 func (a *app) renderDetailFor(t task.Task) {
 	_, detailW, _ := a.splitWidths()
 	a.detail.SetContent(renderDetail(t, a.childCache[t.ID], a.logCache[t.ID],
-		a.sessionsCache[t.ID], a.renderer, a.styles, detailW))
+		a.sessionsCache[t.ID], a.tags[t.ID], a.renderer, a.styles, detailW))
 }
 
 // splitWidths computes the list/detail column widths for the current
@@ -1290,15 +1305,14 @@ func (a app) submitPrompt() (tea.Model, tea.Cmd) {
 			_, err := a.store.AddChild(a.ctx, target, value)
 			return err
 		})
-	case promptProject:
-		var p *string
-		text := "project cleared"
-		if value != "" {
-			p = &value
-			text = "project → " + value
+	case promptTags:
+		tags := task.ParseTags(value)
+		text := "tags cleared"
+		if len(tags) > 0 {
+			text = "tags → " + task.FormatTags(tags)
 		}
 		return a, a.mutate(flash{kind: flashEdit, text: text}, func() error {
-			return a.store.SetProject(a.ctx, target, p)
+			return a.store.SetTags(a.ctx, target, tags)
 		})
 	case promptDue:
 		var d *string
@@ -1363,11 +1377,11 @@ func (a app) loadTasks(mode viewMode) tea.Cmd {
 		)
 		switch {
 		case mode == modeTriage:
-			tasks, err = a.store.ListInbox(a.ctx)
+			tasks, err = a.store.ListInbox(a.ctx, a.projectFilter)
 		case a.showCompleted:
-			tasks, err = a.store.ListLiveWithCompleted(a.ctx)
+			tasks, err = a.store.ListLiveWithCompleted(a.ctx, a.projectFilter)
 		default:
-			tasks, err = a.store.ListLive(a.ctx)
+			tasks, err = a.store.ListLive(a.ctx, a.projectFilter)
 		}
 		if err != nil {
 			return errMsg{err}
@@ -1376,7 +1390,13 @@ func (a app) loadTasks(mode viewMode) tea.Cmd {
 		if err != nil {
 			return errMsg{err}
 		}
-		inbox, err := a.store.CountInbox(a.ctx)
+		// The inbox nudge counts the same population the triage view would
+		// process, so it follows the project filter too.
+		inbox, err := a.store.CountInbox(a.ctx, a.projectFilter)
+		if err != nil {
+			return errMsg{err}
+		}
+		tags, err := a.store.TagsByTask(a.ctx)
 		if err != nil {
 			return errMsg{err}
 		}
@@ -1387,7 +1407,8 @@ func (a app) loadTasks(mode viewMode) tea.Cmd {
 		if err != nil {
 			statuses = nil
 		}
-		return tasksLoadedMsg{mode: mode, tasks: tasks, counts: counts, sessions: statuses, inbox: inbox}
+		return tasksLoadedMsg{mode: mode, tasks: tasks, counts: counts, tags: tags,
+			sessions: statuses, inbox: inbox}
 	}
 }
 

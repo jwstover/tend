@@ -2,6 +2,7 @@ package mcpserver
 
 import (
 	"context"
+	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -12,26 +13,28 @@ import (
 // needs to see, JSON-tagged for the MCP wire format rather than reusing
 // task.Task's Go-facing shape directly.
 type taskOut struct {
-	ID       int64   `json:"id"`
-	Title    string  `json:"title"`
-	BodyMD   string  `json:"body_md"`
-	State    string  `json:"state"`
-	ParentID *int64  `json:"parent_id,omitempty"`
-	Project  *string `json:"project,omitempty"`
-	Priority *int64  `json:"priority,omitempty"`
-	Due      *string `json:"due,omitempty"`
+	ID        int64    `json:"id"`
+	Title     string   `json:"title"`
+	BodyMD    string   `json:"body_md"`
+	State     string   `json:"state"`
+	ParentID  *int64   `json:"parent_id,omitempty"`
+	ProjectID int64    `json:"project_id"`
+	Tags      []string `json:"tags,omitempty"`
+	Priority  *int64   `json:"priority,omitempty"`
+	Due       *string  `json:"due,omitempty"`
 }
 
-func toTaskOut(t task.Task) taskOut {
+func toTaskOut(t task.Task, tags []string) taskOut {
 	return taskOut{
-		ID:       t.ID,
-		Title:    t.Title,
-		BodyMD:   t.BodyMD,
-		State:    string(t.State),
-		ParentID: t.ParentID,
-		Project:  t.Project,
-		Priority: t.Priority,
-		Due:      t.Due,
+		ID:        t.ID,
+		Title:     t.Title,
+		BodyMD:    t.BodyMD,
+		State:     string(t.State),
+		ParentID:  t.ParentID,
+		ProjectID: t.ProjectID,
+		Tags:      tags,
+		Priority:  t.Priority,
+		Due:       t.Due,
 	}
 }
 
@@ -83,7 +86,14 @@ func registerTools(srv *mcp.Server, store Store, boundTaskID int64) {
 		}
 		out := make([]taskOut, len(children))
 		for i, c := range children {
-			out[i] = toTaskOut(c)
+			// Per-child rather than one batch map: a task's sub-tasks
+			// number in the handful, and this is not a hot path the way
+			// the TUI list is.
+			tags, err := store.TagsForTask(ctx, c.ID)
+			if err != nil {
+				return nil, subtasksOut{}, err
+			}
+			out[i] = toTaskOut(c, tags)
 		}
 		return nil, subtasksOut{Tasks: out}, nil
 	})
@@ -100,7 +110,7 @@ func registerTools(srv *mcp.Server, store Store, boundTaskID int64) {
 		if err != nil {
 			return nil, taskOut{}, err
 		}
-		return nil, toTaskOut(t), nil
+		return nil, toTaskOut(t, nil), nil
 	})
 
 	mcp.AddTool(srv, &mcp.Tool{
@@ -115,7 +125,7 @@ func registerTools(srv *mcp.Server, store Store, boundTaskID int64) {
 		if err != nil {
 			return nil, taskOut{}, err
 		}
-		return nil, toTaskOut(t), nil
+		return nil, toTaskOut(t, nil), nil
 	})
 
 	mcp.AddTool(srv, &mcp.Tool{
@@ -147,19 +157,21 @@ func registerTools(srv *mcp.Server, store Store, boundTaskID int64) {
 		return fetchTask(ctx, store, id)
 	})
 
+	// The old set_task_project lives on here rather than as a project
+	// tool: what it actually set was a free-text label, and labels are
+	// tags now (docs/projects-plan.md §0). Moving a task between projects
+	// is a separate tool, added with the rest of the project surface in
+	// Phase 3.
 	mcp.AddTool(srv, &mcp.Tool{
-		Name:        "set_task_project",
-		Description: "Set a task's project; omit or send empty to clear. Defaults to the bound task.",
+		Name: "set_task_tags",
+		Description: "Replace a task's tags with the given list; send an empty list to clear " +
+			"them all. Defaults to the bound task.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in struct {
-		Project string `json:"project,omitempty" jsonschema:"project name; omit or empty to clear"`
-		TaskID  *int64 `json:"task_id,omitempty" jsonschema:"task id to update; defaults to the session's bound task"`
+		Tags   []string `json:"tags" jsonschema:"the complete tag list for the task; empty clears every tag"`
+		TaskID *int64   `json:"task_id,omitempty" jsonschema:"task id to update; defaults to the session's bound task"`
 	}) (*mcp.CallToolResult, taskOut, error) {
 		id := resolveID(in.TaskID, boundTaskID)
-		var p *string
-		if in.Project != "" {
-			p = &in.Project
-		}
-		if err := store.SetProject(ctx, id, p); err != nil {
+		if err := store.SetTags(ctx, id, task.ParseTags(strings.Join(in.Tags, " "))); err != nil {
 			return nil, taskOut{}, err
 		}
 		return fetchTask(ctx, store, id)
@@ -232,5 +244,9 @@ func fetchTask(ctx context.Context, store Store, id int64) (*mcp.CallToolResult,
 	if err != nil {
 		return nil, taskOut{}, err
 	}
-	return nil, toTaskOut(t), nil
+	tags, err := store.TagsForTask(ctx, id)
+	if err != nil {
+		return nil, taskOut{}, err
+	}
+	return nil, toTaskOut(t, tags), nil
 }
