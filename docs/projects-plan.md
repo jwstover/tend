@@ -1,6 +1,6 @@
 # Projects & tags — design & phased plan
 
-> Status: **Phases 0-2 implemented (2026-08-26)** — migration `00007`, the domain types, and the whole
+> Status: **Phases 0-3 implemented (2026-08-26)** — migration `00007`, the domain types, and the whole
 > `Store` surface are in, with the fixture-based migration test of §2.2 passing and the full suite,
 > lint and formatting green. Rehearsed against a copy of the real database (74 tasks, schema 6):
 > both project strings migrated to tags with matching counts, every task landed in `Unsorted`, and
@@ -8,7 +8,8 @@
 > fallthrough, list scoping, capture-target persistence, project CRUD and the `P` move picker;
 > suite, lint and gofmt green, and the whole flow re-verified end to end on a fresh copy of the
 > real database. Phase 2 turned out to be mostly delivered already; the one real gap (tag
-> overflow) is closed. Phases 3-4 are unstarted. This is a
+> overflow) is closed. Phase 3 added the `tend projects` group, `ls`/`add` scoping flags and
+> three MCP project tools. Phase 4 is unstarted. This is a
 > project-specific addendum to `AGENTS.md`, not a replacement for it — the layering (§4), Go conventions (§8), and commit rules (§0.1) still govern everything
 > built here. It supersedes `AGENTS.md` §10's "Project hierarchy beyond a single flat `project`
 > string" exclusion, which §7 below replaces with a narrower one.
@@ -394,10 +395,28 @@ date, priority or sub-task count, and are excluded from `/` entirely. That is pr
 `renderChildRow` is byte-identical to its state at the branch point — but a sub-task now carries
 tags of its own, which makes the exclusion worth revisiting.
 
-**Phase 3 — CLI and MCP surface.** `tend projects` (`ls`/`add`/`use`/`rm`), `tend add -p`,
-`tend ls --project/--all`, and the MCP tool changes. The MCP change is breaking — `feat(mcp)!`,
-which pre-1.0 is a minor bump (`AGENTS.md` §0.1).
-*Acceptance:* a Claude session launched from a task can read its project and set tags.
+**Phase 3 — CLI and MCP surface. Done (2026-08-26).** `tend projects`
+(`ls`/`add`/`use`/`rename`/`rm`/`archive`/`unarchive`), `tend add -p`, `tend ls -p/--all`, and
+three MCP tools: `get_current_project`, `list_projects`, `set_task_project`.
+*Acceptance — met:* a session bound to a task reads its project through `get_current_project` and
+sets tags through `set_task_tags`; verified end to end against a fresh copy of the real database.
+
+Decisions worth recording:
+
+- **Names resolve, they never create.** Every name-taking command errors on a miss and names the
+  `tend projects add` that would fix it. A typo must not quietly spawn a project — the same reason
+  the MCP `set_task_project` resolves rather than upserts.
+- **`add -p` is a one-shot override**, deliberately distinct from `tend projects use`. Overriding
+  one capture should not silently move where every later one lands. It also resolves *before* the
+  capture loop, so a bad name fails the command outright rather than capturing the first stdin
+  line and erroring on the second.
+- **`tend ls` scoping is a breaking change**, called out as such. It now shows the capture target's
+  project so it agrees with the TUI against the same database; `--all` restores the old dump.
+
+One inconsistency left standing: `tend projects` counts live *top-level* tasks (matching the TUI's
+rows), while `tend ls` prints every live task including sub-tasks flat. So the number beside a
+project is smaller than the rows `tend ls` prints for it. Both are defensible alone; making them
+agree means deciding how `tend ls` should represent a tree, which is its own question.
 
 **Phase 4 — Scoping and polish.** Triage scopes to the selected project (`All` triages
 everything); a `project` kind for `task_events` so standup can report moves; project archiving;
