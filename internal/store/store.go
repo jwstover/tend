@@ -254,6 +254,16 @@ func (s *Store) SetState(ctx context.Context, id int64, st task.State) error {
 // its parent is incoherent.
 func (s *Store) SetProject(ctx context.Context, taskID, projectID int64) error {
 	return s.inTx(ctx, func(q *gen.Queries) error {
+		before, err := q.GetTask(ctx, taskID)
+		if err != nil {
+			return fmt.Errorf("loading task %d: %w", taskID, err)
+		}
+		// A move to where the task already is writes nothing and logs
+		// nothing, mirroring the state trigger's OLD <> NEW guard.
+		if before.ProjectID == projectID {
+			return nil
+		}
+
 		ids, err := subtreeIDs(ctx, q, taskID)
 		if err != nil {
 			return err
@@ -264,8 +274,39 @@ func (s *Store) SetProject(ctx context.Context, taskID, projectID int64) error {
 		}); err != nil {
 			return fmt.Errorf("moving task %d to project %d: %w", taskID, projectID, err)
 		}
+
+		// Written here rather than by a trigger: the sub-tree moved with
+		// the task, and a per-row trigger would log one event per
+		// descendant for a single user action. Project *names* are
+		// snapshotted, the way task_events snapshots task_title, so the
+		// log survives a project being renamed or deleted.
+		from, err := projectName(ctx, q, before.ProjectID)
+		if err != nil {
+			return err
+		}
+		to, err := projectName(ctx, q, projectID)
+		if err != nil {
+			return err
+		}
+		if err := q.CreateTaskEvent(ctx, gen.CreateTaskEventParams{
+			TaskID:    taskID,
+			TaskTitle: before.Title,
+			Kind:      string(task.EventProject),
+			OldValue:  sql.NullString{String: from, Valid: true},
+			NewValue:  sql.NullString{String: to, Valid: true},
+		}); err != nil {
+			return fmt.Errorf("logging the move of task %d: %w", taskID, err)
+		}
 		return nil
 	})
+}
+
+func projectName(ctx context.Context, q *gen.Queries, id int64) (string, error) {
+	p, err := q.GetProject(ctx, id)
+	if err != nil {
+		return "", fmt.Errorf("loading project %d: %w", id, err)
+	}
+	return p.Name, nil
 }
 
 // subtreeIDs collects a task and every descendant, breadth-first. It

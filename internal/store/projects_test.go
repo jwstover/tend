@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/jwstover/tend/internal/store/gen"
 	"github.com/jwstover/tend/internal/task"
@@ -321,4 +322,109 @@ func TestAddTaskIgnoresTheRememberedProject(t *testing.T) {
 		t.Errorf("AddTaskWithBody landed in %d, want the default project %d",
 			withBody.ProjectID, task.DefaultProjectID)
 	}
+}
+
+// Moving a task logs exactly one event, not one per row in its sub-tree:
+// the whole point of writing it in the store rather than in a trigger.
+func TestSetProjectLogsOneEventForTheWholeSubtree(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	dest, err := s.CreateProject(ctx, "destination")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	root, err := s.AddTask(ctx, "root")
+	if err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	child, err := s.AddChild(ctx, root.ID, "child")
+	if err != nil {
+		t.Fatalf("AddChild: %v", err)
+	}
+	if _, err := s.AddChild(ctx, child.ID, "grandchild"); err != nil {
+		t.Fatalf("AddChild: %v", err)
+	}
+
+	before := projectEvents(t, s)
+	if err := s.SetProject(ctx, root.ID, dest.ID); err != nil {
+		t.Fatalf("SetProject: %v", err)
+	}
+	got := projectEvents(t, s)
+	if len(got) != len(before)+1 {
+		t.Fatalf("logged %d project events for one move, want 1", len(got)-len(before))
+	}
+
+	ev := got[len(got)-1]
+	if ev.TaskID != root.ID {
+		t.Errorf("event is for task %d, want the moved root %d", ev.TaskID, root.ID)
+	}
+	if ev.Old == nil || *ev.Old != "Unsorted" || ev.New == nil || *ev.New != "destination" {
+		t.Errorf("event = (%v -> %v), want Unsorted -> destination", ev.Old, ev.New)
+	}
+}
+
+// Moving a task to where it already is changes nothing and logs nothing,
+// mirroring the state trigger's OLD <> NEW guard.
+func TestSetProjectToTheSameProjectIsANoop(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	created, err := s.AddTask(ctx, "staying put")
+	if err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	before := projectEvents(t, s)
+	if err := s.SetProject(ctx, created.ID, task.DefaultProjectID); err != nil {
+		t.Fatalf("SetProject: %v", err)
+	}
+	if got := projectEvents(t, s); len(got) != len(before) {
+		t.Errorf("a no-op move logged %d event(s)", len(got)-len(before))
+	}
+}
+
+// The event snapshots project names, so the log stays readable after the
+// project it names is renamed or deleted -- the same reason task_events
+// snapshots task_title.
+func TestProjectEventSurvivesRenamingTheProject(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	dest, err := s.CreateProject(ctx, "original name")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	created, err := s.AddTask(ctx, "moved")
+	if err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	if err := s.SetProject(ctx, created.ID, dest.ID); err != nil {
+		t.Fatalf("SetProject: %v", err)
+	}
+	if err := s.RenameProject(ctx, dest.ID, "renamed later"); err != nil {
+		t.Fatalf("RenameProject: %v", err)
+	}
+
+	got := projectEvents(t, s)
+	last := got[len(got)-1]
+	if last.New == nil || *last.New != "original name" {
+		t.Errorf("event New = %v, want the name snapshotted at move time", last.New)
+	}
+}
+
+// projectEvents returns every project-kind event in a wide window.
+func projectEvents(t *testing.T, s *Store) []task.Event {
+	t.Helper()
+	events, err := s.ListEvents(context.Background(),
+		time.Now().Add(-24*time.Hour), time.Now().Add(24*time.Hour))
+	if err != nil {
+		t.Fatalf("ListEvents: %v", err)
+	}
+	var out []task.Event
+	for _, ev := range events {
+		if ev.Kind == task.EventProject {
+			out = append(out, ev)
+		}
+	}
+	return out
 }

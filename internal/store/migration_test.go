@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pressly/goose/v3"
 	"github.com/pressly/goose/v3/database"
@@ -168,5 +169,88 @@ func TestFreshDatabaseHasDefaultProject(t *testing.T) {
 	}
 	if len(projects) != 1 {
 		t.Errorf("ListProjects on a fresh db = %v, want just the default", projects)
+	}
+}
+
+// schemaBeforeProjectEvents is the last migration before task_events
+// could hold a project move.
+const schemaBeforeProjectEvents = 7
+
+// Migration 00008 rebuilds task_events to widen a CHECK constraint, which
+// means dropping and recreating the table and the three triggers that
+// write to it. This asserts the rebuild is lossless and the triggers come
+// back working -- a rebuild that silently dropped history would be the
+// worst kind of quiet failure.
+func TestTaskEventsRebuildKeepsHistoryAndTriggers(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "tend.db")
+
+	db := openAt(t, path, schemaBeforeProjectEvents)
+	if _, err := db.Exec(`INSERT INTO tasks (title) VALUES ('pre-existing')`); err != nil {
+		t.Fatalf("seeding a task: %v", err)
+	}
+	var before int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM task_events`).Scan(&before); err != nil {
+		t.Fatalf("counting seeded events: %v", err)
+	}
+	if before == 0 {
+		t.Fatal("expected the created trigger to have written an event")
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("closing seeded db: %v", err)
+	}
+
+	s, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("migrating seeded db: %v", err)
+	}
+	t.Cleanup(func() { s.Close() })
+
+	var after int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM task_events`).Scan(&after); err != nil {
+		t.Fatalf("counting migrated events: %v", err)
+	}
+	if after != before {
+		t.Errorf("task_events holds %d rows after the rebuild, want the %d it had", after, before)
+	}
+
+	// The triggers have to survive being dropped and recreated.
+	created, err := s.AddTask(ctx, "written after the rebuild")
+	if err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	if err := s.SetState(ctx, created.ID, task.StateDoing); err != nil {
+		t.Fatalf("SetState: %v", err)
+	}
+	events, err := s.ListEvents(ctx, time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("ListEvents: %v", err)
+	}
+	var sawCreated, sawState bool
+	for _, ev := range events {
+		if ev.TaskID != created.ID {
+			continue
+		}
+		switch ev.Kind {
+		case task.EventCreated:
+			sawCreated = true
+		case task.EventState:
+			sawState = true
+		}
+	}
+	if !sawCreated || !sawState {
+		t.Errorf("triggers did not survive the rebuild: created=%v state=%v", sawCreated, sawState)
+	}
+
+	// ...and the widened CHECK admits the new kind.
+	if err := s.SetProject(ctx, created.ID, task.DefaultProjectID); err != nil {
+		t.Fatalf("SetProject (no-op): %v", err)
+	}
+	p, err := s.CreateProject(ctx, "somewhere else")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	if err := s.SetProject(ctx, created.ID, p.ID); err != nil {
+		t.Fatalf("SetProject: %v", err)
 	}
 }

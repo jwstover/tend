@@ -9,6 +9,10 @@ const (
 	EventCreated EventKind = "created"
 	EventState   EventKind = "state"
 	EventDeleted EventKind = "deleted"
+	// EventProject records a task moving between projects. Old and New
+	// hold project *names*, snapshotted like TaskTitle, so the log stays
+	// readable after a project is renamed or deleted.
+	EventProject EventKind = "project"
 )
 
 // Event is one row of the append-only activity log. Events record raw
@@ -31,6 +35,14 @@ type SummaryItem struct {
 	Title  string
 }
 
+// MovedItem is one task's project move. To is where it ended up, so a
+// task moved twice in the window reports its destination, not its route.
+type MovedItem struct {
+	TaskID int64
+	Title  string
+	To     string
+}
+
 // Summary aggregates a window of events for standup rendering. Each
 // task appears in at most one of Completed/Blocked/Started, chosen by
 // that precedence. Triaged counts tasks that left the inbox.
@@ -38,7 +50,16 @@ type Summary struct {
 	Completed []SummaryItem
 	Blocked   []SummaryItem
 	Started   []SummaryItem
-	Triaged   int
+	// Moved is independent of the three above: a task can be completed
+	// and have changed project in the same window, and both are worth
+	// reporting.
+	Moved   []MovedItem
+	Triaged int
+}
+
+// Empty reports whether a summary has nothing worth printing.
+func (s Summary) Empty() bool {
+	return len(s.Completed)+len(s.Blocked)+len(s.Started)+len(s.Moved) == 0 && s.Triaged == 0
 }
 
 // Summarize collapses a window of events (oldest first) into one line
@@ -50,14 +71,13 @@ func Summarize(events []Event) Summary {
 	type acc struct {
 		title                                string
 		completed, blocked, started, triaged bool
+		moved                                bool
+		movedTo                              string
 	}
 	accs := make(map[int64]*acc)
 	var order []int64
 
-	for _, ev := range events {
-		if ev.Kind != EventState || ev.Old == nil || ev.New == nil {
-			continue
-		}
+	touch := func(ev Event) *acc {
 		a, ok := accs[ev.TaskID]
 		if !ok {
 			a = &acc{}
@@ -65,6 +85,23 @@ func Summarize(events []Event) Summary {
 			order = append(order, ev.TaskID)
 		}
 		a.title = ev.TaskTitle
+		return a
+	}
+
+	for _, ev := range events {
+		if ev.Kind == EventProject {
+			if ev.New == nil {
+				continue
+			}
+			a := touch(ev)
+			// Last move wins: the window reports where a task ended up.
+			a.moved, a.movedTo = true, *ev.New
+			continue
+		}
+		if ev.Kind != EventState || ev.Old == nil || ev.New == nil {
+			continue
+		}
+		a := touch(ev)
 
 		switch State(*ev.New) {
 		case StateDone:
@@ -90,6 +127,9 @@ func Summarize(events []Event) Summary {
 		a := accs[id]
 		if a.triaged {
 			sum.Triaged++
+		}
+		if a.moved {
+			sum.Moved = append(sum.Moved, MovedItem{TaskID: id, Title: a.title, To: a.movedTo})
 		}
 		item := SummaryItem{TaskID: id, Title: a.title}
 		switch {

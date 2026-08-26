@@ -156,10 +156,13 @@ func StandupMarkdown(label string, notes []LogEntry, sum Summary, live []Task) s
 	for _, it := range sum.Started {
 		fmt.Fprintf(&b, "- Started: %s (#%d)\n", it.Title, it.TaskID)
 	}
+	for _, it := range sum.Moved {
+		fmt.Fprintf(&b, "- Moved to %s: %s (#%d)\n", it.To, it.Title, it.TaskID)
+	}
 	if sum.Triaged > 0 {
 		fmt.Fprintf(&b, "- Triaged %d inbox item(s)\n", sum.Triaged)
 	}
-	if len(sum.Completed)+len(sum.Blocked)+len(sum.Started) == 0 && sum.Triaged == 0 {
+	if sum.Empty() {
 		b.WriteString("- nothing logged\n")
 	}
 

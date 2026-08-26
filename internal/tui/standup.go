@@ -462,10 +462,13 @@ func (a app) reportPaneLines(width int) []string {
 	for _, it := range sum.Started {
 		lines = append(lines, item(g.State[task.StateDoing], s.State[task.StateDoing], it.Title, it.TaskID))
 	}
+	for _, it := range sum.Moved {
+		lines = append(lines, item(g.CaretClosed, s.Accent, it.Title+"  → "+it.To, it.TaskID))
+	}
 	if sum.Triaged > 0 {
 		lines = append(lines, "   "+s.Muted.Render(fmt.Sprintf("· triaged %d inbox item(s)", sum.Triaged)))
 	}
-	if len(sum.Completed)+len(sum.Blocked)+len(sum.Started) == 0 && sum.Triaged == 0 {
+	if sum.Empty() {
 		empty("nothing logged")
 	}
 

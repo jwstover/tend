@@ -22,6 +22,11 @@ type Querier interface {
 	CreateProject(ctx context.Context, name string) (Project, error)
 	CreateSession(ctx context.Context, arg CreateSessionParams) (AgentSession, error)
 	CreateTask(ctx context.Context, arg CreateTaskParams) (Task, error)
+	// The one event the store writes itself rather than leaving to a trigger.
+	// A project move applies to a whole sub-tree, so a per-row trigger would
+	// log one entry per descendant; only the task the user acted on belongs
+	// in the log.
+	CreateTaskEvent(ctx context.Context, arg CreateTaskEventParams) error
 	CreateTaskWithBody(ctx context.Context, arg CreateTaskWithBodyParams) (Task, error)
 	// Tags are implicit: they exist because a task carries them. Dropping the
 	// last reference drops the tag, so the tag list can't accumulate ghosts.
