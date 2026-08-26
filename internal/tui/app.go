@@ -76,6 +76,20 @@ const (
 	modeStandup
 )
 
+// pane identifies which column owns the keyboard. It replaces an earlier
+// detailFocused bool: with three columns, "focused" is no longer a yes/no
+// question, and h/l move along this chain in both directions.
+//
+// The zero value is paneProjects, which is NOT the default focus -- newApp
+// sets paneTasks explicitly.
+type pane int
+
+const (
+	paneProjects pane = iota
+	paneTasks
+	paneDetail
+)
+
 type promptKind int
 
 const (
@@ -258,8 +272,8 @@ type app struct {
 	standupCollapsed    map[string]bool // collapsed note-group keys, see standupGroupKey
 	standupJumpToLatest bool
 
-	showDetail    bool
-	detailFocused bool // pane owns j/k/scroll keys; list cursor is frozen
+	showDetail bool
+	focus      pane // which column owns j/k and the scroll keys
 	detail        viewport.Model
 	detailID      int64 // task currently rendered in the pane; 0 = none
 	renderer      *glamour.TermRenderer
@@ -317,6 +331,7 @@ func newApp(ctx context.Context, s Store, dbPath string) app {
 		keys:          defaultKeyMap(),
 		styles:        styles,
 		mode:          modeList,
+		focus:         paneTasks,
 		list:          newTaskList(styles),
 		expanded:      make(map[int64]bool),
 		childCache:    make(map[int64][]task.Task),
@@ -675,8 +690,8 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				a.mode = modeList
 				return a, a.loadTasks(modeList)
 			}
-			if a.detailFocused {
-				a.detailFocused = false
+			if a.focus == paneDetail {
+				a.focus = paneTasks
 				return a, nil
 			}
 			if a.showDetail {
@@ -706,8 +721,8 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		// Un-focus the pane before closing it, so esc backs out one step
 		// at a time.
-		if a.detailFocused {
-			a.detailFocused = false
+		if a.focus == paneDetail {
+			a.focus = paneTasks
 			return a, nil
 		}
 		if a.showDetail {
@@ -769,7 +784,7 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if _, _, full := probe.splitWidths(); !full {
 			wasOpen := a.showDetail
 			a.showDetail = true
-			a.detailFocused = true
+			a.focus = paneDetail
 			a.resize()
 			if !wasOpen {
 				return a, a.syncDetail(true)
@@ -780,8 +795,8 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, a.keys.ExpandClose) && a.mode == modeList:
 		// h/← first backs focus out of the detail pane, same direction
 		// it moved in.
-		if a.detailFocused {
-			a.detailFocused = false
+		if a.focus == paneDetail {
+			a.focus = paneTasks
 			return a, nil
 		}
 		n, ok := a.selectedNode()
@@ -918,7 +933,7 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// replaced the list outright (full-width layout) and there's nothing
 	// else a key like j/k could mean.
 	_, _, full := a.splitWidths()
-	if a.detailFocused || (a.showDetail && full) {
+	if a.focus == paneDetail || (a.showDetail && full) {
 		var cmd tea.Cmd
 		a.detail, cmd = a.detail.Update(msg)
 		return a, cmd
@@ -1113,7 +1128,7 @@ func (a app) selected() (task.Task, bool) {
 // toggleDetail shows or hides the detail pane.
 func (a app) toggleDetail() (tea.Model, tea.Cmd) {
 	a.showDetail = !a.showDetail
-	a.detailFocused = false
+	a.focus = paneTasks
 	a.resize()
 	if a.showDetail {
 		return a, a.syncDetail(true)
@@ -1520,7 +1535,7 @@ func (a app) View() tea.View {
 		body = a.detail.View()
 	case a.showDetail:
 		dividerStyle := a.styles.Rule
-		if a.detailFocused {
+		if a.focus == paneDetail {
 			dividerStyle = a.styles.Accent
 		}
 		divider := strings.TrimSuffix(strings.Repeat(
@@ -1666,7 +1681,7 @@ func (a app) footer() string {
 	}
 	_, _, full := a.splitWidths()
 	switch {
-	case a.detailFocused:
+	case a.focus == paneDetail:
 		hints = [][2]string{
 			{"j/k", "scroll"}, {"h/esc", "back to list"}, {":", "palette"}, {"?", "help"}, {"q", "quit"},
 		}

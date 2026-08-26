@@ -1103,7 +1103,7 @@ func TestDetailPaneLOpensAndFocuses(t *testing.T) {
 	if !a.showDetail {
 		t.Fatal("l on a leaf should open the pane when it's closed")
 	}
-	if !a.detailFocused {
+	if a.focus != paneDetail {
 		t.Fatal("l should also focus the newly opened pane")
 	}
 }
@@ -1120,19 +1120,19 @@ func TestDetailPaneFocusToggle(t *testing.T) {
 	m = drive(t, m, refreshMsg{})
 
 	m = drive(t, m, keyPress(']')) // open detail
-	if m.(app).detailFocused {
+	if m.(app).focus == paneDetail {
 		t.Fatal("opening the pane should not start it focused")
 	}
 
 	m = drive(t, m, keyPress('l')) // focus the pane
-	if !m.(app).detailFocused {
+	if m.(app).focus != paneDetail {
 		t.Fatal("l on a leaf with the pane open should focus it")
 	}
 	sel, _ := m.(app).selected()
 
 	m = drive(t, m, keyPress('j')) // would move the list cursor if unfocused
 	a := m.(app)
-	if !a.detailFocused {
+	if a.focus != paneDetail {
 		t.Fatal("j while focused should not drop focus")
 	}
 	if got, _ := a.selected(); got.ID != sel.ID {
@@ -1140,7 +1140,7 @@ func TestDetailPaneFocusToggle(t *testing.T) {
 	}
 
 	m = drive(t, m, keyPress('h')) // back to the list
-	if m.(app).detailFocused {
+	if m.(app).focus == paneDetail {
 		t.Error("h should drop focus back to the list")
 	}
 }
@@ -1155,13 +1155,13 @@ func TestDetailPaneFocusEscLayering(t *testing.T) {
 
 	m = drive(t, m, keyPress(']'))
 	m = drive(t, m, keyPress('l'))
-	if !m.(app).detailFocused {
+	if m.(app).focus != paneDetail {
 		t.Fatal("l should focus the pane")
 	}
 
 	m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyEscape})
 	a := m.(app)
-	if a.detailFocused {
+	if a.focus == paneDetail {
 		t.Error("the first esc should un-focus the pane, not close it")
 	}
 	if !a.showDetail {
@@ -1190,7 +1190,7 @@ func TestDetailPaneFocusScrolls(t *testing.T) {
 
 	m = drive(t, m, keyPress(']'))
 	m = drive(t, m, keyPress('l'))
-	if !m.(app).detailFocused {
+	if m.(app).focus != paneDetail {
 		t.Fatal("l should focus the pane")
 	}
 	for range 20 {
@@ -1253,7 +1253,7 @@ func TestDetailPaneFullWidthScrollsWithoutFocus(t *testing.T) {
 	m = drive(t, m, tea.WindowSizeMsg{Width: 80, Height: 30}) // narrow enough to force full-width
 
 	m = drive(t, m, keyPress(']'))
-	if m.(app).detailFocused {
+	if m.(app).focus == paneDetail {
 		t.Fatal("full-width detail doesn't need an explicit focus toggle")
 	}
 	for range 20 {
