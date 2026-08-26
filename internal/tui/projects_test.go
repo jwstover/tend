@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/jwstover/tend/internal/store"
 	"github.com/jwstover/tend/internal/task"
@@ -505,5 +506,67 @@ func TestGlobalKeysStillWorkFromTheProjectsColumn(t *testing.T) {
 	m = drive(t, m, keyPress('S'))
 	if got := m.(app).mode; got != modeStandup {
 		t.Errorf("S from the projects column gave mode %v, want standup", got)
+	}
+}
+
+// Triage processes the inbox of the project you are in. Without this,
+// selecting a project would scope the list but leave triage handing you
+// cards from everywhere.
+func TestTriageScopesToTheSelectedProject(t *testing.T) {
+	ctx := context.Background()
+	m, s := newTestApp(t)
+	m, made := seedProjects(t, m, s, "alpha")
+	if _, err := s.AddTaskIn(ctx, task.DefaultProjectID, "unsorted inbox item"); err != nil {
+		t.Fatalf("AddTaskIn: %v", err)
+	}
+	if _, err := s.AddTaskIn(ctx, made[0].ID, "alpha inbox item"); err != nil {
+		t.Fatalf("AddTaskIn: %v", err)
+	}
+	m = drive(t, m, refreshMsg{})
+
+	m = focusProjectRow(t, m, "alpha")
+	m = drive(t, m, keyPress('i'))
+
+	queue := m.(app).triageQueue
+	if len(queue) != 1 || queue[0].Title != "alpha inbox item" {
+		t.Fatalf("triage queue = %+v, want only alpha's inbox", queue)
+	}
+
+	// ...and All triages everything.
+	m = drive(t, m, keyPress('i')) // back to the list
+	m = drive(t, m, keyPress('h'))
+	m = drive(t, m, keyPress('g')) // All
+	m = drive(t, m, keyPress('i'))
+	if got := len(m.(app).triageQueue); got != 2 {
+		t.Errorf("triage queue on All has %d cards, want both", got)
+	}
+}
+
+// The header names the scoped project. Triage never shows the projects
+// column and the column hides on a narrow terminal, so without this there
+// is no way to tell what you are looking at.
+func TestHeaderNamesTheScopedProject(t *testing.T) {
+	m, s := newTestApp(t)
+	m, _ = seedProjects(t, m, s, "alpha")
+
+	if got := ansi.Strip(m.(app).headerLine()); strings.Contains(got, "alpha") {
+		t.Errorf("header names a project while on All: %q", got)
+	}
+
+	m = focusProjectRow(t, m, "alpha")
+	if got := ansi.Strip(m.(app).headerLine()); !strings.Contains(got, "alpha") {
+		t.Errorf("list header = %q, want it to name the scoped project", got)
+	}
+
+	m = drive(t, m, keyPress('i'))
+	got := ansi.Strip(m.(app).headerLine())
+	if !strings.Contains(got, "triage") || !strings.Contains(got, "alpha") {
+		t.Errorf("triage header = %q, want both the view and the project", got)
+	}
+
+	// Standup is deliberately global, so it stays unqualified.
+	m = drive(t, m, keyPress('S'))
+	if got := ansi.Strip(m.(app).headerLine()); strings.Contains(got, "alpha") {
+		t.Errorf("standup header = %q, want it unqualified: standup is global", got)
 	}
 }

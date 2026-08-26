@@ -1806,6 +1806,16 @@ func (a app) headerLine() string {
 	default:
 		left += s.HeaderView.Render("live")
 	}
+	// Name the project the view is scoped to. The projects column usually
+	// says this, but it hides on a narrow terminal and triage never shows
+	// it at all -- so without this you cannot tell whether you are
+	// triaging one project or everything. Standup is deliberately global,
+	// so it stays unqualified.
+	if a.mode != modeStandup {
+		if p, ok := a.selectedProject(); ok {
+			left += s.HeaderSep.Render("  ·  ") + s.HeaderView.Render(p.Name)
+		}
+	}
 
 	right := ""
 	switch {
