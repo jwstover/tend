@@ -217,11 +217,18 @@ sql:
 | Command | Behavior |
 | --- | --- |
 | `tend` | Launch the TUI (the no-arg path) |
-| `tend add "<text>"` / `tend a "<text>"` | Instant capture to `inbox`. No TUI. Also reads from stdin: `echo "..." \| tend a` |
-| `tend ls` | Plain-text dump of the live view to stdout (scriptable, no TUI) |
+| `tend add "<text>"` / `tend a "<text>"` | Instant capture to `inbox`. No TUI. Also reads from stdin: `echo "..." \| tend a`. `-p/--project <name>` overrides the capture target for one invocation |
+| `tend ls` | Plain-text dump of the live view to stdout (scriptable, no TUI). Scoped to the capture target; `--all` for every project, `-p/--project <name>` for one |
+| `tend projects` | List projects with live task counts; `*` marks the capture target |
+| `tend projects add\|use\|rename\|rm\|archive\|unarchive` | Manage projects. `rm` never deletes work — its tasks move to the default project |
 | `tend done <id>` | Mark a task complete from the shell |
 
 Global flags: `--db <path>`.
+
+> `tend ls` scoping and the `tend projects` group arrived with
+> `docs/projects-plan.md` Phase 3. Note the behaviour change: `tend ls` no longer
+> dumps every task by default — it shows the project new captures land in, so it
+> agrees with what the TUI displays against the same database.
 
 ## 7. TUI
 

@@ -9,10 +9,17 @@ import (
 )
 
 func newLsCmd(open func(context.Context) (Store, error)) *cobra.Command {
-	return &cobra.Command{
+	var (
+		projectName string
+		all         bool
+	)
+	cmd := &cobra.Command{
 		Use:   "ls",
 		Short: "Dump the live view as plain text",
-		Args:  cobra.NoArgs,
+		Long: "Print the live view for one project. Defaults to the project new " +
+			"captures land in (see `tend projects use`), matching what the TUI " +
+			"shows on the same database; --all ignores the scoping.",
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			s, err := open(ctx)
@@ -21,10 +28,11 @@ func newLsCmd(open func(context.Context) (Store, error)) *cobra.Command {
 			}
 			defer s.Close()
 
-			// nil = every project. Scoping ls to the active project (with
-			// an --all escape) lands with the rest of the project CLI in
-			// Phase 3; until then it keeps its current global behaviour.
-			tasks, err := s.ListLive(ctx, nil)
+			filter, err := lsScope(ctx, s, projectName, all)
+			if err != nil {
+				return err
+			}
+			tasks, err := s.ListLive(ctx, filter)
 			if err != nil {
 				return err
 			}
@@ -48,4 +56,29 @@ func newLsCmd(open func(context.Context) (Store, error)) *cobra.Command {
 			return w.Flush()
 		},
 	}
+	cmd.Flags().StringVarP(&projectName, "project", "p", "",
+		"scope to a named project instead of the active one")
+	cmd.Flags().BoolVarP(&all, "all", "a", false, "every project")
+	return cmd
+}
+
+// lsScope resolves the project filter: an explicit --project wins, --all
+// clears the scope, and the default is the active project so `tend ls`
+// agrees with what the TUI shows on the same database.
+func lsScope(ctx context.Context, s Store, name string, all bool) (*int64, error) {
+	if all {
+		return nil, nil
+	}
+	if name != "" {
+		p, err := resolveProject(ctx, s, name)
+		if err != nil {
+			return nil, err
+		}
+		return &p.ID, nil
+	}
+	id, err := s.ActiveProjectID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &id, nil
 }
