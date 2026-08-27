@@ -7,6 +7,7 @@ package gen
 
 import (
 	"context"
+	"database/sql"
 )
 
 const claimSessionRecap = `-- name: ClaimSessionRecap :execrows
@@ -182,6 +183,81 @@ func (q *Queries) ListSessionsNeedingRecap(ctx context.Context) ([]AgentSession,
 	return items, nil
 }
 
+const listSessionsWithTmux = `-- name: ListSessionsWithTmux :many
+SELECT id, task_id, external_id, cwd, label, started_at, last_active_at, tmux_session, needs_recap, status, status_updated_at
+FROM agent_sessions
+WHERE tmux_session != '' AND status != 'ended'
+ORDER BY last_active_at DESC, id DESC
+`
+
+// Candidates for section 8.3's capture-pane poller: only sessions that
+// were launched under tmux at all, and not ones already known to have
+// ended (a session that already reported ended has nothing to poll).
+func (q *Queries) ListSessionsWithTmux(ctx context.Context) ([]AgentSession, error) {
+	rows, err := q.db.QueryContext(ctx, listSessionsWithTmux)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AgentSession{}
+	for rows.Next() {
+		var i AgentSession
+		if err := rows.Scan(
+			&i.ID,
+			&i.TaskID,
+			&i.ExternalID,
+			&i.Cwd,
+			&i.Label,
+			&i.StartedAt,
+			&i.LastActiveAt,
+			&i.TmuxSession,
+			&i.NeedsRecap,
+			&i.Status,
+			&i.StatusUpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const setSessionIdleIfUnchanged = `-- name: SetSessionIdleIfUnchanged :execrows
+UPDATE agent_sessions
+SET status = 'idle', status_updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now')
+WHERE external_id = ? AND status_updated_at IS ?
+`
+
+type SetSessionIdleIfUnchangedParams struct {
+	ExternalID      string
+	StatusUpdatedAt sql.NullString
+}
+
+// The other half of the poller's CAS pair: takes 'working' back down when
+// a later tick no longer sees working chrome. Without this, a 'working'
+// write that raced a Stop hook's own write within the same
+// datetime('now') second -- or simply observed one trailing frame of
+// stale chrome -- has no way back down until the *next* hook fires,
+// which can be an arbitrarily long wait. The caller only ever invokes
+// this when it just read status = 'working' itself, so the CAS here
+// guards the same way SetSessionWorkingIfUnchanged does: a hook landing
+// between the read and this write moves status_updated_at first, and
+// this UPDATE affects zero rows, leaving the hook's fresher status
+// (idle, blocked, ended -- whatever it set) standing untouched.
+func (q *Queries) SetSessionIdleIfUnchanged(ctx context.Context, arg SetSessionIdleIfUnchangedParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, setSessionIdleIfUnchanged, arg.ExternalID, arg.StatusUpdatedAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const setSessionNeedsRecap = `-- name: SetSessionNeedsRecap :exec
 UPDATE agent_sessions
 SET needs_recap = ?
@@ -200,7 +276,7 @@ func (q *Queries) SetSessionNeedsRecap(ctx context.Context, arg SetSessionNeedsR
 
 const setSessionStatus = `-- name: SetSessionStatus :exec
 UPDATE agent_sessions
-SET status = ?, status_updated_at = datetime('now'), last_active_at = datetime('now')
+SET status = ?, status_updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now'), last_active_at = datetime('now')
 WHERE external_id = ?
 `
 
@@ -209,9 +285,45 @@ type SetSessionStatusParams struct {
 	ExternalID string
 }
 
+// status_updated_at uses strftime with %f (millisecond precision), not
+// plain datetime('now') (whole-second precision), because it doubles as
+// the freshness token section 8.3's poller CAS compares against
+// (SetSessionWorkingIfUnchanged / SetSessionIdleIfUnchanged below). Two
+// real writes a hook and a poll tick apart routinely land in the same
+// wall-clock second under real load -- confirmed directly: two
+// back-to-back datetime('now') calls in the same test process produced
+// byte-identical strings -- which would make the CAS's "did anything
+// change" check blind to a same-second race and let a poller guess
+// silently win against a hook it should always lose to. last_active_at
+// has no such requirement and keeps second precision.
 func (q *Queries) SetSessionStatus(ctx context.Context, arg SetSessionStatusParams) error {
 	_, err := q.db.ExecContext(ctx, setSessionStatus, arg.Status, arg.ExternalID)
 	return err
+}
+
+const setSessionWorkingIfUnchanged = `-- name: SetSessionWorkingIfUnchanged :execrows
+UPDATE agent_sessions
+SET status = 'working', status_updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now')
+WHERE external_id = ? AND status_updated_at IS ?
+`
+
+type SetSessionWorkingIfUnchangedParams struct {
+	ExternalID      string
+	StatusUpdatedAt sql.NullString
+}
+
+// Compare-and-swap write for section 8.3's poller: only takes effect if
+// status_updated_at is still what the poller observed right before it
+// captured the pane. A hook (Stop/Notification/SessionEnd) firing in
+// between moves the timestamp first, so this UPDATE affects zero rows
+// and the hook's authoritative status wins. Same idiom as
+// ClaimSessionRecap's compare-and-clear.
+func (q *Queries) SetSessionWorkingIfUnchanged(ctx context.Context, arg SetSessionWorkingIfUnchangedParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, setSessionWorkingIfUnchanged, arg.ExternalID, arg.StatusUpdatedAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const touchSession = `-- name: TouchSession :exec
