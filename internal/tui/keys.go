@@ -5,28 +5,31 @@ import "charm.land/bubbles/v2/key"
 // keyMap holds every binding the app handles itself; list navigation
 // (j/k, g/G, /, paging) is the bubbles list component's own keymap.
 type keyMap struct {
-	Quit         key.Binding
-	Back         key.Binding
-	Cancel       key.Binding
-	ToggleDetail key.Binding
-	Triage       key.Binding
-	Standup      key.Binding
-	QuickAdd     key.Binding
-	AddSub       key.Binding
-	Rename       key.Binding
-	Palette      key.Binding
-	Help         key.Binding
-	EditBody     key.Binding
-	Sessions     key.Binding // launch/resume a Claude Code session on the selected task
-	LogEntry     key.Binding // note attached to the selected task
-	Note         key.Binding // freestanding standup note, from anywhere
-	Yank         key.Binding // copy the standup markdown (standup view)
-	SortToggle   key.Binding // flip grouped/chronological notes (standup view)
-	ToggleRecaps key.Binding // hide/show Claude session recap notes (standup view)
-	OpenURL      key.Binding
-	OpenAllURLs  key.Binding
-	ChangeState  key.Binding
-	Delete       key.Binding // first `d` of the `dd` delete chord
+	Quit           key.Binding
+	Back           key.Binding
+	Cancel         key.Binding
+	ToggleDetail   key.Binding
+	ToggleProjects key.Binding
+	Triage         key.Binding
+	Standup        key.Binding
+	QuickAdd       key.Binding
+	AddSub         key.Binding
+	Rename         key.Binding
+	Palette        key.Binding
+	Help           key.Binding
+	EditBody       key.Binding
+	Sessions       key.Binding // launch/resume a Claude Code session on the selected task
+	LogEntry       key.Binding // note attached to the selected task
+	Note           key.Binding // freestanding standup note, from anywhere
+	Yank           key.Binding // copy the standup markdown (standup view)
+	SortToggle     key.Binding // flip grouped/chronological notes (standup view)
+	ToggleRecaps   key.Binding // hide/show Claude session recap notes (standup view)
+	OpenURL        key.Binding
+	OpenAllURLs    key.Binding
+	ChangeState    key.Binding
+	Delete         key.Binding // first `d` of the `dd` delete chord
+	MoveProject    key.Binding // move the selected task to another project
+	Archive        key.Binding // archive/restore the selected project
 
 	// Tree expansion in the list view.
 	ExpandToggle key.Binding // ⏎/Tab flips a branch (⏎ falls back to detail on leaves)
@@ -51,7 +54,7 @@ type keyMap struct {
 	SetBlocked key.Binding
 	SetDone    key.Binding
 	SetSomeday key.Binding
-	SetProject key.Binding
+	SetTags    key.Binding
 	SetDue     key.Binding
 
 	// Priority mutations: the second key of the `p` chord.
@@ -64,28 +67,31 @@ type keyMap struct {
 
 func defaultKeyMap() keyMap {
 	return keyMap{
-		Quit:         key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
-		Back:         key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back")),
-		Cancel:       key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "cancel")),
-		ToggleDetail: key.NewBinding(key.WithKeys("]"), key.WithHelp("]", "detail")),
-		Triage:       key.NewBinding(key.WithKeys("i"), key.WithHelp("i", "triage")),
-		Standup:      key.NewBinding(key.WithKeys("S"), key.WithHelp("S", "standup")),
-		QuickAdd:     key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "add")),
-		AddSub:       key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "sub-task")),
-		Rename:       key.NewBinding(key.WithKeys("R"), key.WithHelp("R", "rename")),
-		Palette:      key.NewBinding(key.WithKeys(":", "ctrl+p"), key.WithHelp(":", "palette")),
-		Help:         key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
-		EditBody:     key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "edit body")),
-		Sessions:     key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "sessions")),
-		LogEntry:     key.NewBinding(key.WithKeys("U"), key.WithHelp("U", "note on task")),
-		Note:         key.NewBinding(key.WithKeys("N"), key.WithHelp("N", "note")),
-		Yank:         key.NewBinding(key.WithKeys("y"), key.WithHelp("y", "yank standup")),
-		SortToggle:   key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "sort")),
-		ToggleRecaps: key.NewBinding(key.WithKeys("C"), key.WithHelp("C", "recaps")),
-		OpenURL:      key.NewBinding(key.WithKeys("o"), key.WithHelp("o", "open link(s)")),
-		OpenAllURLs:  key.NewBinding(key.WithKeys("O"), key.WithHelp("O", "open all links")),
-		ChangeState:  key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "change state")),
-		Delete:       key.NewBinding(key.WithKeys("d"), key.WithHelp("dd", "delete")),
+		Quit:           key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
+		Back:           key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back")),
+		Cancel:         key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "cancel")),
+		ToggleDetail:   key.NewBinding(key.WithKeys("]"), key.WithHelp("]", "detail")),
+		ToggleProjects: key.NewBinding(key.WithKeys("["), key.WithHelp("[", "projects")),
+		Triage:         key.NewBinding(key.WithKeys("i"), key.WithHelp("i", "triage")),
+		Standup:        key.NewBinding(key.WithKeys("S"), key.WithHelp("S", "standup")),
+		QuickAdd:       key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "add")),
+		AddSub:         key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "sub-task")),
+		Rename:         key.NewBinding(key.WithKeys("R"), key.WithHelp("R", "rename")),
+		Palette:        key.NewBinding(key.WithKeys(":", "ctrl+p"), key.WithHelp(":", "palette")),
+		Help:           key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
+		EditBody:       key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "edit body")),
+		Sessions:       key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "sessions")),
+		LogEntry:       key.NewBinding(key.WithKeys("U"), key.WithHelp("U", "note on task")),
+		Note:           key.NewBinding(key.WithKeys("N"), key.WithHelp("N", "note")),
+		Yank:           key.NewBinding(key.WithKeys("y"), key.WithHelp("y", "yank standup")),
+		SortToggle:     key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "sort")),
+		ToggleRecaps:   key.NewBinding(key.WithKeys("C"), key.WithHelp("C", "recaps")),
+		OpenURL:        key.NewBinding(key.WithKeys("o"), key.WithHelp("o", "open link(s)")),
+		OpenAllURLs:    key.NewBinding(key.WithKeys("O"), key.WithHelp("O", "open all links")),
+		ChangeState:    key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "change state")),
+		Delete:         key.NewBinding(key.WithKeys("d"), key.WithHelp("dd", "delete")),
+		MoveProject:    key.NewBinding(key.WithKeys("P"), key.WithHelp("P", "move to project")),
+		Archive:        key.NewBinding(key.WithKeys("A"), key.WithHelp("A", "archive")),
 
 		ExpandToggle: key.NewBinding(key.WithKeys("enter", "tab"), key.WithHelp("⏎", "expand")),
 		ExpandOpen:   key.NewBinding(key.WithKeys("l", "right"), key.WithHelp("l", "expand")),
@@ -106,7 +112,7 @@ func defaultKeyMap() keyMap {
 		SetBlocked: key.NewBinding(key.WithKeys("b"), key.WithHelp("b", "blocked")),
 		SetDone:    key.NewBinding(key.WithKeys("x"), key.WithHelp("x", "done")),
 		SetSomeday: key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "someday")),
-		SetProject: key.NewBinding(key.WithKeys("P"), key.WithHelp("P", "project")),
+		SetTags:    key.NewBinding(key.WithKeys("T"), key.WithHelp("T", "tags")),
 		SetDue:     key.NewBinding(key.WithKeys("u"), key.WithHelp("u", "due")),
 
 		PriorityA:    key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "A (highest)")),

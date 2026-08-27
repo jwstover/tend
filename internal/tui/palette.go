@@ -31,6 +31,28 @@ func (a app) paletteCommands() []paletteCommand {
 				}
 				return a.toggleDetail()
 			}},
+		{icon: "▸", label: "Toggle projects column", hint: "[", aliases: []string{"projects"},
+			act: func(a app) (tea.Model, tea.Cmd) {
+				if a.mode != modeList {
+					a.status = flash{text: "projects column is list-view only"}
+					return a, nil
+				}
+				return a.toggleProjects()
+			}},
+		{icon: "✚", label: "New project", aliases: []string{"newproject", "mkproject"},
+			act: func(a app) (tea.Model, tea.Cmd) {
+				return a, a.openPrompt(promptNewProject, "new project: ", 0)
+			}},
+		{icon: "▸", label: "Move task to project", hint: "P", aliases: []string{"move", "project"},
+			act: func(a app) (tea.Model, tea.Cmd) {
+				t, ok := a.selected()
+				if !ok {
+					a.status = flash{text: "nothing selected"}
+					return a, nil
+				}
+				a.openProjectPicker(t)
+				return a, nil
+			}},
 		{icon: "◎", label: "Triage the inbox", hint: "i", aliases: []string{"triage", "inbox"},
 			act: func(a app) (tea.Model, tea.Cmd) {
 				a.startTriage()

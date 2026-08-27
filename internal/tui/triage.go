@@ -143,7 +143,7 @@ func (a app) triageCardLines(width int) []string {
 	acts := []act{
 		{"t", "→ todo", s.State[task.StateTodo]}, {"s", "→ someday", s.State[task.StateSomeday]},
 		{"d", "→ doing", s.State[task.StateDoing]}, {"e", "edit body in $EDITOR", s.Accent},
-		{"b", "→ blocked", s.State[task.StateBlocked]}, {"P", "set project", s.Accent},
+		{"b", "→ blocked", s.State[task.StateBlocked]}, {"T", "set tags", s.Accent},
 		{"x", "→ done", s.State[task.StateDone]}, {"u", "set due", s.Accent},
 		{"p", "set priority", s.Accent}, {"⏎", "skip for now", s.Muted},
 	}

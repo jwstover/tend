@@ -231,7 +231,9 @@ func (a app) loadStandup() tea.Cmd {
 		if err != nil {
 			return errMsg{err}
 		}
-		live, err := a.store.ListLive(a.ctx)
+		// nil, not a.projectFilter: standup is a time report across
+		// everything, not a project view (docs/projects-plan.md Phase 4).
+		live, err := a.store.ListLive(a.ctx, nil)
 		if err != nil {
 			return errMsg{err}
 		}
@@ -416,7 +418,7 @@ func (a app) chronoNoteLines(width int) []string {
 		for _, n := range day.Notes {
 			prefix := ""
 			if ref := n.Ref(); ref != "" {
-				prefix = s.Project.Render(truncTail(ref, 24, g.Ellipsis) + ": ")
+				prefix = s.Tag.Render(truncTail(ref, 24, g.Ellipsis) + ": ")
 			}
 			wrapped := strings.Split(
 				ansi.Wrap(n.Body, max(width-indent-2-lipgloss.Width(prefix), 10), ""), "\n")
@@ -460,10 +462,13 @@ func (a app) reportPaneLines(width int) []string {
 	for _, it := range sum.Started {
 		lines = append(lines, item(g.State[task.StateDoing], s.State[task.StateDoing], it.Title, it.TaskID))
 	}
+	for _, it := range sum.Moved {
+		lines = append(lines, item(g.CaretClosed, s.Accent, it.Title+"  → "+it.To, it.TaskID))
+	}
 	if sum.Triaged > 0 {
 		lines = append(lines, "   "+s.Muted.Render(fmt.Sprintf("· triaged %d inbox item(s)", sum.Triaged)))
 	}
-	if len(sum.Completed)+len(sum.Blocked)+len(sum.Started) == 0 && sum.Triaged == 0 {
+	if sum.Empty() {
 		empty("nothing logged")
 	}
 

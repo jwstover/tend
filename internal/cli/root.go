@@ -19,8 +19,18 @@ import (
 // Store is the slice of the persistence layer the CLI needs.
 type Store interface {
 	AddTask(ctx context.Context, title string) (task.Task, error)
+	AddTaskIn(ctx context.Context, projectID int64, title string) (task.Task, error)
 	AddTaskWithBody(ctx context.Context, title, body string) (task.Task, error)
-	ListLive(ctx context.Context) ([]task.Task, error)
+	AddTaskWithBodyIn(ctx context.Context, projectID int64, title, body string) (task.Task, error)
+	ListLive(ctx context.Context, projectID *int64) ([]task.Task, error)
+	TagsByTask(ctx context.Context) (map[int64][]string, error)
+	GetProject(ctx context.Context, id int64) (task.Project, error)
+	ProjectByName(ctx context.Context, name string) (task.Project, error)
+	ListProjects(ctx context.Context) ([]task.Project, error)
+	CreateProject(ctx context.Context, name string) (task.Project, error)
+	RenameProject(ctx context.Context, id int64, name string) error
+	SetProjectArchived(ctx context.Context, id int64, archived bool) error
+	DeleteProject(ctx context.Context, id int64) error
 	ListEvents(ctx context.Context, from, to time.Time) ([]task.Event, error)
 	AddLogEntry(ctx context.Context, taskID *int64, body string) (task.LogEntry, error)
 	ListLogEntries(ctx context.Context, from, to time.Time) ([]task.LogEntry, error)
@@ -67,6 +77,7 @@ func newRootCmd(open StoreFactory, runTUI TUIRunner, openMCP MCPStoreFactory) *c
 	root.AddCommand(newAddCmd(openHere))
 	root.AddCommand(newAuthCmd())
 	root.AddCommand(newLsCmd(openHere))
+	root.AddCommand(newProjectsCmd(openHere))
 	root.AddCommand(newStandupCmd(openHere))
 	root.AddCommand(newLogCmd(openHere))
 	root.AddCommand(newMcpCmd(openMCPHere))

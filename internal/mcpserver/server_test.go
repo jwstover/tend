@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -15,13 +16,19 @@ import (
 // mcpserver.Store's method set to exercise the tool surface without a
 // real SQLite file.
 type fakeStore struct {
-	tasks  map[int64]task.Task
-	nextID int64
-	logs   []task.LogEntry
+	tasks    map[int64]task.Task
+	tags     map[int64][]string
+	projects []task.Project
+	nextID   int64
+	logs     []task.LogEntry
 }
 
 func newFakeStore(seed ...task.Task) *fakeStore {
-	s := &fakeStore{tasks: make(map[int64]task.Task)}
+	s := &fakeStore{
+		tasks:    make(map[int64]task.Task),
+		tags:     make(map[int64][]string),
+		projects: []task.Project{{ID: task.DefaultProjectID, Name: "Unsorted"}},
+	}
 	for _, t := range seed {
 		s.tasks[t.ID] = t
 		if t.ID >= s.nextID {
@@ -87,14 +94,60 @@ func (s *fakeStore) SetState(_ context.Context, id int64, st task.State) error {
 	return nil
 }
 
-func (s *fakeStore) SetProject(_ context.Context, id int64, project *string) error {
-	t, ok := s.tasks[id]
+func (s *fakeStore) SetTags(_ context.Context, id int64, tags []string) error {
+	if _, ok := s.tasks[id]; !ok {
+		return errors.New("no such task")
+	}
+	if len(tags) == 0 {
+		delete(s.tags, id)
+		return nil
+	}
+	s.tags[id] = tags
+	return nil
+}
+
+func (s *fakeStore) TagsForTask(_ context.Context, id int64) ([]string, error) {
+	return s.tags[id], nil
+}
+
+// SetProject mirrors the store: the whole sub-tree moves with the task.
+func (s *fakeStore) SetProject(_ context.Context, taskID, projectID int64) error {
+	t, ok := s.tasks[taskID]
 	if !ok {
 		return errors.New("no such task")
 	}
-	t.Project = project
-	s.tasks[id] = t
+	t.ProjectID = projectID
+	s.tasks[taskID] = t
+	for id, child := range s.tasks {
+		if child.ParentID != nil && *child.ParentID == taskID {
+			if err := s.SetProject(context.Background(), id, projectID); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
+}
+
+func (s *fakeStore) GetProject(_ context.Context, id int64) (task.Project, error) {
+	for _, p := range s.projects {
+		if p.ID == id {
+			return p, nil
+		}
+	}
+	return task.Project{}, task.ErrProjectNotFound
+}
+
+func (s *fakeStore) ProjectByName(_ context.Context, name string) (task.Project, error) {
+	for _, p := range s.projects {
+		if strings.EqualFold(p.Name, name) {
+			return p, nil
+		}
+	}
+	return task.Project{}, task.ErrProjectNotFound
+}
+
+func (s *fakeStore) ListProjects(context.Context) ([]task.Project, error) {
+	return s.projects, nil
 }
 
 func (s *fakeStore) SetPriority(_ context.Context, id int64, p *int64) error {
@@ -231,14 +284,26 @@ func TestSetTaskStateRejectsUnknownState(t *testing.T) {
 	}
 }
 
-func TestSetTaskProjectEmptyStringClears(t *testing.T) {
-	proj := "tend"
-	store := newFakeStore(task.Task{ID: 1, Title: "bound", Project: &proj})
+func TestSetTaskTagsEmptyListClears(t *testing.T) {
+	store := newFakeStore(task.Task{ID: 1, Title: "bound"})
+	store.tags[1] = []string{"tend"}
 	cs := dial(t, store, 1)
 
-	got := callTool[taskOut](t, cs, "set_task_project", map[string]any{"project": ""})
-	if got.Project != nil {
-		t.Errorf("set_task_project with empty string should clear, got %v", *got.Project)
+	got := callTool[taskOut](t, cs, "set_task_tags", map[string]any{"tags": []string{}})
+	if len(got.Tags) != 0 {
+		t.Errorf("set_task_tags with an empty list should clear, got %v", got.Tags)
+	}
+}
+
+func TestSetTaskTagsReplacesWholeList(t *testing.T) {
+	store := newFakeStore(task.Task{ID: 1, Title: "bound"})
+	store.tags[1] = []string{"old"}
+	cs := dial(t, store, 1)
+
+	got := callTool[taskOut](t, cs, "set_task_tags",
+		map[string]any{"tags": []string{"alpha", "beta"}})
+	if len(got.Tags) != 2 || got.Tags[0] != "alpha" || got.Tags[1] != "beta" {
+		t.Errorf("Tags = %v, want [alpha beta] replacing the old list", got.Tags)
 	}
 }
 
@@ -312,5 +377,79 @@ func TestCreateTaskIsNotScopedToBoundTask(t *testing.T) {
 	got := callTool[taskOut](t, cs, "create_task", map[string]any{"title": "unrelated work"})
 	if got.ParentID != nil {
 		t.Errorf("create_task parent_id = %v, want nil (top-level, not scoped to the bound task)", got.ParentID)
+	}
+}
+
+// Gate 3's acceptance: a session bound to a task can read its project.
+func TestGetCurrentProject(t *testing.T) {
+	store := newFakeStore(task.Task{ID: 1, Title: "bound", ProjectID: 2})
+	store.projects = append(store.projects, task.Project{ID: 2, Name: "tend", LiveCount: 3})
+	cs := dial(t, store, 1)
+
+	got := callTool[projectOut](t, cs, "get_current_project", map[string]any{})
+	if got.Name != "tend" || got.ID != 2 {
+		t.Errorf("get_current_project = %+v, want the bound task's project tend", got)
+	}
+	if got.Tasks != 3 {
+		t.Errorf("live_task_count = %d, want 3", got.Tasks)
+	}
+}
+
+func TestListProjects(t *testing.T) {
+	store := newFakeStore(task.Task{ID: 1, Title: "bound"})
+	store.projects = append(store.projects, task.Project{ID: 2, Name: "tend"})
+	cs := dial(t, store, 1)
+
+	got := callTool[projectsOut](t, cs, "list_projects", map[string]any{})
+	if len(got.Projects) != 2 {
+		t.Fatalf("list_projects returned %d projects, want 2", len(got.Projects))
+	}
+	names := map[string]bool{}
+	for _, p := range got.Projects {
+		names[p.Name] = true
+	}
+	if !names["Unsorted"] || !names["tend"] {
+		t.Errorf("list_projects = %+v, want Unsorted and tend", got.Projects)
+	}
+}
+
+// Moving a task takes its sub-tree along, the same guarantee the store
+// makes: a child in a different project from its parent is incoherent.
+func TestSetTaskProjectMovesSubtree(t *testing.T) {
+	parentID := int64(1)
+	store := newFakeStore(
+		task.Task{ID: 1, Title: "parent", ProjectID: task.DefaultProjectID},
+		task.Task{ID: 2, Title: "child", ProjectID: task.DefaultProjectID, ParentID: &parentID},
+	)
+	store.projects = append(store.projects, task.Project{ID: 2, Name: "tend"})
+	cs := dial(t, store, 1)
+
+	got := callTool[taskOut](t, cs, "set_task_project", map[string]any{"project": "tend"})
+	if got.ProjectID != 2 {
+		t.Errorf("task ProjectID = %d, want tend (2)", got.ProjectID)
+	}
+	if child := store.tasks[2]; child.ProjectID != 2 {
+		t.Errorf("child ProjectID = %d, want tend (2): the sub-tree moves too", child.ProjectID)
+	}
+}
+
+// An agent guessing at a project name gets an error it can act on, not a
+// new project.
+func TestSetTaskProjectUnknownNameIsAnError(t *testing.T) {
+	store := newFakeStore(task.Task{ID: 1, Title: "bound"})
+	cs := dial(t, store, 1)
+
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "set_task_project",
+		Arguments: map[string]any{"project": "nope"},
+	})
+	if err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	if !res.IsError {
+		t.Error("an unknown project name should return an error result")
+	}
+	if len(store.projects) != 1 {
+		t.Errorf("a failed lookup created a project: %+v", store.projects)
 	}
 }

@@ -24,22 +24,32 @@ import (
 
 // Store is the slice of the persistence layer the TUI needs.
 type Store interface {
-	AddTask(ctx context.Context, title string) (task.Task, error)
-	AddTaskWithBody(ctx context.Context, title, body string) (task.Task, error)
+	AddTaskIn(ctx context.Context, projectID int64, title string) (task.Task, error)
+	AddTaskWithBodyIn(ctx context.Context, projectID int64, title, body string) (task.Task, error)
 	AddChild(ctx context.Context, parentID int64, title string) (task.Task, error)
 	AddLogEntry(ctx context.Context, taskID *int64, body string) (task.LogEntry, error)
 	ListLogEntries(ctx context.Context, from, to time.Time) ([]task.LogEntry, error)
 	ListTaskLog(ctx context.Context, taskID int64) ([]task.LogEntry, error)
 	ListEvents(ctx context.Context, from, to time.Time) ([]task.Event, error)
-	ListLive(ctx context.Context) ([]task.Task, error)
-	ListLiveWithCompleted(ctx context.Context) ([]task.Task, error)
-	ListInbox(ctx context.Context) ([]task.Task, error)
+	ListLive(ctx context.Context, projectID *int64) ([]task.Task, error)
+	ListLiveWithCompleted(ctx context.Context, projectID *int64) ([]task.Task, error)
+	ListInbox(ctx context.Context, projectID *int64) ([]task.Task, error)
 	ListChildren(ctx context.Context, parentID int64) ([]task.Task, error)
 	ChildCounts(ctx context.Context) (map[int64]task.ChildCount, error)
 	SessionStatuses(ctx context.Context) (map[int64]task.SessionStatus, error)
-	CountInbox(ctx context.Context) (int64, error)
+	CountInbox(ctx context.Context, projectID *int64) (int64, error)
 	SetState(ctx context.Context, id int64, st task.State) error
-	SetProject(ctx context.Context, id int64, project *string) error
+	SetProject(ctx context.Context, taskID, projectID int64) error
+	SetTags(ctx context.Context, taskID int64, tags []string) error
+	TagsByTask(ctx context.Context) (map[int64][]string, error)
+	TagsForTask(ctx context.Context, taskID int64) ([]string, error)
+	ListProjects(ctx context.Context) ([]task.Project, error)
+	CreateProject(ctx context.Context, name string) (task.Project, error)
+	RenameProject(ctx context.Context, id int64, name string) error
+	SetProjectArchived(ctx context.Context, id int64, archived bool) error
+	DeleteProject(ctx context.Context, id int64) error
+	ActiveProjectID(ctx context.Context) (int64, error)
+	SetActiveProject(ctx context.Context, id int64) error
 	SetPriority(ctx context.Context, id int64, p *int64) error
 	SetDue(ctx context.Context, id int64, due *string) error
 	SetTitle(ctx context.Context, id int64, title string) error
@@ -73,16 +83,32 @@ const (
 	modeStandup
 )
 
+// pane identifies which column owns the keyboard. It replaces an earlier
+// detailFocused bool: with three columns, "focused" is no longer a yes/no
+// question, and h/l move along this chain in both directions.
+//
+// The zero value is paneProjects, which is NOT the default focus -- newApp
+// sets paneTasks explicitly.
+type pane int
+
+const (
+	paneProjects pane = iota
+	paneTasks
+	paneDetail
+)
+
 type promptKind int
 
 const (
 	promptNone promptKind = iota
 	promptAdd
 	promptChild
-	promptProject
+	promptTags
 	promptDue
 	promptSessionCwd
 	promptRename
+	promptNewProject
+	promptRenameProject
 )
 
 // flashKind picks the glyph + semantic color a footer flash leads with;
@@ -112,6 +138,7 @@ type (
 		mode     viewMode
 		tasks    []task.Task
 		counts   map[int64]task.ChildCount
+		tags     map[int64][]string
 		sessions map[int64]task.SessionStatus
 		inbox    int64
 	}
@@ -125,6 +152,12 @@ type (
 		notes  []task.LogEntry
 		events []task.Event
 		live   []task.Task
+	}
+	// projectsLoadedMsg carries the projects column's contents plus the
+	// stored capture target.
+	projectsLoadedMsg struct {
+		projects []task.Project
+		active   int64
 	}
 	// refreshMsg signals a completed mutation: show status, reload.
 	refreshMsg struct{ status flash }
@@ -207,11 +240,27 @@ type app struct {
 	// rebuilt from these whenever any of them changes.
 	tasks         []task.Task
 	counts        map[int64]task.ChildCount
+	tags          map[int64][]string           // tags per task, for the list row's #tag cell
 	sessionStatus map[int64]task.SessionStatus // latest session status per task, for the list row
-	expanded      map[int64]bool               // branch disclosure, by task ID, session-scoped
-	childCache    map[int64][]task.Task        // loaded children per parent
-	logCache      map[int64][]task.LogEntry    // loaded task notes, for the detail pane
-	sessionsCache map[int64][]task.Session     // loaded claude sessions per task, for the detail pane
+
+	// projectFilter scopes every task query: nil is the projects column's
+	// All row, otherwise the selected project.
+	projectFilter *int64
+
+	// Projects column state. projectCursor indexes the rendered rows, so
+	// 0 is the synthetic All row and a project sits at its index + 1.
+	// activeProjectID is the capture target mirrored from the settings
+	// table; it is not necessarily the selected row (All changes the
+	// selection without changing where new tasks land).
+	projects        []task.Project
+	projectCursor   int
+	activeProjectID int64
+	showProjects    bool                      // `[` toggles the column; auto-hidden when narrow
+	loadedProjects  bool                      // first projectsLoadedMsg arrived
+	expanded        map[int64]bool            // branch disclosure, by task ID, session-scoped
+	childCache      map[int64][]task.Task     // loaded children per parent
+	logCache        map[int64][]task.LogEntry // loaded task notes, for the detail pane
+	sessionsCache   map[int64][]task.Session  // loaded claude sessions per task, for the detail pane
 
 	startCwd string // tend's own working directory at startup; the launch-prompt fallback
 
@@ -248,15 +297,15 @@ type app struct {
 	standupCollapsed    map[string]bool // collapsed note-group keys, see standupGroupKey
 	standupJumpToLatest bool
 
-	showDetail    bool
-	detailFocused bool // pane owns j/k/scroll keys; list cursor is frozen
-	detail        viewport.Model
+	showDetail bool
+	focus      pane // which column owns j/k and the scroll keys
+	detail     viewport.Model
 	detailID   int64 // task currently rendered in the pane; 0 = none
 	renderer   *glamour.TermRenderer
 
 	prompt       textinput.Model
 	promptKind   promptKind
-	promptTarget int64  // task the prompt acts on (project/due/sub-task/session)
+	promptTarget int64  // task the prompt acts on (tags/due/sub-task/session)
 	sessionLabel string // pending session-cwd prompt's -n arg (task title)
 
 	modal modal // centered floating input (log entries)
@@ -276,6 +325,12 @@ type app struct {
 	paletteSel   int
 
 	// URL picker overlay: choose one link from a task with multiple links.
+	// Project picker overlay: choose which project a task belongs to.
+	projectPickerOpen   bool
+	projectPickerTaskID int64
+	projectPickerLabel  string
+	projectPickerSel    int
+
 	urlPickerOpen bool
 	urlPickerURLs []link
 	urlPickerSel  int
@@ -301,21 +356,24 @@ func newApp(ctx context.Context, s Store, dbPath string) app {
 	styles := DefaultStyles()
 	wd, _ := os.Getwd() // best-effort; "" just falls through to an empty cwd prompt
 	return app{
-		ctx:           ctx,
-		store:         s,
-		dbPath:        dbPath,
-		keys:          defaultKeyMap(),
-		styles:        styles,
-		mode:          modeList,
-		list:          newTaskList(styles),
-		expanded:      make(map[int64]bool),
-		childCache:    make(map[int64][]task.Task),
-		logCache:      make(map[int64][]task.LogEntry),
-		sessionsCache: make(map[int64][]task.Session),
-		startCwd:      wd,
-		detail:        viewport.New(),
-		prompt:        textinput.New(),
-		modal:         newModal(),
+		ctx:             ctx,
+		store:           s,
+		dbPath:          dbPath,
+		keys:            defaultKeyMap(),
+		styles:          styles,
+		mode:            modeList,
+		focus:           paneTasks,
+		showProjects:    true,
+		activeProjectID: task.DefaultProjectID,
+		list:            newTaskList(styles),
+		expanded:        make(map[int64]bool),
+		childCache:      make(map[int64][]task.Task),
+		logCache:        make(map[int64][]task.LogEntry),
+		sessionsCache:   make(map[int64][]task.Session),
+		startCwd:        wd,
+		detail:          viewport.New(),
+		prompt:          textinput.New(),
+		modal:           newModal(),
 	}
 }
 
@@ -323,7 +381,7 @@ func (a app) Init() tea.Cmd {
 	// Startup is the one moment guaranteed to happen after a host
 	// reboot, which is exactly when a session backgrounded before the
 	// reboot is owed a recap nobody has settled (see drainRecapsCmd).
-	return tea.Batch(a.loadTasks(a.mode), a.drainRecapsCmd())
+	return tea.Batch(a.loadTasks(a.mode), a.loadProjects(), a.drainRecapsCmd())
 }
 
 func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -342,6 +400,7 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 		a.inboxCount = msg.inbox
+		a.tags = msg.tags
 		if msg.mode == modeTriage {
 			// "Processed" means the current card left the inbox; skips and
 			// metadata edits keep it in place across reloads.
@@ -357,6 +416,23 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmd := tea.Batch(a.rebuildList(), a.reloadExpanded())
 		moveOffHeading(&a.list, 1)
 		return a, tea.Batch(cmd, a.syncDetail(true))
+
+	case projectsLoadedMsg:
+		wantID, hadSelection := int64(0), false
+		if p, ok := a.selectedProject(); ok {
+			wantID, hadSelection = p.ID, true
+		}
+		a.projects = msg.projects
+		a.activeProjectID = msg.active
+		// First load: land on the stored capture target rather than All,
+		// so the TUI opens where `tend add` has been putting things.
+		if !a.loadedProjects {
+			a.loadedProjects = true
+			wantID, hadSelection = msg.active, msg.active != task.DefaultProjectID
+		}
+		a.syncProjectCursor(wantID, hadSelection)
+		a.resize()
+		return a, a.loadTasks(a.mode)
 
 	case childrenLoadedMsg:
 		a.childCache[msg.parentID] = msg.children
@@ -493,7 +569,7 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if a.mode == modeStandup {
 			return a, tea.Batch(a.loadStandup(), a.drainRecapsCmd())
 		}
-		return a, tea.Batch(a.loadTasks(a.mode), a.drainRecapsCmd())
+		return a, tea.Batch(a.loadTasks(a.mode), a.loadProjects(), a.drainRecapsCmd())
 
 	case statusMsg:
 		a.status = flash(msg)
@@ -538,6 +614,11 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// An open URL picker swallows all keys.
 	if a.urlPickerOpen {
 		return a.handleURLPickerKey(msg)
+	}
+
+	// So does an open project picker.
+	if a.projectPickerOpen {
+		return a.handleProjectPickerKey(msg)
 	}
 
 	// An open session picker swallows all keys.
@@ -634,6 +715,11 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		a.deletePending = false
 		a.resize()
 		if key.Matches(msg, a.keys.Delete) {
+			// The chord means "delete what is focused": a project in the
+			// projects column, otherwise the selected task.
+			if a.focus == paneProjects && a.mode == modeList {
+				return a, a.deleteSelectedProject()
+			}
 			if t, selected := a.selected(); selected {
 				return a, a.deleteTask(t)
 			}
@@ -653,6 +739,14 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return a, nil
 	}
 
+	// The projects column claims its own keys and lets everything else
+	// fall through, so `q`, `:`, `?`, `S` and `i` still work from there.
+	if a.focus == paneProjects && a.mode == modeList {
+		if model, cmd, handled := a.handleProjectsKey(msg); handled {
+			return model, cmd
+		}
+	}
+
 	switch {
 	case key.Matches(msg, a.keys.Quit):
 		// ctrl+c always quits; `q` first backs out of any non-default
@@ -664,8 +758,8 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				a.mode = modeList
 				return a, a.loadTasks(modeList)
 			}
-			if a.detailFocused {
-				a.detailFocused = false
+			if a.focus == paneDetail {
+				a.focus = paneTasks
 				return a, nil
 			}
 			if a.showDetail {
@@ -695,8 +789,8 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		// Un-focus the pane before closing it, so esc backs out one step
 		// at a time.
-		if a.detailFocused {
-			a.detailFocused = false
+		if a.focus == paneDetail {
+			a.focus = paneTasks
 			return a, nil
 		}
 		if a.showDetail {
@@ -728,6 +822,12 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		return a.toggleDetail()
 
+	case key.Matches(msg, a.keys.ToggleProjects):
+		if a.mode != modeList {
+			return a, nil
+		}
+		return a.toggleProjects()
+
 	case key.Matches(msg, a.keys.ExpandToggle):
 		// In triage ⏎ skips: the current card moves to the back of this
 		// session's queue.
@@ -755,10 +855,10 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		// every key anyway.
 		probe := a
 		probe.showDetail = true
-		if _, _, full := probe.splitWidths(); !full {
+		if _, _, _, full := probe.paneWidths(); !full {
 			wasOpen := a.showDetail
 			a.showDetail = true
-			a.detailFocused = true
+			a.focus = paneDetail
 			a.resize()
 			if !wasOpen {
 				return a, a.syncDetail(true)
@@ -769,12 +869,14 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, a.keys.ExpandClose) && a.mode == modeList:
 		// h/← first backs focus out of the detail pane, same direction
 		// it moved in.
-		if a.detailFocused {
-			a.detailFocused = false
+		if a.focus == paneDetail {
+			a.focus = paneTasks
 			return a, nil
 		}
 		n, ok := a.selectedNode()
 		if !ok {
+			// An empty list has nothing to collapse either.
+			a.focusProjects()
 			return a, nil
 		}
 		if a.expanded[n.t.ID] {
@@ -789,6 +891,9 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			a.selectByID(pid)
 			return a, tea.Batch(cmd, a.syncDetail(false))
 		}
+		// Nothing left to collapse: h moves to the projects column,
+		// mirroring the way l falls through to the detail pane.
+		a.focusProjects()
 		return a, nil
 
 	case key.Matches(msg, a.keys.ToggleDone) && a.mode == modeList:
@@ -850,9 +955,19 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		return a, nil
 
-	case key.Matches(msg, a.keys.SetProject):
+	case key.Matches(msg, a.keys.MoveProject) && a.mode == modeList:
 		if t, ok := a.selected(); ok {
-			return a, a.openPrompt(promptProject, fmt.Sprintf("project for #%d (empty clears): ", t.ID), t.ID)
+			a.openProjectPicker(t)
+		}
+		return a, nil
+
+	case key.Matches(msg, a.keys.SetTags):
+		if t, ok := a.selected(); ok {
+			// Seeded with the current tags so editing one doesn't mean
+			// retyping the rest: the prompt replaces the whole list.
+			return a, a.openPromptWith(promptTags,
+				fmt.Sprintf("tags for #%d (space separated, empty clears): ", t.ID),
+				task.FormatTags(a.tags[t.ID]), t.ID)
 		}
 		return a, nil
 
@@ -902,8 +1017,8 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// The pane owns scrolling when explicitly focused, or when it has
 	// replaced the list outright (full-width layout) and there's nothing
 	// else a key like j/k could mean.
-	_, _, full := a.splitWidths()
-	if a.detailFocused || (a.showDetail && full) {
+	_, _, _, full := a.paneWidths()
+	if a.focus == paneDetail || (a.showDetail && full) {
 		var cmd tea.Cmd
 		a.detail, cmd = a.detail.Update(msg)
 		return a, cmd
@@ -1004,11 +1119,18 @@ func (a app) priorityPanel() string {
 // deletePanel renders the which-key panel for the pending `d` chord: a
 // second `d` deletes, anything else cancels.
 func (a app) deletePanel() string {
+	label, desc := "delete", "delete"
+	if a.focus == paneProjects && a.mode == modeList {
+		// Deleting a project never deletes work, and the panel says so:
+		// the store reassigns its tasks to Unsorted first.
+		label = "delete project"
+		desc = "delete; tasks move to Unsorted"
+	}
 	entries := []panelEntry{
-		{key: "d", desc: "delete", keyStyle: a.styles.State[task.StateDone]},
+		{key: "d", desc: desc, keyStyle: a.styles.State[task.StateDone]},
 		{key: "esc", desc: "cancel", keyStyle: a.styles.Dimmed},
 	}
-	return renderKeyPanel(a.styles, a.width, "delete", entries)
+	return renderKeyPanel(a.styles, a.width, label, entries)
 }
 
 // quitPanel renders the which-key panel for the pending quit
@@ -1098,7 +1220,7 @@ func (a app) selected() (task.Task, bool) {
 // toggleDetail shows or hides the detail pane.
 func (a app) toggleDetail() (tea.Model, tea.Cmd) {
 	a.showDetail = !a.showDetail
-	a.detailFocused = false
+	a.focus = paneTasks
 	a.resize()
 	if a.showDetail {
 		return a, a.syncDetail(true)
@@ -1127,8 +1249,8 @@ func (a *app) rebuildList() tea.Cmd {
 	// way counts does: counts drives disclosure logic as well as
 	// rendering, whereas a session marker is purely visual, so the
 	// renderer is the one thing that needs it.
-	a.list.SetDelegate(taskDelegate{styles: a.styles, sessions: a.sessionStatus})
-	cmds := []tea.Cmd{a.list.SetItems(toGroupedItems(a.tasks, a.counts, a.expanded, a.childCache))}
+	a.list.SetDelegate(taskDelegate{styles: a.styles, sessions: a.sessionStatus, tags: a.tags})
+	cmds := []tea.Cmd{a.list.SetItems(toGroupedItems(a.tasks, a.counts, a.expanded, a.childCache, a.tags))}
 	for id := range a.expanded {
 		if _, ok := a.childCache[id]; !ok {
 			cmds = append(cmds, a.loadChildren(id))
@@ -1189,27 +1311,91 @@ func (a *app) syncDetail(force bool) tea.Cmd {
 // renderDetailFor renders the pane for one task from the caches. The task
 // may sit at any depth; a sub-task gets the same pane as a top-level task.
 func (a *app) renderDetailFor(t task.Task) {
-	_, detailW, _ := a.splitWidths()
+	_, _, detailW, _ := a.paneWidths()
 	a.detail.SetContent(renderDetail(t, a.childCache[t.ID], a.logCache[t.ID],
-		a.sessionsCache[t.ID], a.renderer, a.styles, detailW))
+		a.sessionsCache[t.ID], a.tags[t.ID], a.renderer, a.styles, detailW))
 }
 
-// splitWidths computes the list/detail column widths for the current
-// terminal width. full reports that the detail pane replaces the list
-// entirely (the split would crush both panes below 100 cols).
-func (a app) splitWidths() (listW, detailW int, full bool) {
+// Projects-column geometry. The width is fixed: a project name plus its
+// count, and nothing that benefits from more room.
+const (
+	projectsPaneWidth = 20
+	// Below this the column hides itself entirely -- the detail split
+	// already collapses to a single full-width pane here, and three
+	// columns inside 100 cells leaves none of them readable.
+	projectsPaneMinWidth = 100
+	// The task list needs at least this much to be worth splitting with
+	// the detail pane; see paneWidths.
+	detailSplitMinWidth = 100
+)
+
+// projectsVisible reports whether the projects column is on screen. It is
+// list-mode only: triage and standup own the full width.
+func (a app) projectsVisible() bool {
+	if !a.showProjects || a.mode != modeList || a.width < projectsPaneMinWidth {
+		return false
+	}
+	// Never let the projects column be the thing that pushes the detail
+	// pane into replacing the task list. The list is the primary surface;
+	// a narrow terminal gives up the projects column first.
+	if a.showDetail && a.width-projectsPaneWidth-1 < detailSplitMinWidth {
+		return false
+	}
+	return true
+}
+
+// paneWidths computes the column widths for the current terminal width.
+// full reports that the detail pane replaces the task list entirely (the
+// split would crush both below detailSplitMinWidth). Because
+// projectsVisible refuses to be the cause of that collapse, full always
+// implies projW == 0.
+func (a app) paneWidths() (projW, listW, detailW int, full bool) {
+	rest := a.width
+	if a.projectsVisible() {
+		projW = projectsPaneWidth
+		rest = a.width - projW - 1 // the divider column
+	}
 	switch {
 	case !a.showDetail:
-		return a.width, 0, false
-	case a.width >= 120:
-		listW = a.width * 46 / 100 // 46 / 54 split
-		return listW, a.width - listW - 1, false
-	case a.width >= 100:
-		listW = a.width / 2 // tighter split
-		return listW, a.width - listW - 1, false
+		return projW, rest, 0, false
+	case rest >= 120:
+		listW = rest * 46 / 100 // 46 / 54 split
+		return projW, listW, rest - listW - 1, false
+	case rest >= detailSplitMinWidth:
+		listW = rest / 2 // tighter split
+		return projW, listW, rest - listW - 1, false
 	default:
-		return a.width, a.width, true
+		// The detail pane replaces the list. The list still gets a width
+		// so its own state (filtering, wrapping) stays sane off screen.
+		return projW, rest, rest, true
 	}
+}
+
+// paneSplits returns the columns carrying a vertical divider, left to
+// right, so the horizontal rules can tee into them.
+func (a app) paneSplits() []int {
+	projW, listW, _, full := a.paneWidths()
+	var splits []int
+	x := 0
+	if projW > 0 {
+		splits = append(splits, projW)
+		x = projW + 1
+	}
+	if a.showDetail && !full {
+		splits = append(splits, x+listW)
+	}
+	return splits
+}
+
+// verticalDivider is one full-height pane divider, accented when it abuts
+// the focused column.
+func (a app) verticalDivider(focused bool) string {
+	style := a.styles.Rule
+	if focused {
+		style = a.styles.Accent
+	}
+	return strings.TrimSuffix(strings.Repeat(
+		style.Render(a.styles.Glyphs.RuleV)+"\n", max(a.bodyHeight, 1)), "\n")
 }
 
 func (a *app) resize() {
@@ -1231,7 +1417,12 @@ func (a *app) resize() {
 		bottomHeight = max(lipgloss.Height(a.quitPanel()), 1)
 	}
 	a.bodyHeight = max(a.height-chromeTop-bottomHeight, 1)
-	listWidth, detailWidth, _ := a.splitWidths()
+	// A narrowing terminal can take the projects column away underneath
+	// the cursor; focus must not stay on a pane nobody can see.
+	if a.focus == paneProjects && !a.projectsVisible() {
+		a.focus = paneTasks
+	}
+	_, listWidth, detailWidth, _ := a.paneWidths()
 	if a.showDetail {
 		a.detail.SetWidth(max(detailWidth, 10))
 		a.detail.SetHeight(a.bodyHeight)
@@ -1290,15 +1481,14 @@ func (a app) submitPrompt() (tea.Model, tea.Cmd) {
 			_, err := a.store.AddChild(a.ctx, target, value)
 			return err
 		})
-	case promptProject:
-		var p *string
-		text := "project cleared"
-		if value != "" {
-			p = &value
-			text = "project → " + value
+	case promptTags:
+		tags := task.ParseTags(value)
+		text := "tags cleared"
+		if len(tags) > 0 {
+			text = "tags → " + task.FormatTags(tags)
 		}
 		return a, a.mutate(flash{kind: flashEdit, text: text}, func() error {
-			return a.store.SetProject(a.ctx, target, p)
+			return a.store.SetTags(a.ctx, target, tags)
 		})
 	case promptDue:
 		var d *string
@@ -1315,6 +1505,21 @@ func (a app) submitPrompt() (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 		return a, launchSessionCmd(target, value, label, a.dbPath)
+	case promptNewProject:
+		if value == "" {
+			return a, nil
+		}
+		return a, a.mutate(flash{kind: flashAdd, text: "project: " + value}, func() error {
+			_, err := a.store.CreateProject(a.ctx, value)
+			return err
+		})
+	case promptRenameProject:
+		if value == "" {
+			return a, nil
+		}
+		return a, a.mutate(flash{kind: flashEdit, text: "renamed to " + value}, func() error {
+			return a.store.RenameProject(a.ctx, target, value)
+		})
 	case promptRename:
 		// A blank title is a no-op; renaming to nothing would strand the row.
 		if value == "" {
@@ -1363,11 +1568,11 @@ func (a app) loadTasks(mode viewMode) tea.Cmd {
 		)
 		switch {
 		case mode == modeTriage:
-			tasks, err = a.store.ListInbox(a.ctx)
+			tasks, err = a.store.ListInbox(a.ctx, a.projectFilter)
 		case a.showCompleted:
-			tasks, err = a.store.ListLiveWithCompleted(a.ctx)
+			tasks, err = a.store.ListLiveWithCompleted(a.ctx, a.projectFilter)
 		default:
-			tasks, err = a.store.ListLive(a.ctx)
+			tasks, err = a.store.ListLive(a.ctx, a.projectFilter)
 		}
 		if err != nil {
 			return errMsg{err}
@@ -1376,7 +1581,13 @@ func (a app) loadTasks(mode viewMode) tea.Cmd {
 		if err != nil {
 			return errMsg{err}
 		}
-		inbox, err := a.store.CountInbox(a.ctx)
+		// The inbox nudge counts the same population the triage view would
+		// process, so it follows the project filter too.
+		inbox, err := a.store.CountInbox(a.ctx, a.projectFilter)
+		if err != nil {
+			return errMsg{err}
+		}
+		tags, err := a.store.TagsByTask(a.ctx)
 		if err != nil {
 			return errMsg{err}
 		}
@@ -1387,7 +1598,8 @@ func (a app) loadTasks(mode viewMode) tea.Cmd {
 		if err != nil {
 			statuses = nil
 		}
-		return tasksLoadedMsg{mode: mode, tasks: tasks, counts: counts, sessions: statuses, inbox: inbox}
+		return tasksLoadedMsg{mode: mode, tasks: tasks, counts: counts, tags: tags,
+			sessions: statuses, inbox: inbox}
 	}
 }
 
@@ -1428,17 +1640,31 @@ func (a app) loadChildren(parentID int64) tea.Cmd {
 // title, link in the body. The lookup runs inside the Cmd's goroutine,
 // so a slow or unreachable Jira never blocks the UI, and any lookup
 // failure degrades to the bare key with the reason in the flash.
+// captureProjectID is where a task captured in the TUI lands: the project
+// the column is on. The All row falls back to the default project -- All
+// is a way of looking at everything, not a place to put a new task.
+//
+// Read from the selection rather than from the stored setting, so what a
+// capture does is exactly what the screen shows.
+func (a app) captureProjectID() int64 {
+	if p, ok := a.selectedProject(); ok {
+		return p.ID
+	}
+	return task.DefaultProjectID
+}
+
 func (a app) captureTask(value string) tea.Cmd {
+	projectID := a.captureProjectID()
 	iss, ok := jira.ParseIssueURL(value)
 	if !ok {
 		return a.mutate(flash{kind: flashAdd, text: "captured to inbox: " + value}, func() error {
-			_, err := a.store.AddTask(a.ctx, value)
+			_, err := a.store.AddTaskIn(a.ctx, projectID, value)
 			return err
 		})
 	}
 	return func() tea.Msg {
 		title, warn := jira.Expand(a.ctx, iss)
-		if _, err := a.store.AddTaskWithBody(a.ctx, title, iss.URL+"\n"); err != nil {
+		if _, err := a.store.AddTaskWithBodyIn(a.ctx, projectID, title, iss.URL+"\n"); err != nil {
 			return errMsg{err}
 		}
 		text := "captured to inbox: " + title
@@ -1482,35 +1708,23 @@ func (a app) View() tea.View {
 		return v
 	}
 
-	listW, _, full := a.splitWidths()
-	splitAt := -1 // column of the pane divider; -1 = no split
-	if a.showDetail && !full && a.mode == modeList {
-		splitAt = listW
-	}
+	splits := a.paneSplits() // columns carrying a vertical divider
 
 	var body string
-	switch {
-	case a.mode == modeTriage:
+	switch a.mode {
+	case modeTriage:
+		splits = nil
 		body = a.triageView()
-	case a.mode == modeStandup:
-		splitAt, _ = a.standupWidths()
+	case modeStandup:
+		at, _ := a.standupWidths()
+		splits = []int{at}
 		body = a.standupView()
-	case a.showDetail && full:
-		body = a.detail.View()
-	case a.showDetail:
-		dividerStyle := a.styles.Rule
-		if a.detailFocused {
-			dividerStyle = a.styles.Accent
-		}
-		divider := strings.TrimSuffix(strings.Repeat(
-			dividerStyle.Render(a.styles.Glyphs.RuleV)+"\n", max(a.bodyHeight, 1)), "\n")
-		body = lipgloss.JoinHorizontal(lipgloss.Top, a.list.View(), divider, a.detail.View())
 	default:
-		body = a.list.View()
+		body = a.listBody()
 	}
 
-	frame := a.headerLine() + "\n" + a.ruleLine(splitAt, a.styles.Glyphs.TeeDown) + "\n" +
-		body + "\n" + a.bottomChrome(splitAt)
+	frame := a.headerLine() + "\n" + a.ruleLine(splits, a.styles.Glyphs.TeeDown) + "\n" +
+		body + "\n" + a.bottomChrome(splits)
 	if a.modal.Active() {
 		box := a.modal.View(a.styles)
 		x := max((a.width-lipgloss.Width(box))/2, 0)
@@ -1525,7 +1739,8 @@ func (a app) View() tea.View {
 	// Palette and help splice in just above the footer, over the bottom
 	// body rows. A panel taller than the screen loses its top rows, like
 	// the design's splice.
-	if a.paletteOpen || a.helpOpen || a.urlPickerOpen || a.sessionPickerOpen {
+	if a.paletteOpen || a.helpOpen || a.urlPickerOpen || a.sessionPickerOpen ||
+		a.projectPickerOpen {
 		box := a.paletteView()
 		switch {
 		case a.helpOpen:
@@ -1534,6 +1749,8 @@ func (a app) View() tea.View {
 			box = a.urlPickerView()
 		case a.sessionPickerOpen:
 			box = a.sessionPickerView()
+		case a.projectPickerOpen:
+			box = a.projectPickerView()
 		}
 		rows := strings.Split(box, "\n")
 		if maxRows := max(a.height-1, 1); len(rows) > maxRows {
@@ -1553,6 +1770,29 @@ func (a app) View() tea.View {
 	return v
 }
 
+// listBody composes the list-mode columns left to right: the projects
+// pane, the task list, and the detail pane, in whatever combination is
+// currently visible.
+func (a app) listBody() string {
+	projW, _, _, full := a.paneWidths()
+
+	var cols []string
+	if projW > 0 {
+		cols = append(cols, a.projectsView(), a.verticalDivider(a.focus == paneProjects))
+	}
+	switch {
+	case a.showDetail && full:
+		// The detail pane replaces the list outright; projW is 0 here.
+		cols = append(cols, a.detail.View())
+	case a.showDetail:
+		cols = append(cols, a.list.View(),
+			a.verticalDivider(a.focus == paneDetail), a.detail.View())
+	default:
+		cols = append(cols, a.list.View())
+	}
+	return lipgloss.JoinHorizontal(lipgloss.Top, cols...)
+}
+
 // headerLine renders `  tend  ·  <view>` with the inbox nudge and shown
 // count right-aligned.
 func (a app) headerLine() string {
@@ -1565,6 +1805,16 @@ func (a app) headerLine() string {
 		left += s.HeaderView.Render("standup")
 	default:
 		left += s.HeaderView.Render("live")
+	}
+	// Name the project the view is scoped to. The projects column usually
+	// says this, but it hides on a narrow terminal and triage never shows
+	// it at all -- so without this you cannot tell whether you are
+	// triaging one project or everything. Standup is deliberately global,
+	// so it stays unqualified.
+	if a.mode != modeStandup {
+		if p, ok := a.selectedProject(); ok {
+			left += s.HeaderSep.Render("  ·  ") + s.HeaderView.Render(p.Name)
+		}
 	}
 
 	right := ""
@@ -1595,21 +1845,30 @@ func (a app) headerLine() string {
 	return left + strings.Repeat(" ", gap) + right
 }
 
-// ruleLine draws a full-width horizontal rule, joined to the pane divider
-// at splitAt with the given tee glyph when the detail split is open.
-func (a app) ruleLine(splitAt int, join string) string {
+// ruleLine draws a full-width horizontal rule, teed into each pane
+// divider column with the given glyph. splits must be ascending; columns
+// outside the terminal are ignored.
+func (a app) ruleLine(splits []int, join string) string {
 	g := a.styles.Glyphs
 	w := max(a.width, 1)
-	if splitAt < 0 || splitAt >= w {
-		return a.styles.Rule.Render(strings.Repeat(g.RuleH, w))
+
+	var b strings.Builder
+	x := 0
+	for _, at := range splits {
+		if at < x || at >= w {
+			continue
+		}
+		b.WriteString(strings.Repeat(g.RuleH, at-x))
+		b.WriteString(join)
+		x = at + 1
 	}
-	return a.styles.Rule.Render(
-		strings.Repeat(g.RuleH, splitAt) + join + strings.Repeat(g.RuleH, max(w-splitAt-1, 0)))
+	b.WriteString(strings.Repeat(g.RuleH, max(w-x, 0)))
+	return a.styles.Rule.Render(b.String())
 }
 
 // bottomChrome is everything under the body: normally a rule plus the
 // footer line; the which-key panels carry their own top border instead.
-func (a app) bottomChrome(splitAt int) string {
+func (a app) bottomChrome(splits []int) string {
 	if a.statePending {
 		return a.statePanel()
 	}
@@ -1622,7 +1881,7 @@ func (a app) bottomChrome(splitAt int) string {
 	if a.quitPending {
 		return a.quitPanel()
 	}
-	return a.ruleLine(splitAt, a.styles.Glyphs.TeeUp) + "\n" + a.footer()
+	return a.ruleLine(splits, a.styles.Glyphs.TeeUp) + "\n" + a.footer()
 }
 
 func (a app) footer() string {
@@ -1643,9 +1902,14 @@ func (a app) footer() string {
 		{"j/k", "move"}, {"]", "detail"}, {"n", "add"}, {"c", "state"},
 		{"/", "search"}, {":", "palette"}, {"i", "triage"}, {"?", "help"}, {"q", "quit"},
 	}
-	_, _, full := a.splitWidths()
+	_, _, _, full := a.paneWidths()
 	switch {
-	case a.detailFocused:
+	case a.focus == paneProjects && a.mode == modeList:
+		hints = [][2]string{
+			{"j/k", "switch project"}, {"l/⏎", "to tasks"}, {"n", "new"}, {"R", "rename"},
+			{"dd", "delete"}, {"A", "archive"}, {"?", "help"}, {"q", "quit"},
+		}
+	case a.focus == paneDetail:
 		hints = [][2]string{
 			{"j/k", "scroll"}, {"h/esc", "back to list"}, {":", "palette"}, {"?", "help"}, {"q", "quit"},
 		}
@@ -1665,7 +1929,7 @@ func (a app) footer() string {
 		case ok:
 			probe := a
 			probe.showDetail = true
-			if _, _, probeFull := probe.splitWidths(); !probeFull {
+			if _, _, _, probeFull := probe.paneWidths(); !probeFull {
 				verb := "focus pane"
 				if !a.showDetail {
 					verb = "open + focus pane"
@@ -1741,8 +2005,8 @@ func (a app) loadingFrame() string {
 	for len(lines) < h {
 		lines = append(lines, "")
 	}
-	return a.headerLine() + "\n" + a.ruleLine(-1, "") + "\n" +
-		strings.Join(lines[:h], "\n") + "\n" + a.ruleLine(-1, "") + "\n"
+	return a.headerLine() + "\n" + a.ruleLine(nil, "") + "\n" +
+		strings.Join(lines[:h], "\n") + "\n" + a.ruleLine(nil, "") + "\n"
 }
 
 // tildePath abbreviates the home directory for display.

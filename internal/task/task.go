@@ -79,13 +79,17 @@ type ChildCount struct {
 // Task is the domain representation of a row in the tasks table.
 // Due and SnoozeUntil stay as ISO 8601 date strings (YYYY-MM-DD); the DB
 // compares them lexically and v1 has no date arithmetic to justify parsing.
+//
+// Tags are deliberately absent: the list view needs them for every visible
+// row, and a per-row query would be N+1. They load as a batch map instead
+// (Store.TagsByTask), the same idiom ChildCounts and SessionStatuses use.
 type Task struct {
 	ID          int64
 	Title       string
 	BodyMD      string
 	State       State
 	ParentID    *int64
-	Project     *string
+	ProjectID   int64
 	Priority    *int64
 	Due         *string
 	SnoozeUntil *string

@@ -198,7 +198,7 @@ type Styles struct {
 	Title      lipgloss.Style
 	TitleDone  lipgloss.Style // gray + strikethrough
 	Caret      lipgloss.Style
-	Project    lipgloss.Style // #name meta column
+	Tag        lipgloss.Style // #tag meta column
 	DueOver    lipgloss.Style
 	DueToday   lipgloss.Style
 	DueFuture  lipgloss.Style
@@ -228,7 +228,7 @@ type Styles struct {
 
 	// Detail pane.
 	DetailID    lipgloss.Style // "#7" — muted
-	DetailLabel lipgloss.Style // "project" / "due" / "pri" — muted
+	DetailLabel lipgloss.Style // "tags" / "due" / "pri" — muted
 	DetailFaint lipgloss.Style // created/updated line
 	SubHeader   lipgloss.Style // "SUB-TASKS" — accent bold
 	CheckDone   lipgloss.Style // ▣ — complete green
@@ -277,7 +277,7 @@ func newStyles(isDark bool) Styles {
 		Title:      fg(p.Fg),
 		TitleDone:  fg(p.Done).Strikethrough(true),
 		Caret:      fg(p.Muted),
-		Project:    fg(p.FgDim),
+		Tag:        fg(p.FgDim),
 		DueOver:    fg(p.Overdue).Bold(true),
 		DueToday:   fg(p.DueToday).Bold(true),
 		DueFuture:  fg(p.DueFuture),

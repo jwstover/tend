@@ -51,8 +51,11 @@ func TestAddTaskDefaults(t *testing.T) {
 	if got.BodyMD != "" {
 		t.Errorf("BodyMD = %q, want empty", got.BodyMD)
 	}
-	if got.Project != nil || got.Priority != nil || got.Due != nil || got.SnoozeUntil != nil || got.ParentID != nil || got.CompletedAt != nil {
+	if got.Priority != nil || got.Due != nil || got.SnoozeUntil != nil || got.ParentID != nil || got.CompletedAt != nil {
 		t.Error("expected all optional fields to be nil on capture")
+	}
+	if got.ProjectID != task.DefaultProjectID {
+		t.Errorf("ProjectID = %d, want the default project %d", got.ProjectID, task.DefaultProjectID)
 	}
 	if got.CreatedAt.IsZero() || got.UpdatedAt.IsZero() {
 		t.Error("expected timestamps to be set")
@@ -131,7 +134,7 @@ func TestListLiveFiltering(t *testing.T) {
 		}
 	}
 
-	got, err := s.ListLive(ctx)
+	got, err := s.ListLive(ctx, nil)
 	if err != nil {
 		t.Fatalf("ListLive: %v", err)
 	}
@@ -158,7 +161,7 @@ func TestTriageMutators(t *testing.T) {
 		t.Fatalf("AddTask: %v", err)
 	}
 
-	inbox, err := s.ListInbox(ctx)
+	inbox, err := s.ListInbox(ctx, nil)
 	if err != nil {
 		t.Fatalf("ListInbox: %v", err)
 	}
@@ -166,9 +169,8 @@ func TestTriageMutators(t *testing.T) {
 		t.Fatalf("ListInbox = %+v, want the one captured task", inbox)
 	}
 
-	proj := "home"
-	if err := s.SetProject(ctx, created.ID, &proj); err != nil {
-		t.Fatalf("SetProject: %v", err)
+	if err := s.SetTags(ctx, created.ID, []string{"home"}); err != nil {
+		t.Fatalf("SetTags: %v", err)
 	}
 	if err := s.SetDue(ctx, created.ID, ptr("2026-12-01")); err != nil {
 		t.Fatalf("SetDue: %v", err)
@@ -190,8 +192,8 @@ func TestTriageMutators(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetTask: %v", err)
 	}
-	if got.Project == nil || *got.Project != "home" {
-		t.Errorf("Project = %v, want home", got.Project)
+	if tags, err := s.TagsForTask(ctx, created.ID); err != nil || len(tags) != 1 || tags[0] != "home" {
+		t.Errorf("TagsForTask = %v (err %v), want [home]", tags, err)
 	}
 	if got.Due == nil || *got.Due != "2026-12-01" {
 		t.Errorf("Due = %v, want 2026-12-01", got.Due)
@@ -225,16 +227,19 @@ func TestTriageMutators(t *testing.T) {
 		t.Error("CompletedAt should clear when leaving done")
 	}
 
-	// Clearing project/due with nil.
-	if err := s.SetProject(ctx, created.ID, nil); err != nil {
-		t.Fatalf("SetProject(nil): %v", err)
+	// Clearing tags with an empty list, due with nil.
+	if err := s.SetTags(ctx, created.ID, nil); err != nil {
+		t.Fatalf("SetTags(nil): %v", err)
 	}
 	if err := s.SetDue(ctx, created.ID, nil); err != nil {
 		t.Fatalf("SetDue(nil): %v", err)
 	}
 	got, _ = s.GetTask(ctx, created.ID)
-	if got.Project != nil || got.Due != nil {
-		t.Errorf("Project/Due not cleared: %v %v", got.Project, got.Due)
+	if got.Due != nil {
+		t.Errorf("Due not cleared: %v", got.Due)
+	}
+	if tags, _ := s.TagsForTask(ctx, created.ID); len(tags) != 0 {
+		t.Errorf("tags not cleared: %v", tags)
 	}
 }
 
@@ -331,7 +336,7 @@ func TestListLiveOrdersByPriorityWithinState(t *testing.T) {
 		}
 	}
 
-	got, err := s.ListLive(ctx)
+	got, err := s.ListLive(ctx, nil)
 	if err != nil {
 		t.Fatalf("ListLive: %v", err)
 	}
@@ -413,7 +418,7 @@ func TestCountInbox(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
-	if n, err := s.CountInbox(ctx); err != nil || n != 0 {
+	if n, err := s.CountInbox(ctx, nil); err != nil || n != 0 {
 		t.Fatalf("CountInbox on empty store = %d, %v; want 0, nil", n, err)
 	}
 	captured, err := s.AddTask(ctx, "one")
@@ -427,7 +432,7 @@ func TestCountInbox(t *testing.T) {
 		t.Fatalf("SetState: %v", err)
 	}
 
-	if n, err := s.CountInbox(ctx); err != nil || n != 1 {
+	if n, err := s.CountInbox(ctx, nil); err != nil || n != 1 {
 		t.Errorf("CountInbox = %d, %v; want 1, nil", n, err)
 	}
 }
@@ -455,7 +460,7 @@ func TestOpenIsIdempotent(t *testing.T) {
 		t.Fatalf("second Open: %v", err)
 	}
 	defer s2.Close()
-	got, err := s2.ListLive(ctx)
+	got, err := s2.ListLive(ctx, nil)
 	if err != nil {
 		t.Fatalf("ListLive: %v", err)
 	}
@@ -520,8 +525,8 @@ func TestEventTriggers(t *testing.T) {
 	}
 
 	// Metadata changes are deliberately not logged.
-	if err := s.SetProject(ctx, created.ID, ptr("work")); err != nil {
-		t.Fatalf("SetProject: %v", err)
+	if err := s.SetTags(ctx, created.ID, []string{"work"}); err != nil {
+		t.Fatalf("SetTags: %v", err)
 	}
 	if err := s.SetPriority(ctx, created.ID, ptrInt64(1)); err != nil {
 		t.Fatalf("SetPriority: %v", err)

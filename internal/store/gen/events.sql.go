@@ -7,7 +7,36 @@ package gen
 
 import (
 	"context"
+	"database/sql"
 )
+
+const createTaskEvent = `-- name: CreateTaskEvent :exec
+INSERT INTO task_events (task_id, task_title, kind, old_value, new_value)
+VALUES (?, ?, ?, ?, ?)
+`
+
+type CreateTaskEventParams struct {
+	TaskID    int64
+	TaskTitle string
+	Kind      string
+	OldValue  sql.NullString
+	NewValue  sql.NullString
+}
+
+// The one event the store writes itself rather than leaving to a trigger.
+// A project move applies to a whole sub-tree, so a per-row trigger would
+// log one entry per descendant; only the task the user acted on belongs
+// in the log.
+func (q *Queries) CreateTaskEvent(ctx context.Context, arg CreateTaskEventParams) error {
+	_, err := q.db.ExecContext(ctx, createTaskEvent,
+		arg.TaskID,
+		arg.TaskTitle,
+		arg.Kind,
+		arg.OldValue,
+		arg.NewValue,
+	)
+	return err
+}
 
 const listEventsBetween = `-- name: ListEventsBetween :many
 SELECT id, task_id, task_title, kind, old_value, new_value, created_at

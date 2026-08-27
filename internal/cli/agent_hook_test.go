@@ -24,7 +24,7 @@ func TestRunAgentHookRecordsStatus(t *testing.T) {
 		{"SessionEnd", task.SessionEnded},
 	}
 	for _, c := range cases {
-		f := &fakeStore{}
+		f := newFakeStore()
 		payload := `{"session_id":"ext-1","hook_event_name":"` + c.event + `","cwd":"/tmp/work"}`
 		if err := runAgentHook(context.Background(), hookOpener(f), c.event, strings.NewReader(payload)); err != nil {
 			t.Fatalf("runAgentHook(%s): %v", c.event, err)
@@ -39,7 +39,7 @@ func TestRunAgentHookRecordsStatus(t *testing.T) {
 // of this contract, and argv is the explicit statement of which hook
 // fired.
 func TestRunAgentHookUsesArgvEventNotPayload(t *testing.T) {
-	f := &fakeStore{}
+	f := newFakeStore()
 	payload := `{"session_id":"ext-1","hook_event_name":"Notification"}`
 	if err := runAgentHook(context.Background(), hookOpener(f), "Stop", strings.NewReader(payload)); err != nil {
 		t.Fatalf("runAgentHook: %v", err)
@@ -50,7 +50,7 @@ func TestRunAgentHookUsesArgvEventNotPayload(t *testing.T) {
 }
 
 func TestRunAgentHookRejectsUnsubscribedEvent(t *testing.T) {
-	f := &fakeStore{}
+	f := newFakeStore()
 	err := runAgentHook(context.Background(), hookOpener(f), "PreToolUse",
 		strings.NewReader(`{"session_id":"ext-1"}`))
 	if err == nil {
@@ -67,7 +67,7 @@ func TestRunAgentHookDoesNotOpenStoreOnBadInput(t *testing.T) {
 	opened := false
 	open := func(context.Context) (Store, error) {
 		opened = true
-		return &fakeStore{}, nil
+		return newFakeStore(), nil
 	}
 	if err := runAgentHook(context.Background(), open, "Stop", strings.NewReader("not json")); err == nil {
 		t.Fatal("runAgentHook accepted non-JSON")
@@ -83,7 +83,7 @@ func TestRunAgentHookDoesNotOpenStoreOnBadInput(t *testing.T) {
 // A hook must never wedge a session. Whatever runAgentHook reports, the
 // command itself succeeds — the failure goes to stderr and nowhere else.
 func TestAgentHookCommandAlwaysSucceeds(t *testing.T) {
-	f := &fakeStore{statusErr: errors.New("database is locked")}
+	f := func() *fakeStore { f := newFakeStore(); f.statusErr = errors.New("database is locked"); return f }()
 	cmd := newAgentHookCmd(hookOpener(f))
 	var stderr strings.Builder
 	cmd.SetErr(&stderr)
@@ -100,7 +100,7 @@ func TestAgentHookCommandAlwaysSucceeds(t *testing.T) {
 }
 
 func TestAgentHookCommandIsHidden(t *testing.T) {
-	if !newAgentHookCmd(hookOpener(&fakeStore{})).Hidden {
+	if !newAgentHookCmd(hookOpener(newFakeStore())).Hidden {
 		t.Error("agent-hook is not hidden; it's plumbing, not a user-facing command")
 	}
 }

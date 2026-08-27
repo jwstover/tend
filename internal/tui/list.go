@@ -20,13 +20,14 @@ type listItem struct {
 	t           task.Task
 	done, total int64
 	expanded    bool
+	tags        []string // carried on the item so `/` can match tag text
 }
 
 // FilterValue feeds the list's built-in `/` filtering.
 func (i listItem) FilterValue() string {
 	v := i.t.Title
-	if i.t.Project != nil {
-		v += " " + *i.t.Project
+	for _, tag := range i.tags {
+		v += " " + tag
 	}
 	return v
 }
@@ -85,7 +86,7 @@ var stateOrder = []task.State{
 // Expanded branches slide their (cached) children in below the parent,
 // recursively; collapsed children surface only as the N/M count.
 func toGroupedItems(tasks []task.Task, counts map[int64]task.ChildCount,
-	expanded map[int64]bool, children map[int64][]task.Task) []list.Item {
+	expanded map[int64]bool, children map[int64][]task.Task, tags map[int64][]string) []list.Item {
 	groups := make(map[task.State][]task.Task)
 	for _, t := range tasks {
 		if t.ParentID != nil {
@@ -104,7 +105,7 @@ func toGroupedItems(tasks []task.Task, counts map[int64]task.ChildCount,
 		}
 		items = append(items, sectionItem{state: s, count: len(group)})
 		for _, t := range group {
-			items = appendTaskRows(items, t, counts, expanded, children)
+			items = appendTaskRows(items, t, counts, expanded, children, tags)
 		}
 		delete(groups, s)
 	}
@@ -115,7 +116,7 @@ func toGroupedItems(tasks []task.Task, counts map[int64]task.ChildCount,
 			continue
 		}
 		if _, leftover := groups[t.State]; leftover {
-			items = appendTaskRows(items, t, counts, expanded, children)
+			items = appendTaskRows(items, t, counts, expanded, children, tags)
 		}
 	}
 	return items
@@ -124,11 +125,11 @@ func toGroupedItems(tasks []task.Task, counts map[int64]task.ChildCount,
 // appendTaskRows emits a top-level task row plus, when expanded, its
 // child rows.
 func appendTaskRows(items []list.Item, t task.Task, counts map[int64]task.ChildCount,
-	expanded map[int64]bool, children map[int64][]task.Task) []list.Item {
+	expanded map[int64]bool, children map[int64][]task.Task, tags map[int64][]string) []list.Item {
 	c := counts[t.ID]
 	_, loaded := children[t.ID]
 	items = append(items, listItem{
-		t: t, done: c.Done, total: c.Total,
+		t: t, done: c.Done, total: c.Total, tags: tags[t.ID],
 		// The caret reflects what's actually showing: a branch awaiting
 		// its first children load still reads closed.
 		expanded: expanded[t.ID] && c.Total > 0 && loaded,
@@ -201,6 +202,10 @@ type taskDelegate struct {
 	// the row marker (docs/agent-sessions-plan.md 8.4). Nil is a normal
 	// state, not an error: it just means no row carries a marker.
 	sessions map[int64]task.SessionStatus
+	// tags is every task's tags by id, for the #tag meta column. Like
+	// sessions it rides on the delegate rather than the item: it is purely
+	// visual, so only the renderer needs it.
+	tags map[int64][]string
 }
 
 // sessionCell renders the agent-session marker for a task row: a
@@ -329,7 +334,7 @@ func (d taskDelegate) renderRow(it listItem, selected bool, width int) string {
 	// alignment holds across rows.
 	var meta []seg
 	if width >= compactMetaWidth {
-		meta = append(meta, d.projectCell(t.Project, 10))
+		meta = append(meta, d.tagsCell(d.tags[t.ID], tagsCellWidth))
 		meta = append(meta, seg{" ", s.Normal})
 		meta = append(meta, d.dueCell(t.Due, 7))
 		meta = append(meta, seg{" ", s.Normal})
@@ -459,12 +464,51 @@ func (d taskDelegate) priCell(p *int64) seg {
 	return seg{d.styles.Glyphs.Flag + letter, d.styles.Priority[*p]}
 }
 
-// projectCell is the 10-col `#name` column, tail-ellipsis.
-func (d taskDelegate) projectCell(project *string, w int) seg {
-	if project == nil {
+// tagsCellWidth is the fixed width of the `#a #b` meta column. Twelve
+// rather than the ten the single-value project column used: it is the
+// narrowest that still fits a realistic tag beside an overflow counter
+// ("#support +2") without chopping into the tag itself.
+const tagsCellWidth = 12
+
+// tagsCell is the fixed-width `#a #b` column. Fixed so the meta columns
+// stay aligned down the list; the detail pane is where the complete tag
+// list is always readable.
+func (d taskDelegate) tagsCell(tags []string, w int) seg {
+	if len(tags) == 0 {
 		return seg{strings.Repeat(" ", w), d.styles.Normal}
 	}
-	return seg{padRight(truncTail("#"+*project, w, d.styles.Glyphs.Ellipsis), w), d.styles.Project}
+	return seg{padRight(fitTags(tags, w, d.styles.Glyphs.Ellipsis), w), d.styles.Tag}
+}
+
+// fitTags renders as many whole tags as fit in w and collapses the rest
+// into a `+N` counter.
+//
+// The counter is the point: truncating the joined list instead turns
+// three tags into "#customer...", which loses both which tags a task
+// carries and that there is more than one. "#support +2" keeps one tag
+// legible and is honest about the remainder.
+func fitTags(tags []string, w int, ell string) string {
+	hashed := make([]string, len(tags))
+	for i, t := range tags {
+		hashed[i] = "#" + t
+	}
+	if full := strings.Join(hashed, " "); runeWidth(full) <= w {
+		return full
+	}
+	// Drop tags from the right until the survivors plus the counter fit.
+	for k := len(hashed) - 1; k >= 1; k-- {
+		candidate := fmt.Sprintf("%s +%d", strings.Join(hashed[:k], " "), len(hashed)-k)
+		if runeWidth(candidate) <= w {
+			return candidate
+		}
+	}
+	// Not even one whole tag plus the counter fits: keep the counter and
+	// truncate the first tag, so the row still reports how many there are.
+	suffix := ""
+	if len(hashed) > 1 {
+		suffix = fmt.Sprintf(" +%d", len(hashed)-1)
+	}
+	return truncTail(hashed[0], max(w-runeWidth(suffix), 1), ell) + suffix
 }
 
 // dueCell is the right-aligned due column, colored by urgency.

@@ -8,33 +8,40 @@ package gen
 import (
 	"context"
 	"database/sql"
+	"strings"
 )
 
 const countInboxTasks = `-- name: CountInboxTasks :one
 SELECT COUNT(*)
-FROM tasks
-WHERE state = 'inbox'
-  AND parent_id IS NULL
+FROM tasks t
+WHERE t.state = 'inbox'
+  AND t.parent_id IS NULL
+  AND (?1 IS NULL OR t.project_id = ?1)
 `
 
-func (q *Queries) CountInboxTasks(ctx context.Context) (int64, error) {
-	row := q.db.QueryRowContext(ctx, countInboxTasks)
+func (q *Queries) CountInboxTasks(ctx context.Context, projectID interface{}) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countInboxTasks, projectID)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
 }
 
 const createChildTask = `-- name: CreateChildTask :one
-INSERT INTO tasks (title, parent_id)
-VALUES (?, ?)
-RETURNING id, title, body_md, state, parent_id, project, priority, due, snooze_until, created_at, updated_at, completed_at
+INSERT INTO tasks (title, parent_id, project_id)
+SELECT ?1, p.id, p.project_id
+FROM tasks p
+WHERE p.id = ?2
+RETURNING id, title, body_md, state, parent_id, priority, due, snooze_until, created_at, updated_at, completed_at, project_id
 `
 
 type CreateChildTaskParams struct {
 	Title    string
-	ParentID sql.NullInt64
+	ParentID int64
 }
 
+// The child's project is read off the parent rather than passed in: a
+// sub-task sitting in a different project from its parent is incoherent,
+// and doing it in one statement keeps AddChild a single round trip.
 func (q *Queries) CreateChildTask(ctx context.Context, arg CreateChildTaskParams) (Task, error) {
 	row := q.db.QueryRowContext(ctx, createChildTask, arg.Title, arg.ParentID)
 	var i Task
@@ -44,25 +51,30 @@ func (q *Queries) CreateChildTask(ctx context.Context, arg CreateChildTaskParams
 		&i.BodyMd,
 		&i.State,
 		&i.ParentID,
-		&i.Project,
 		&i.Priority,
 		&i.Due,
 		&i.SnoozeUntil,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.CompletedAt,
+		&i.ProjectID,
 	)
 	return i, err
 }
 
 const createTask = `-- name: CreateTask :one
-INSERT INTO tasks (title)
-VALUES (?)
-RETURNING id, title, body_md, state, parent_id, project, priority, due, snooze_until, created_at, updated_at, completed_at
+INSERT INTO tasks (title, project_id)
+VALUES (?, ?)
+RETURNING id, title, body_md, state, parent_id, priority, due, snooze_until, created_at, updated_at, completed_at, project_id
 `
 
-func (q *Queries) CreateTask(ctx context.Context, title string) (Task, error) {
-	row := q.db.QueryRowContext(ctx, createTask, title)
+type CreateTaskParams struct {
+	Title     string
+	ProjectID int64
+}
+
+func (q *Queries) CreateTask(ctx context.Context, arg CreateTaskParams) (Task, error) {
+	row := q.db.QueryRowContext(ctx, createTask, arg.Title, arg.ProjectID)
 	var i Task
 	err := row.Scan(
 		&i.ID,
@@ -70,30 +82,31 @@ func (q *Queries) CreateTask(ctx context.Context, title string) (Task, error) {
 		&i.BodyMd,
 		&i.State,
 		&i.ParentID,
-		&i.Project,
 		&i.Priority,
 		&i.Due,
 		&i.SnoozeUntil,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.CompletedAt,
+		&i.ProjectID,
 	)
 	return i, err
 }
 
 const createTaskWithBody = `-- name: CreateTaskWithBody :one
-INSERT INTO tasks (title, body_md)
-VALUES (?, ?)
-RETURNING id, title, body_md, state, parent_id, project, priority, due, snooze_until, created_at, updated_at, completed_at
+INSERT INTO tasks (title, body_md, project_id)
+VALUES (?, ?, ?)
+RETURNING id, title, body_md, state, parent_id, priority, due, snooze_until, created_at, updated_at, completed_at, project_id
 `
 
 type CreateTaskWithBodyParams struct {
-	Title  string
-	BodyMd string
+	Title     string
+	BodyMd    string
+	ProjectID int64
 }
 
 func (q *Queries) CreateTaskWithBody(ctx context.Context, arg CreateTaskWithBodyParams) (Task, error) {
-	row := q.db.QueryRowContext(ctx, createTaskWithBody, arg.Title, arg.BodyMd)
+	row := q.db.QueryRowContext(ctx, createTaskWithBody, arg.Title, arg.BodyMd, arg.ProjectID)
 	var i Task
 	err := row.Scan(
 		&i.ID,
@@ -101,13 +114,13 @@ func (q *Queries) CreateTaskWithBody(ctx context.Context, arg CreateTaskWithBody
 		&i.BodyMd,
 		&i.State,
 		&i.ParentID,
-		&i.Project,
 		&i.Priority,
 		&i.Due,
 		&i.SnoozeUntil,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.CompletedAt,
+		&i.ProjectID,
 	)
 	return i, err
 }
@@ -123,7 +136,7 @@ func (q *Queries) DeleteTask(ctx context.Context, id int64) error {
 }
 
 const getTask = `-- name: GetTask :one
-SELECT id, title, body_md, state, parent_id, project, priority, due, snooze_until, created_at, updated_at, completed_at
+SELECT id, title, body_md, state, parent_id, priority, due, snooze_until, created_at, updated_at, completed_at, project_id
 FROM tasks
 WHERE id = ?
 `
@@ -137,13 +150,13 @@ func (q *Queries) GetTask(ctx context.Context, id int64) (Task, error) {
 		&i.BodyMd,
 		&i.State,
 		&i.ParentID,
-		&i.Project,
 		&i.Priority,
 		&i.Due,
 		&i.SnoozeUntil,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.CompletedAt,
+		&i.ProjectID,
 	)
 	return i, err
 }
@@ -186,8 +199,38 @@ func (q *Queries) ListChildCounts(ctx context.Context) ([]ListChildCountsRow, er
 	return items, nil
 }
 
+const listChildIDs = `-- name: ListChildIDs :many
+SELECT id
+FROM tasks
+WHERE parent_id = ?
+`
+
+// One level of the sub-tree walk that stands in for the recursive CTE.
+func (q *Queries) ListChildIDs(ctx context.Context, parentID sql.NullInt64) ([]int64, error) {
+	rows, err := q.db.QueryContext(ctx, listChildIDs, parentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []int64{}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listChildTasks = `-- name: ListChildTasks :many
-SELECT id, title, body_md, state, parent_id, project, priority, due, snooze_until, created_at, updated_at, completed_at
+SELECT id, title, body_md, state, parent_id, priority, due, snooze_until, created_at, updated_at, completed_at, project_id
 FROM tasks
 WHERE parent_id = ?
 ORDER BY id
@@ -208,13 +251,13 @@ func (q *Queries) ListChildTasks(ctx context.Context, parentID sql.NullInt64) ([
 			&i.BodyMd,
 			&i.State,
 			&i.ParentID,
-			&i.Project,
 			&i.Priority,
 			&i.Due,
 			&i.SnoozeUntil,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.CompletedAt,
+			&i.ProjectID,
 		); err != nil {
 			return nil, err
 		}
@@ -230,15 +273,16 @@ func (q *Queries) ListChildTasks(ctx context.Context, parentID sql.NullInt64) ([
 }
 
 const listInboxTasks = `-- name: ListInboxTasks :many
-SELECT id, title, body_md, state, parent_id, project, priority, due, snooze_until, created_at, updated_at, completed_at
-FROM tasks
-WHERE state = 'inbox'
-  AND parent_id IS NULL
-ORDER BY id
+SELECT t.id, t.title, t.body_md, t.state, t.parent_id, t.priority, t.due, t.snooze_until, t.created_at, t.updated_at, t.completed_at, t.project_id
+FROM tasks t
+WHERE t.state = 'inbox'
+  AND t.parent_id IS NULL
+  AND (?1 IS NULL OR t.project_id = ?1)
+ORDER BY t.id
 `
 
-func (q *Queries) ListInboxTasks(ctx context.Context) ([]Task, error) {
-	rows, err := q.db.QueryContext(ctx, listInboxTasks)
+func (q *Queries) ListInboxTasks(ctx context.Context, projectID interface{}) ([]Task, error) {
+	rows, err := q.db.QueryContext(ctx, listInboxTasks, projectID)
 	if err != nil {
 		return nil, err
 	}
@@ -252,13 +296,13 @@ func (q *Queries) ListInboxTasks(ctx context.Context) ([]Task, error) {
 			&i.BodyMd,
 			&i.State,
 			&i.ParentID,
-			&i.Project,
 			&i.Priority,
 			&i.Due,
 			&i.SnoozeUntil,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.CompletedAt,
+			&i.ProjectID,
 		); err != nil {
 			return nil, err
 		}
@@ -274,17 +318,18 @@ func (q *Queries) ListInboxTasks(ctx context.Context) ([]Task, error) {
 }
 
 const listLiveTasks = `-- name: ListLiveTasks :many
-SELECT t.id, t.title, t.body_md, t.state, t.parent_id, t.project, t.priority, t.due, t.snooze_until, t.created_at, t.updated_at, t.completed_at
+SELECT t.id, t.title, t.body_md, t.state, t.parent_id, t.priority, t.due, t.snooze_until, t.created_at, t.updated_at, t.completed_at, t.project_id
 FROM tasks t
 JOIN states s ON s.name = t.state
 WHERE s.is_terminal = 0
   AND s.hidden_by_default = 0
   AND (t.snooze_until IS NULL OR t.snooze_until <= date('now'))
+  AND (?1 IS NULL OR t.project_id = ?1)
 ORDER BY s.sort_order, t.priority IS NULL, t.priority, t.id
 `
 
-func (q *Queries) ListLiveTasks(ctx context.Context) ([]Task, error) {
-	rows, err := q.db.QueryContext(ctx, listLiveTasks)
+func (q *Queries) ListLiveTasks(ctx context.Context, projectID interface{}) ([]Task, error) {
+	rows, err := q.db.QueryContext(ctx, listLiveTasks, projectID)
 	if err != nil {
 		return nil, err
 	}
@@ -298,13 +343,13 @@ func (q *Queries) ListLiveTasks(ctx context.Context) ([]Task, error) {
 			&i.BodyMd,
 			&i.State,
 			&i.ParentID,
-			&i.Project,
 			&i.Priority,
 			&i.Due,
 			&i.SnoozeUntil,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.CompletedAt,
+			&i.ProjectID,
 		); err != nil {
 			return nil, err
 		}
@@ -320,19 +365,20 @@ func (q *Queries) ListLiveTasks(ctx context.Context) ([]Task, error) {
 }
 
 const listLiveWithCompletedTasks = `-- name: ListLiveWithCompletedTasks :many
-SELECT t.id, t.title, t.body_md, t.state, t.parent_id, t.project, t.priority, t.due, t.snooze_until, t.created_at, t.updated_at, t.completed_at
+SELECT t.id, t.title, t.body_md, t.state, t.parent_id, t.priority, t.due, t.snooze_until, t.created_at, t.updated_at, t.completed_at, t.project_id
 FROM tasks t
 JOIN states s ON s.name = t.state
 WHERE (s.is_terminal = 0 OR t.state = 'done')
   AND s.hidden_by_default = 0
   AND (t.snooze_until IS NULL OR t.snooze_until <= date('now'))
+  AND (?1 IS NULL OR t.project_id = ?1)
 ORDER BY s.sort_order, t.priority IS NULL, t.priority, t.id
 `
 
 // Like ListLiveTasks but also surfaces completed (done) tasks, for when the
 // list view has the completed section toggled on.
-func (q *Queries) ListLiveWithCompletedTasks(ctx context.Context) ([]Task, error) {
-	rows, err := q.db.QueryContext(ctx, listLiveWithCompletedTasks)
+func (q *Queries) ListLiveWithCompletedTasks(ctx context.Context, projectID interface{}) ([]Task, error) {
+	rows, err := q.db.QueryContext(ctx, listLiveWithCompletedTasks, projectID)
 	if err != nil {
 		return nil, err
 	}
@@ -346,13 +392,13 @@ func (q *Queries) ListLiveWithCompletedTasks(ctx context.Context) ([]Task, error
 			&i.BodyMd,
 			&i.State,
 			&i.ParentID,
-			&i.Project,
 			&i.Priority,
 			&i.Due,
 			&i.SnoozeUntil,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.CompletedAt,
+			&i.ProjectID,
 		); err != nil {
 			return nil, err
 		}
@@ -418,24 +464,9 @@ func (q *Queries) SetTaskPriority(ctx context.Context, arg SetTaskPriorityParams
 	return err
 }
 
-const setTaskProject = `-- name: SetTaskProject :exec
-UPDATE tasks
-SET project    = ?,
-    updated_at = datetime('now')
-WHERE id = ?
-`
-
-type SetTaskProjectParams struct {
-	Project sql.NullString
-	ID      int64
-}
-
-func (q *Queries) SetTaskProject(ctx context.Context, arg SetTaskProjectParams) error {
-	_, err := q.db.ExecContext(ctx, setTaskProject, arg.Project, arg.ID)
-	return err
-}
-
 const setTaskState = `-- name: SetTaskState :exec
+;
+
 UPDATE tasks
 SET state        = ?1,
     completed_at = CASE WHEN ?1 = 'done' THEN datetime('now') ELSE NULL END,
@@ -467,5 +498,39 @@ type SetTaskTitleParams struct {
 
 func (q *Queries) SetTaskTitle(ctx context.Context, arg SetTaskTitleParams) error {
 	_, err := q.db.ExecContext(ctx, setTaskTitle, arg.Title, arg.ID)
+	return err
+}
+
+const setTasksProject = `-- name: SetTasksProject :exec
+UPDATE tasks
+SET project_id = ?1,
+    updated_at = datetime('now')
+WHERE id IN (/*SLICE:ids*/?)
+`
+
+type SetTasksProjectParams struct {
+	ProjectID int64
+	Ids       []int64
+}
+
+// Moving a task moves its whole sub-tree: a child sitting in a different
+// project from its parent is incoherent. The descendant ids are collected
+// in Go (see Store.SetProject) rather than by a recursive CTE, because
+// sqlc v1.31.1 cannot parse WITH RECURSIVE at all -- neither feeding an
+// UPDATE ("relation \"tree\" does not exist") nor a plain SELECT
+// ("*ast.ResTarget has nil name").
+func (q *Queries) SetTasksProject(ctx context.Context, arg SetTasksProjectParams) error {
+	query := setTasksProject
+	var queryParams []interface{}
+	queryParams = append(queryParams, arg.ProjectID)
+	if len(arg.Ids) > 0 {
+		for _, v := range arg.Ids {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:ids*/?", strings.Repeat(",?", len(arg.Ids))[1:], 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:ids*/?", "NULL", 1)
+	}
+	_, err := q.db.ExecContext(ctx, query, queryParams...)
 	return err
 }

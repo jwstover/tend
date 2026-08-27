@@ -81,14 +81,27 @@ func migrate(ctx context.Context, db *sql.DB) error {
 	return nil
 }
 
-// AddTask captures a task: a bare title, everything else defaulted by the
-// schema (state inbox, empty body).
+// AddTask captures a task into the default project: a bare title,
+// everything else defaulted by the schema (state inbox, empty body).
+//
+// Deliberately not "the active project". A capture with no project named
+// lands somewhere fixed and predictable, so `tend add` from any shell
+// behaves the same way every time; callers that know where a task belongs
+// (the TUI, `tend add -p`) say so through AddTaskIn. This is the same
+// principle as AGENTS.md §2 -- capture requires nothing and organization
+// is a later, separate act -- applied to the project as well as the state.
 func (s *Store) AddTask(ctx context.Context, title string) (task.Task, error) {
+	return s.AddTaskIn(ctx, task.DefaultProjectID, title)
+}
+
+// AddTaskIn captures a task into a named project, for `tend add -p` and
+// the TUI's quick-add against the selected project.
+func (s *Store) AddTaskIn(ctx context.Context, projectID int64, title string) (task.Task, error) {
 	t, err := task.NormalizeTitle(title)
 	if err != nil {
 		return task.Task{}, err
 	}
-	row, err := s.q.CreateTask(ctx, t)
+	row, err := s.q.CreateTask(ctx, gen.CreateTaskParams{Title: t, ProjectID: projectID})
 	if err != nil {
 		return task.Task{}, fmt.Errorf("inserting task: %w", err)
 	}
@@ -99,11 +112,18 @@ func (s *Store) AddTask(ctx context.Context, title string) (task.Task, error) {
 // attached (e.g. an imported Jira ticket): title plus a markdown body,
 // everything else defaulted by the schema.
 func (s *Store) AddTaskWithBody(ctx context.Context, title, body string) (task.Task, error) {
+	return s.AddTaskWithBodyIn(ctx, task.DefaultProjectID, title, body)
+}
+
+// AddTaskWithBodyIn is AddTaskWithBody against an explicit project.
+func (s *Store) AddTaskWithBodyIn(ctx context.Context, projectID int64, title, body string) (task.Task, error) {
 	t, err := task.NormalizeTitle(title)
 	if err != nil {
 		return task.Task{}, err
 	}
-	row, err := s.q.CreateTaskWithBody(ctx, gen.CreateTaskWithBodyParams{Title: t, BodyMd: body})
+	row, err := s.q.CreateTaskWithBody(ctx, gen.CreateTaskWithBodyParams{
+		Title: t, BodyMd: body, ProjectID: projectID,
+	})
 	if err != nil {
 		return task.Task{}, fmt.Errorf("inserting task: %w", err)
 	}
@@ -111,9 +131,10 @@ func (s *Store) AddTaskWithBody(ctx context.Context, title, body string) (task.T
 }
 
 // ListLive returns the live view: non-terminal, non-hidden states, and
-// not snoozed into the future.
-func (s *Store) ListLive(ctx context.Context) ([]task.Task, error) {
-	rows, err := s.q.ListLiveTasks(ctx)
+// not snoozed into the future. A nil projectID means every project (the
+// projects column's All row); otherwise the view is scoped to that one.
+func (s *Store) ListLive(ctx context.Context, projectID *int64) ([]task.Task, error) {
+	rows, err := s.q.ListLiveTasks(ctx, projectFilter(projectID))
 	if err != nil {
 		return nil, fmt.Errorf("listing live tasks: %w", err)
 	}
@@ -122,8 +143,8 @@ func (s *Store) ListLive(ctx context.Context) ([]task.Task, error) {
 
 // ListLiveWithCompleted is ListLive plus the completed (done) tasks, for
 // when the list view has the completed section toggled on.
-func (s *Store) ListLiveWithCompleted(ctx context.Context) ([]task.Task, error) {
-	rows, err := s.q.ListLiveWithCompletedTasks(ctx)
+func (s *Store) ListLiveWithCompleted(ctx context.Context, projectID *int64) ([]task.Task, error) {
+	rows, err := s.q.ListLiveWithCompletedTasks(ctx, projectFilter(projectID))
 	if err != nil {
 		return nil, fmt.Errorf("listing live tasks with completed: %w", err)
 	}
@@ -136,9 +157,11 @@ func (s *Store) AddChild(ctx context.Context, parentID int64, title string) (tas
 	if err != nil {
 		return task.Task{}, err
 	}
+	// The child's project_id is copied off the parent by the query
+	// itself, so a sub-task can never sit in a different project.
 	row, err := s.q.CreateChildTask(ctx, gen.CreateChildTaskParams{
 		Title:    t,
-		ParentID: sql.NullInt64{Int64: parentID, Valid: true},
+		ParentID: parentID,
 	})
 	if err != nil {
 		return task.Task{}, fmt.Errorf("inserting sub-task of %d: %w", parentID, err)
@@ -148,8 +171,8 @@ func (s *Store) AddChild(ctx context.Context, parentID int64, title string) (tas
 
 // ListInbox returns every task still in the inbox state, oldest first.
 // This feeds the triage view.
-func (s *Store) ListInbox(ctx context.Context) ([]task.Task, error) {
-	rows, err := s.q.ListInboxTasks(ctx)
+func (s *Store) ListInbox(ctx context.Context, projectID *int64) ([]task.Task, error) {
+	rows, err := s.q.ListInboxTasks(ctx, projectFilter(projectID))
 	if err != nil {
 		return nil, fmt.Errorf("listing inbox tasks: %w", err)
 	}
@@ -205,8 +228,8 @@ func (s *Store) SessionStatuses(ctx context.Context) (map[int64]task.SessionStat
 }
 
 // CountInbox returns the number of tasks awaiting triage.
-func (s *Store) CountInbox(ctx context.Context) (int64, error) {
-	n, err := s.q.CountInboxTasks(ctx)
+func (s *Store) CountInbox(ctx context.Context, projectID *int64) (int64, error) {
+	n, err := s.q.CountInboxTasks(ctx, projectFilter(projectID))
 	if err != nil {
 		return 0, fmt.Errorf("counting inbox tasks: %w", err)
 	}
@@ -226,16 +249,87 @@ func (s *Store) SetState(ctx context.Context, id int64, st task.State) error {
 	return nil
 }
 
-// SetProject assigns a project to a task; nil clears it.
-func (s *Store) SetProject(ctx context.Context, id int64, project *string) error {
-	err := s.q.SetTaskProject(ctx, gen.SetTaskProjectParams{
-		Project: toNullString(project),
-		ID:      id,
+// SetProject moves a task, and its whole sub-tree, into a project. The
+// sub-tree goes along because a child sitting in a different project from
+// its parent is incoherent.
+func (s *Store) SetProject(ctx context.Context, taskID, projectID int64) error {
+	return s.inTx(ctx, func(q *gen.Queries) error {
+		before, err := q.GetTask(ctx, taskID)
+		if err != nil {
+			return fmt.Errorf("loading task %d: %w", taskID, err)
+		}
+		// A move to where the task already is writes nothing and logs
+		// nothing, mirroring the state trigger's OLD <> NEW guard.
+		if before.ProjectID == projectID {
+			return nil
+		}
+
+		ids, err := subtreeIDs(ctx, q, taskID)
+		if err != nil {
+			return err
+		}
+		if err := q.SetTasksProject(ctx, gen.SetTasksProjectParams{
+			ProjectID: projectID,
+			Ids:       ids,
+		}); err != nil {
+			return fmt.Errorf("moving task %d to project %d: %w", taskID, projectID, err)
+		}
+
+		// Written here rather than by a trigger: the sub-tree moved with
+		// the task, and a per-row trigger would log one event per
+		// descendant for a single user action. Project *names* are
+		// snapshotted, the way task_events snapshots task_title, so the
+		// log survives a project being renamed or deleted.
+		from, err := projectName(ctx, q, before.ProjectID)
+		if err != nil {
+			return err
+		}
+		to, err := projectName(ctx, q, projectID)
+		if err != nil {
+			return err
+		}
+		if err := q.CreateTaskEvent(ctx, gen.CreateTaskEventParams{
+			TaskID:    taskID,
+			TaskTitle: before.Title,
+			Kind:      string(task.EventProject),
+			OldValue:  sql.NullString{String: from, Valid: true},
+			NewValue:  sql.NullString{String: to, Valid: true},
+		}); err != nil {
+			return fmt.Errorf("logging the move of task %d: %w", taskID, err)
+		}
+		return nil
 	})
+}
+
+func projectName(ctx context.Context, q *gen.Queries, id int64) (string, error) {
+	p, err := q.GetProject(ctx, id)
 	if err != nil {
-		return fmt.Errorf("setting task %d project: %w", id, err)
+		return "", fmt.Errorf("loading project %d: %w", id, err)
 	}
-	return nil
+	return p.Name, nil
+}
+
+// subtreeIDs collects a task and every descendant, breadth-first. It
+// stands in for the recursive CTE sqlc v1.31.1 cannot parse (see
+// queries/tasks.sql). The seen set is a cheap guard: parent_id cannot
+// cycle in practice, but this walks database rows, and a cycle would
+// otherwise loop forever.
+func subtreeIDs(ctx context.Context, q *gen.Queries, root int64) ([]int64, error) {
+	ids := []int64{root}
+	seen := map[int64]bool{root: true}
+	for i := 0; i < len(ids); i++ {
+		kids, err := q.ListChildIDs(ctx, sql.NullInt64{Int64: ids[i], Valid: true})
+		if err != nil {
+			return nil, fmt.Errorf("listing children of task %d: %w", ids[i], err)
+		}
+		for _, k := range kids {
+			if !seen[k] {
+				seen[k] = true
+				ids = append(ids, k)
+			}
+		}
+	}
+	return ids, nil
 }
 
 // SetPriority assigns a priority (1 = highest .. 4) to a task; nil clears it.
@@ -565,7 +659,7 @@ func toDomain(row gen.Task) (task.Task, error) {
 		BodyMD:      row.BodyMd,
 		State:       task.State(row.State),
 		ParentID:    nullInt64(row.ParentID),
-		Project:     nullString(row.Project),
+		ProjectID:   row.ProjectID,
 		Priority:    nullInt64(row.Priority),
 		Due:         nullString(row.Due),
 		SnoozeUntil: nullString(row.SnoozeUntil),
