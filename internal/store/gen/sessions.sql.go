@@ -228,6 +228,32 @@ func (q *Queries) ListSessionsWithTmux(ctx context.Context) ([]AgentSession, err
 	return items, nil
 }
 
+const setSessionEndedIfUnchanged = `-- name: SetSessionEndedIfUnchanged :execrows
+UPDATE agent_sessions
+SET status = 'ended', status_updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now')
+WHERE external_id = ? AND status_updated_at IS ?
+`
+
+type SetSessionEndedIfUnchangedParams struct {
+	ExternalID      string
+	StatusUpdatedAt sql.NullString
+}
+
+// Closes the SessionEnd gap: a host that dies takes its chance to fire
+// the hook with it, so the poller is the only thing left that will ever
+// learn the session is gone (via tmux has-session, checked by the
+// caller before this runs). Same CAS contract as the working/idle pair
+// above -- a hook landing between the caller's has-session check and
+// this write moves status_updated_at first, so this UPDATE affects zero
+// rows and the hook's own status is left standing.
+func (q *Queries) SetSessionEndedIfUnchanged(ctx context.Context, arg SetSessionEndedIfUnchangedParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, setSessionEndedIfUnchanged, arg.ExternalID, arg.StatusUpdatedAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const setSessionIdleIfUnchanged = `-- name: SetSessionIdleIfUnchanged :execrows
 UPDATE agent_sessions
 SET status = 'idle', status_updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now')
