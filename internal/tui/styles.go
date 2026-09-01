@@ -75,10 +75,10 @@ func newPalette(isDark bool) palette {
 // in both sets so nothing in the layout depends on which one renders.
 type glyphs struct {
 	State map[task.State]string
-	// Session is the agent-session status marker (docs/agent-sessions-plan.md
-	// §8.4). Width 1 like every other glyph here: the plan sketched ⚡/⏸,
-	// but both are East Asian Wide and would push every following column
-	// one cell right on the rows that carry them.
+	// Session is the agent-session status marker. Width 1 like every other
+	// glyph here: an earlier design used ⚡/⏸, but both are East Asian Wide
+	// and would push every following column one cell right on the rows
+	// that carry them.
 	//
 	// Deliberately a different family from State — circled operators, not
 	// plain circles — because the two sit in adjacent columns on a list

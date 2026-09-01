@@ -10,7 +10,7 @@ import (
 
 // mcpConfig mirrors Claude Code's --mcp-config file shape: one entry
 // under mcpServers, invoking `tend mcp` as a stdio subprocess bound to
-// this session's task (docs/agent-sessions-plan.md §9.2).
+// this session's task.
 type mcpConfig struct {
 	MCPServers map[string]mcpServerConfig `json:"mcpServers"`
 }

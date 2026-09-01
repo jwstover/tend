@@ -199,8 +199,8 @@ func moveOffHeading(m *list.Model, dir int) {
 type taskDelegate struct {
 	styles Styles
 	// sessions is the latest agent-session status per task id, used for
-	// the row marker (docs/agent-sessions-plan.md 8.4). Nil is a normal
-	// state, not an error: it just means no row carries a marker.
+	// the row marker. Nil is a normal state, not an error: it just means
+	// no row carries a marker.
 	sessions map[int64]task.SessionStatus
 	// tags is every task's tags by id, for the #tag meta column. Like
 	// sessions it rides on the delegate rather than the item: it is purely

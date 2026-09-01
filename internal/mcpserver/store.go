@@ -1,8 +1,8 @@
 // Package mcpserver exposes a task's read/write surface to a launched
 // Claude Code session over the Model Context Protocol, so a session bound
-// to a task (docs/agent-sessions-plan.md §9) can turn "here's what I'm
-// doing" into real tend rows instead of an ad-hoc scratch markdown file.
-// It is the third consumer of Store, alongside tui and cli.
+// to a task can turn "here's what I'm doing" into real tend rows instead
+// of an ad-hoc scratch markdown file. It is the third consumer of Store,
+// alongside tui and cli.
 package mcpserver
 
 import (

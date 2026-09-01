@@ -6,10 +6,10 @@ import (
 	"github.com/jwstover/tend/internal/task"
 )
 
-// Fixtures below are trimmed captures from a real `claude` 2.1.237 pane
-// (docs/agent-sessions-plan.md §8.3), harvested by driving a session
-// inside a scratch tmux server and running `tmux capture-pane -p` at each
-// phase of a multi-step tool call — not invented.
+// Fixtures below are trimmed captures from a real `claude` 2.1.237 pane,
+// harvested by driving a session inside a scratch tmux server and
+// running `tmux capture-pane -p` at each phase of a multi-step tool
+// call — not invented.
 
 // The bottom status bar while a turn is actively generating or running a
 // tool: the auto-mode hint gains an "esc to interrupt" clause it doesn't
@@ -55,6 +55,17 @@ const paneWelcome = `╭─── Claude Code v2.1.237 ────────�
 ──────────────────────────────────────────────────────────────────────────────
   ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents`
 
+// An AskUserQuestion multi-choice prompt open and waiting on the user:
+// the normal auto-mode status bar is replaced entirely by its own nav
+// hint. Harvested from a real `claude` 2.1.238 pane captured mid-prompt
+// during this bug's own investigation (docs/agent-sessions-plan.md §8.3).
+const paneBlockedQuestion = `  1. Rewrite AGENTS.md as current-state truth (Recommended)
+     Replace AGENTS.md wholesale: update the description, tech stack...
+  2. Keep AGENTS.md's core, add a 'v2 scope' section
+  3. Something else / let me describe it
+
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel`
+
 func TestClassifyPane(t *testing.T) {
 	cases := []struct {
 		name string
@@ -65,6 +76,7 @@ func TestClassifyPane(t *testing.T) {
 		{"running a tool", paneWorkingRunningTool, task.SessionWorking},
 		{"idle at prompt after a turn", paneIdleAtPrompt, task.SessionUnknown},
 		{"welcome screen, nothing sent yet", paneWelcome, task.SessionUnknown},
+		{"AskUserQuestion prompt open", paneBlockedQuestion, task.SessionBlocked},
 		{"empty pane", "", task.SessionUnknown},
 	}
 	for _, c := range cases {
@@ -76,13 +88,14 @@ func TestClassifyPane(t *testing.T) {
 	}
 }
 
-// classifyPane must never report idle/blocked/ended itself — hooks own
-// those authoritatively (§8.2), and the poller that calls this only ever
-// acts on a SessionWorking result. Anything classifyPane can't positively
-// identify as working has to fall back to unknown, not a guess at one of
-// the hook-owned states.
+// classifyPane must never report idle/ended/starting itself — hooks own
+// those authoritatively, and the poller that calls this only ever acts
+// on SessionWorking and SessionBlocked results (see pollSessions in
+// internal/tui). Anything it can't positively identify as one of those
+// two has to fall back to unknown, not a guess at one of the hook-owned
+// states.
 func TestClassifyPaneNeverReportsHookOwnedStatuses(t *testing.T) {
-	for _, st := range []task.SessionStatus{task.SessionIdle, task.SessionBlocked, task.SessionEnded, task.SessionStarting} {
+	for _, st := range []task.SessionStatus{task.SessionIdle, task.SessionEnded, task.SessionStarting} {
 		if got := ClassifyPane(paneIdleAtPrompt); got == st {
 			t.Fatalf("ClassifyPane returned hook-owned status %q", st)
 		}

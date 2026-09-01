@@ -70,12 +70,49 @@ type Store interface {
 // Run starts the TUI and blocks until it exits. dbPath is shown on the
 // loading frame and also passed to launched/resumed sessions' --mcp-config
 // (see agent.WriteMCPConfig) so `tend mcp` can open the same database.
+//
+// The session poller runs on its own goroutine (pollCtx), stopped when Run
+// returns, rather than as a tea.Cmd driven by the Program's event loop: that
+// loop is unavailable for the entire time any session is attached through
+// tend (tea.ExecProcess pauses it to hand the terminal to the child
+// process), which is exactly when a background session's status most needs
+// to keep moving. See runSessionPoller.
 func Run(ctx context.Context, s Store, dbPath string) error {
+	pollCtx, stopPoll := context.WithCancel(ctx)
+	defer stopPoll()
+
 	p := tea.NewProgram(newApp(ctx, s, dbPath), tea.WithContext(ctx))
+	go runSessionPoller(pollCtx, s, p.Send)
+
 	if _, err := p.Run(); err != nil {
 		return fmt.Errorf("running TUI: %w", err)
 	}
 	return nil
+}
+
+// runSessionPoller ticks pollSessions (sessions.go) on a fixed interval
+// until ctx is canceled. send is Program.Send in production; tests inject a
+// stub so this is drivable without a real terminal or Program.
+//
+// Deliberately not a tea.Cmd: a tea.Cmd only ever runs from within the
+// Program's own event loop, and that loop is exactly what's paused for as
+// long as any session is attached through tend (see Run). A goroutine
+// outside that loop is the only way polling — and the status correction it
+// does — keeps happening during the one span it matters most: while you're
+// mid-conversation with a session and can't see any other task's state.
+func runSessionPoller(ctx context.Context, store Store, send func(tea.Msg)) {
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if pollSessions(ctx, store, pollInterval) {
+				send(sessionsPolledMsg{changed: true})
+			}
+		}
+	}
 }
 
 type viewMode int
@@ -228,31 +265,25 @@ type (
 	// on every completion, not just the ones that surface a Msg.
 	recapDoneMsg struct{ inner tea.Msg }
 
-	// pollTickMsg drives section 8.3's capture-pane poller — the only way
-	// tend ever observes a session mid-tool-call, since no Claude Code
-	// hook fires for it (§8.2). Fires on a fixed interval regardless of
-	// how long the previous poll took, so one slow tick never stalls
-	// later ones.
-	pollTickMsg struct{}
-	// sessionsPolledMsg reports whether pollSessionStatusCmd wrote
-	// 'working' for at least one session this tick. changed being false
-	// is the common case (nothing to see, or a hook already won the
-	// race) and deliberately triggers no reload — unlike refreshMsg, a
-	// background poll finding nothing new isn't worth a flash or a
-	// re-fetch.
+	// sessionsPolledMsg reports whether pollSessions wrote a status change
+	// for at least one session this tick. changed being false is the
+	// common case (nothing to see, or a hook already won the race) and
+	// deliberately triggers no reload — unlike refreshMsg, a background
+	// poll finding nothing new isn't worth a flash or a re-fetch. Sent by
+	// runSessionPoller's goroutine via Program.Send, not produced by a
+	// tea.Cmd — it originates outside the event loop entirely, which is
+	// the whole reason it can still run while a session is attached.
 	sessionsPolledMsg struct{ changed bool }
 )
 
-// pollInterval is how often a foregrounded tend process re-captures each
-// live session's tmux pane. Mid §8.3's stated 3-5s range; no backoff for
-// an unchanged pane, since tmux calls are cheap at the session counts a
-// single local user actually runs (§8.3's own open decision, resolved
-// here for simplicity over the added bookkeeping a backoff would need).
+// pollInterval is both how often runSessionPoller re-captures each live
+// session's tmux pane, and pollSessions' floor before settling a
+// non-working status to idle (see pollSessions in sessions.go) — long
+// enough that a hook which was going to fire already would have. No
+// backoff for an unchanged pane, since tmux calls are cheap at the
+// session counts a single local user actually runs — simpler than the
+// added bookkeeping a backoff would need.
 const pollInterval = 4 * time.Second
-
-func pollTickCmd() tea.Cmd {
-	return tea.Tick(pollInterval, func(time.Time) tea.Msg { return pollTickMsg{} })
-}
 
 type app struct {
 	ctx   context.Context
@@ -409,7 +440,7 @@ func (a app) Init() tea.Cmd {
 	// Startup is the one moment guaranteed to happen after a host
 	// reboot, which is exactly when a session backgrounded before the
 	// reboot is owed a recap nobody has settled (see drainRecapsCmd).
-	return tea.Batch(a.loadTasks(a.mode), a.loadProjects(), a.drainRecapsCmd(), pollTickCmd())
+	return tea.Batch(a.loadTasks(a.mode), a.loadProjects(), a.drainRecapsCmd())
 }
 
 func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -510,8 +541,8 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Backgrounded: claude is still running under tmux, so the recap
 		// is deliberately skipped — `claude -p --resume` against a live
 		// session would put two processes on one session id and one
-		// transcript file. The debt is recorded instead, for Phase 4.2's
-		// SessionEnd hook to settle (docs/agent-sessions-plan.md §8.1).
+		// transcript file. The debt is recorded instead, for the
+		// SessionEnd hook to settle later.
 		if msg.backgrounded {
 			return a, a.mutate(flash{kind: flashEdit, text: "session backgrounded"}, func() error {
 				if _, err := a.store.CreateSession(a.ctx, msg.taskID, msg.externalID, msg.cwd, msg.label, msg.tmuxSession); err != nil {
@@ -559,8 +590,8 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.pendingRecaps++
 			// since is nil: the transcript marker a resume records lives
 			// only in the memory of the instance that did the resuming,
-			// so a drained recap is unscoped — the pre-§5 behavior, and
-			// still far better than no recap at all.
+			// so a drained recap is unscoped — still far better than no
+			// recap at all.
 			cmds = append(cmds, a.recapSessionCmd(sess.TaskID, sess.Cwd, sess.ExternalID, nil))
 		}
 		return a, tea.Batch(cmds...)
@@ -571,12 +602,6 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 		return a.Update(msg.inner)
-
-	case pollTickMsg:
-		// Rescheduled unconditionally alongside firing the poll itself,
-		// not from sessionsPolledMsg's handler, so a slow tmux round trip
-		// on one tick never pushes back when the next one starts.
-		return a, tea.Batch(a.pollSessionStatusCmd(), pollTickCmd())
 
 	case sessionsPolledMsg:
 		// Standup mode renders no session markers, so there's nothing
