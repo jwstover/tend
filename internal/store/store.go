@@ -700,6 +700,24 @@ func (s *Store) SetSessionIdleIfUnchanged(ctx context.Context, externalID string
 	return n > 0, nil
 }
 
+// SetSessionEndedIfUnchanged writes 'ended' for a session the poller has
+// found gone via `tmux has-session` — the SessionEnd hook's replacement
+// when the host died before it could fire one. Same compare-and-swap
+// contract as SetSessionWorkingIfUnchanged/SetSessionIdleIfUnchanged: a
+// hook landing between the caller's liveness check and this write moves
+// status_updated_at first, so the underlying UPDATE affects zero rows
+// and the hook's own status is left standing.
+func (s *Store) SetSessionEndedIfUnchanged(ctx context.Context, externalID string, prevStatusUpdatedAt time.Time) (bool, error) {
+	n, err := s.q.SetSessionEndedIfUnchanged(ctx, gen.SetSessionEndedIfUnchangedParams{
+		ExternalID:      externalID,
+		StatusUpdatedAt: statusUpdatedAtParam(prevStatusUpdatedAt),
+	})
+	if err != nil {
+		return false, fmt.Errorf("setting ended status for session %s: %w", externalID, err)
+	}
+	return n > 0, nil
+}
+
 // statusUpdatedAtParam converts a Session.StatusUpdatedAt value back into
 // the SQL parameter form the poller's CAS queries compare against. A zero
 // time means the caller observed the column as NULL — a session no hook

@@ -51,9 +51,13 @@ func TestPollSessionsWritesWorkingForLiveMatchingSession(t *testing.T) {
 	}
 }
 
-// A dead session (tmux gone) must never be captured at all — has-session
-// is the liveness authority, same as the recap drain's sessionAlive.
-func TestPollSessionsSkipsDeadSession(t *testing.T) {
+// A dead session (tmux gone) must never be captured — has-session is the
+// liveness authority, same as the recap drain's sessionAlive — and must
+// be written 'ended' itself, since a host that died took its chance to
+// fire SessionEnd with it. Without this the row's last hook-reported
+// status (here 'unknown', a session no hook has touched yet) would read
+// as live forever.
+func TestPollSessionsMarksDeadSessionEnded(t *testing.T) {
 	stubSessionAlive(t, false)
 	var mu sync.Mutex
 	called := false
@@ -73,7 +77,9 @@ func TestPollSessionsSkipsDeadSession(t *testing.T) {
 		t.Fatalf("CreateSession: %v", err)
 	}
 
-	pollSessions(ctx, s, pollInterval)
+	if changed := pollSessions(ctx, s, pollInterval); !changed {
+		t.Error("pollSessions reported no change for a dead session")
+	}
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -84,8 +90,47 @@ func TestPollSessionsSkipsDeadSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListSessionsForTask: %v", err)
 	}
-	if sessions[0].Status != task.SessionUnknown {
-		t.Errorf("Status = %q, want unchanged", sessions[0].Status)
+	if sessions[0].Status != task.SessionEnded {
+		t.Errorf("Status = %q, want ended", sessions[0].Status)
+	}
+}
+
+// The CAS guard applies to the ended write too: a hook that reports in
+// (however unlikely once tmux is already gone) between SessionsWithTmux's
+// read and the poller's write must win, not the poller's ended guess.
+func TestPollSessionsEndedWriteLosesRaceToConcurrentHook(t *testing.T) {
+	ctx := context.Background()
+	_, s := newTestApp(t)
+	parent, err := s.AddTask(ctx, "do the thing")
+	if err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	sess, err := s.CreateSession(ctx, parent.ID, "ext-1", "/tmp/work", parent.Title, "tend-ext-1")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	// Race simulated the same way the working/idle CAS tests do it: the
+	// hook's write happens between SessionsWithTmux's read (inside
+	// pollSessions) and sessionAlive's answer, via the sessionAlive stub
+	// itself rather than capturePane, since a dead session never reaches
+	// capturePane at all.
+	prev := sessionAlive
+	sessionAlive = func(task.Session) bool {
+		if err := s.SetSessionStatus(ctx, sess.ExternalID, task.SessionBlocked); err != nil {
+			t.Fatalf("SetSessionStatus: %v", err)
+		}
+		return false
+	}
+	t.Cleanup(func() { sessionAlive = prev })
+
+	pollSessions(ctx, s, pollInterval)
+
+	sessions, err := s.ListSessionsForTask(ctx, parent.ID)
+	if err != nil {
+		t.Fatalf("ListSessionsForTask: %v", err)
+	}
+	if sessions[0].Status != task.SessionBlocked {
+		t.Errorf("Status = %q, want the hook's status left standing", sessions[0].Status)
 	}
 }
 

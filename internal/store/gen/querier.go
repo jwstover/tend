@@ -75,6 +75,14 @@ type Querier interface {
 	ReassignProjectTasks(ctx context.Context, arg ReassignProjectTasksParams) error
 	RenameProject(ctx context.Context, arg RenameProjectParams) error
 	SetProjectArchived(ctx context.Context, arg SetProjectArchivedParams) error
+	// Closes the SessionEnd gap: a host that dies takes its chance to fire
+	// the hook with it, so the poller is the only thing left that will ever
+	// learn the session is gone (via tmux has-session, checked by the
+	// caller before this runs). Same CAS contract as the working/idle pair
+	// above -- a hook landing between the caller's has-session check and
+	// this write moves status_updated_at first, so this UPDATE affects zero
+	// rows and the hook's own status is left standing.
+	SetSessionEndedIfUnchanged(ctx context.Context, arg SetSessionEndedIfUnchangedParams) (int64, error)
 	// The other half of the poller's CAS pair: takes 'working' back down when
 	// a later tick no longer sees working chrome. Without this, a 'working'
 	// write that raced a Stop hook's own write within the same

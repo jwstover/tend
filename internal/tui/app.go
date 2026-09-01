@@ -65,6 +65,7 @@ type Store interface {
 	SessionsWithTmux(ctx context.Context) ([]task.Session, error)
 	SetSessionWorkingIfUnchanged(ctx context.Context, externalID string, prevStatusUpdatedAt time.Time) (bool, error)
 	SetSessionIdleIfUnchanged(ctx context.Context, externalID string, prevStatusUpdatedAt time.Time) (bool, error)
+	SetSessionEndedIfUnchanged(ctx context.Context, externalID string, prevStatusUpdatedAt time.Time) (bool, error)
 }
 
 // Run starts the TUI and blocks until it exits. dbPath is shown on the

@@ -314,9 +314,12 @@ var sessionAlive = func(sess task.Session) bool {
 // launched under tmux and not already known to have ended.
 //
 // For each candidate, HasSession decides liveness the same authoritative
-// way drainRecapsCmd's sessionAlive does; a dead session is skipped
-// outright rather than captured. A live one is captured and classified
-// into working, blocked, or neither (agent.ClassifyPane):
+// way drainRecapsCmd's sessionAlive does. A dead one is this poller's
+// only chance to learn that: a host that died took its shot at firing
+// SessionEnd with it, so the poller writes 'ended' itself
+// (SetSessionEndedIfUnchanged) rather than leaving the row's last
+// hook-reported status to read as live forever. A live one is captured
+// and classified into working, blocked, or neither (agent.ClassifyPane):
 //
 //   - working chrome writes 'working' via SetSessionWorkingIfUnchanged,
 //     guarded by a compare-and-swap on status_updated_at so a
@@ -358,6 +361,10 @@ func pollSessions(ctx context.Context, store Store, settleAfter time.Duration) b
 	var changed bool
 	for _, sess := range sessions {
 		if !sessionAlive(sess) {
+			ok, err := store.SetSessionEndedIfUnchanged(ctx, sess.ExternalID, sess.StatusUpdatedAt)
+			if err == nil && ok {
+				changed = true
+			}
 			continue
 		}
 		pane, err := capturePane(sess)
