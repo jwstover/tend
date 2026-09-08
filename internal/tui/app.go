@@ -397,7 +397,7 @@ type app struct {
 
 	helpOpen bool // `?` key-reference overlay
 
-	showCompleted bool // C toggles whether completed (done) tasks are loaded
+	showCompleted bool // C toggles whether completed (done) and someday tasks are loaded
 
 	statePending    bool // `c` pressed; next key picks the new state
 	priorityPending bool // `p` pressed; next key picks the new priority
@@ -976,9 +976,9 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	case key.Matches(msg, a.keys.ToggleCompleted) && a.mode == modeList:
 		a.showCompleted = !a.showCompleted
-		text := "completed tasks hidden"
+		text := "completed and someday tasks hidden"
 		if a.showCompleted {
-			text = "completed tasks shown"
+			text = "completed and someday tasks shown"
 		}
 		a.status = flash{text: text}
 		// Completed tasks are a different query, so reload rather than

@@ -368,15 +368,15 @@ const listLiveWithCompletedTasks = `-- name: ListLiveWithCompletedTasks :many
 SELECT t.id, t.title, t.body_md, t.state, t.parent_id, t.priority, t.due, t.snooze_until, t.created_at, t.updated_at, t.completed_at, t.project_id
 FROM tasks t
 JOIN states s ON s.name = t.state
-WHERE (s.is_terminal = 0 OR t.state = 'done')
-  AND s.hidden_by_default = 0
+WHERE (s.is_terminal = 0 OR t.state = 'done' OR s.hidden_by_default = 1)
   AND (t.snooze_until IS NULL OR t.snooze_until <= date('now'))
   AND (?1 IS NULL OR t.project_id = ?1)
 ORDER BY s.sort_order, t.priority IS NULL, t.priority, t.id
 `
 
-// Like ListLiveTasks but also surfaces completed (done) tasks, for when the
-// list view has the completed section toggled on.
+// Like ListLiveTasks but also surfaces completed (done) tasks and
+// hidden-by-default states (someday), for when the list view has the
+// completed section toggled on. Snoozed tasks stay hidden either way.
 func (q *Queries) ListLiveWithCompletedTasks(ctx context.Context, projectID interface{}) ([]Task, error) {
 	rows, err := q.db.QueryContext(ctx, listLiveWithCompletedTasks, projectID)
 	if err != nil {

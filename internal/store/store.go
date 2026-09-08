@@ -154,8 +154,9 @@ func (s *Store) ListLive(ctx context.Context, projectID *int64) ([]task.Task, er
 	return toDomainSlice(rows)
 }
 
-// ListLiveWithCompleted is ListLive plus the completed (done) tasks, for
-// when the list view has the completed section toggled on.
+// ListLiveWithCompleted is ListLive plus the completed (done) tasks and
+// the hidden-by-default states (someday), for when the list view has the
+// completed section toggled on. Snoozed tasks stay out either way.
 func (s *Store) ListLiveWithCompleted(ctx context.Context, projectID *int64) ([]task.Task, error) {
 	rows, err := s.q.ListLiveWithCompletedTasks(ctx, projectFilter(projectID))
 	if err != nil {

@@ -48,8 +48,9 @@ type Querier interface {
 	ListEventsBetween(ctx context.Context, arg ListEventsBetweenParams) ([]TaskEvent, error)
 	ListInboxTasks(ctx context.Context, projectID interface{}) ([]Task, error)
 	ListLiveTasks(ctx context.Context, projectID interface{}) ([]Task, error)
-	// Like ListLiveTasks but also surfaces completed (done) tasks, for when the
-	// list view has the completed section toggled on.
+	// Like ListLiveTasks but also surfaces completed (done) tasks and
+	// hidden-by-default states (someday), for when the list view has the
+	// completed section toggled on. Snoozed tasks stay hidden either way.
 	ListLiveWithCompletedTasks(ctx context.Context, projectID interface{}) ([]Task, error)
 	// The task title comes along for display; COALESCE keeps the column
 	// non-null when the note is freestanding or its task was deleted.
@@ -64,12 +65,12 @@ type Querier interface {
 	ListSessionStatuses(ctx context.Context) ([]ListSessionStatusesRow, error)
 	ListSessionsForTask(ctx context.Context, taskID int64) ([]AgentSession, error)
 	ListSessionsNeedingRecap(ctx context.Context) ([]AgentSession, error)
-	ListTags(ctx context.Context) ([]Tag, error)
-	ListTagsForTask(ctx context.Context, taskID int64) ([]string, error)
 	// Candidates for section 8.3's capture-pane poller: only sessions that
 	// were launched under tmux at all, and not ones already known to have
 	// ended (a session that already reported ended has nothing to poll).
 	ListSessionsWithTmux(ctx context.Context) ([]AgentSession, error)
+	ListTags(ctx context.Context) ([]Tag, error)
+	ListTagsForTask(ctx context.Context, taskID int64) ([]string, error)
 	// Half of Store.DeleteProject's transaction: project_id carries no foreign
 	// key (see 00007's comment), so orphan prevention is explicit here.
 	ReassignProjectTasks(ctx context.Context, arg ReassignProjectTasksParams) error
