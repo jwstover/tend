@@ -1,9 +1,13 @@
 # Parent vs. child row rendering — a follow-up backlog
 
-> Scratch note for a follow-up, not a design doc. Everything below is
-> **pre-existing behaviour**, unchanged by the projects/tags work:
-> `renderChildRow` is byte-identical to its state at `567ad38`, the commit
-> the `feat/projects-and-tags` branch started from.
+> Scratch note for a follow-up, not a design doc.
+>
+> **Update — the session marker moved to the front gutter, and §3 and §7.3
+> went with it.** Both rows now run through one renderer, `renderTaskRow`,
+> so the column order is shared by construction. §6's stale comment is
+> gone with the function that carried it, and child rows picked up the
+> priority cell on the way. What remains open is §7.2 (the meta block on
+> child rows — due date above all) and §7.4 (`/` matching sub-tasks).
 
 Two functions in `internal/tui/list.go` draw task rows, and they have
 drifted apart:
@@ -18,6 +22,21 @@ sessions — the child row just doesn't show most of it.
 ## 1. Column inventory
 
 Left to right, exactly as each function appends segments.
+
+One renderer draws both now, so the inventory is a single column. Depth 0
+is a top-level row; anything deeper is a sub-task.
+
+| # | `renderTaskRow` | at depth 0 |
+|---|---|---|
+| 1 | **front gutter** (3): selection bar + session marker | same |
+| 2 | indent (1 cell per depth level) | zero-width |
+| 3 | state dot (2) | same |
+| 4 | caret slot (2) | same |
+| 5 | priority cell (2) + space | same |
+| 6 | title (flexible) | same |
+| 7 | gap, padding the row to full width | gap + **meta block** |
+
+Historical, for the record — what the two functions rendered before:
 
 | # | `renderRow` (parent) | `renderChildRow` (child) |
 |---|---|---|
@@ -40,7 +59,7 @@ Meta block (parent only), fixed-width so columns line up down the list:
 |---|---|---|---|
 | Tags | yes | `#a #b +N` | **not shown** |
 | Due date | yes | `dueCell`, colour-coded by urgency | **not shown** |
-| Priority | yes | `priCell`, flag + A–D | **not shown** |
+| Priority | yes | `priCell`, flag + A–D | ~~not shown~~ — shown since the gutter move |
 | Sub-task count | yes | `subCell`, `N/M` | **not shown** (caret only) |
 
 The due date is the one I'd call an actual bug rather than a style
@@ -52,19 +71,21 @@ Reproduced directly — a child with `tags=[childtag] due=2026-12-01
 priority=true` in the store renders as a bare title, while its parent on
 the same screen shows `#parenttag  0/1`.
 
-## 3. Ordering inconsistency
+## 3. Ordering inconsistency — fixed
 
-The shared columns are in a **different order** on the two rows:
+**Resolved by the gutter move.** One renderer draws both rows, so there is
+one order. The inconsistency this section recorded was:
 
 ```
 parent:  gutter  dot  session  caret  priority  title …
 child:   gutter  indent  caret  dot  session  title
 ```
 
-So the state dot and session marker swap sides of the caret depending on
-depth. Nothing depends on this, but it makes the two functions harder to
-read as variations of one thing, and it's why the columns don't visually
-line up when a branch is expanded.
+The state dot and session marker swapped sides of the caret depending on
+depth, which is why the columns didn't line up when a branch was expanded.
+`TestParentAndChildRowsShareColumnOrder` and
+`TestSessionMarkerIsAtTheSameColumnAtEveryDepth` now pin the order so the
+two can't drift apart again.
 
 ## 4. Filtering
 
@@ -91,7 +112,7 @@ The child needs the `selected` case because its default is dimmed; the
 parent doesn't because the selected-row background is applied uniformly
 afterwards. Fine as-is, listed for completeness.
 
-## 6. Stale comment
+## 6. Stale comment — fixed
 
 `renderChildRow`'s doc comment says it draws a "checkbox":
 
@@ -101,27 +122,27 @@ afterwards. Fine as-is, listed for completeness.
 // node has its own children, checkbox, title.
 ```
 
-It renders a **state dot** (`g.State[it.t.State]`), not `g.BoxChecked` /
-`g.BoxUnchecked` — the body even explains why ("a sub-task in doing or
+It rendered a **state dot** (`g.State[it.t.State]`), not `g.BoxChecked` /
+`g.BoxUnchecked` — the body even explained why ("a sub-task in doing or
 blocked has to read as such rather than collapsing to an unchecked box").
-The comment predates that change. The checkbox glyphs are still used, but
-in the detail pane's sub-task list (`detail.go`), not here.
+The comment predated that change and went away with the merge into
+`renderTaskRow`. The checkbox glyphs are still used, but in the detail
+pane's sub-task list (`detail.go`), not here.
 
 ## 7. Options for the follow-up
 
 Roughly in increasing order of change:
 
-1. **Fix the stale comment.** Free.
+1. ~~**Fix the stale comment.**~~ Done — §6.
 2. **Give child rows the meta block**, at least `dueCell`. The child's
    flexible title simply gives up the width, exactly as the parent's
    does. Cheapest real fix, and it closes the overdue-sub-task hole.
-3. **Align the column order** so both rows read
-   `gutter · indent · dot · session · caret · priority · title · meta`,
-   with indent zero-width at depth 0. This is the version where the two
-   functions could genuinely collapse into one.
+3. ~~**Align the column order.**~~ Done — both rows read
+   `gutter(bar+session) · indent · dot · caret · priority · title · meta`,
+   with indent zero-width at depth 0, and the two functions did collapse
+   into one (`renderTaskRow`).
 4. **Let `/` match sub-tasks.** Needs a decision about what a matching
    child does to its parent's row — show the parent as context, or hoist
    the child out of the tree for the duration of the filter.
 
-(3) and (4) are the ones with real design questions in them; (1) and (2)
-are mechanical.
+(4) is the one with a real design question left in it; (2) is mechanical.

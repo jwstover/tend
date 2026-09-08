@@ -105,3 +105,139 @@ func TestListRowShowsLiveSessionStatus(t *testing.T) {
 		t.Errorf("rendered view is missing the blocked-session glyph %q", want)
 	}
 }
+
+// The three-cell gutter has to show both signals at once: moving the
+// marker into the gutter is only safe if it doesn't cost the selection
+// bar on the row the cursor is on.
+func TestGutterShowsSelectionBarAndSessionMarkerTogether(t *testing.T) {
+	styles := DefaultStyles()
+	d := taskDelegate{styles: styles, sessions: map[int64]task.SessionStatus{7: task.SessionWorking}}
+	glyph := styles.Glyphs.Session[task.SessionWorking]
+
+	for _, tc := range []struct {
+		name     string
+		selected bool
+		want     string
+	}{
+		{"selected", true, styles.Glyphs.SelBar + glyph + " "},
+		{"not selected", false, " " + glyph + " "},
+	} {
+		var got string
+		for _, sg := range d.gutterCells(7, tc.selected) {
+			got += ansi.Strip(sg.text)
+		}
+		if got != tc.want {
+			t.Errorf("%s: gutter = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// The gutter is fixed-width whatever it carries, so every column after
+// it lines up down the list.
+func TestGutterIsAlwaysThreeCells(t *testing.T) {
+	styles := DefaultStyles()
+	for _, tc := range []struct {
+		name     string
+		sessions map[int64]task.SessionStatus
+		selected bool
+	}{
+		{"bare", nil, false},
+		{"selected only", nil, true},
+		{"marker only", map[int64]task.SessionStatus{7: task.SessionIdle}, false},
+		{"both", map[int64]task.SessionStatus{7: task.SessionIdle}, true},
+		{"ended session", map[int64]task.SessionStatus{7: task.SessionEnded}, false},
+	} {
+		d := taskDelegate{styles: styles, sessions: tc.sessions}
+		w := 0
+		for _, sg := range d.gutterCells(7, tc.selected) {
+			w += len([]rune(ansi.Strip(sg.text)))
+		}
+		if w != 3 {
+			t.Errorf("%s: gutter width = %d runes, want 3", tc.name, w)
+		}
+	}
+}
+
+// The marker used to sit mid-row, at a different offset on parent rows
+// than on child rows, so it never scanned as a column. In the gutter it
+// starts at the same cell on every row at every depth — that is the
+// whole point of the move, and nothing else in the row may push it.
+func TestSessionMarkerIsAtTheSameColumnAtEveryDepth(t *testing.T) {
+	styles := DefaultStyles()
+	glyph := styles.Glyphs.Session[task.SessionWorking]
+	live := func(id int64) map[int64]task.SessionStatus {
+		return map[int64]task.SessionStatus{id: task.SessionWorking}
+	}
+
+	pri := int64(1)
+	due := "2026-12-01"
+	parent := task.Task{ID: 1, Title: "parent", State: task.StateDoing, Priority: &pri, Due: &due}
+	child := task.Task{ID: 2, Title: "child", State: task.StateTodo}
+	deep := task.Task{ID: 3, Title: "deep", State: task.StateDone}
+
+	rows := map[string]string{
+		"top-level":     taskDelegate{styles: styles, sessions: live(1)}.renderRow(listItem{t: parent, done: 1, total: 2}, false, 100),
+		"top-level sel": taskDelegate{styles: styles, sessions: live(1)}.renderRow(listItem{t: parent, done: 1, total: 2}, true, 100),
+		"depth 1":       taskDelegate{styles: styles, sessions: live(2)}.renderChildRow(childItem{t: child, depth: 1}, false, 100),
+		"depth 3":       taskDelegate{styles: styles, sessions: live(3)}.renderChildRow(childItem{t: deep, depth: 3}, false, 100),
+	}
+	for name, row := range rows {
+		if got := runeIndex(ansi.Strip(row), glyph); got != 1 {
+			t.Errorf("%s: session marker at column %d, want 1:\n%q", name, got, ansi.Strip(row))
+		}
+	}
+}
+
+// runeIndex is strings.Index in cells rather than bytes: the glyphs this
+// file measures are multi-byte, so a byte offset is not a column.
+func runeIndex(s, substr string) int {
+	i := strings.Index(s, substr)
+	if i < 0 {
+		return -1
+	}
+	return len([]rune(s[:i]))
+}
+
+// Parent and child rows drifted into different column orders while they
+// were separate functions (CHILD-ROW-PARITY.md 3). They share one
+// renderer now; this pins the order so a future edit to one can't move a
+// column on only half the rows.
+func TestParentAndChildRowsShareColumnOrder(t *testing.T) {
+	styles := DefaultStyles()
+	g := styles.Glyphs
+	d := taskDelegate{styles: styles}
+
+	pri := int64(2)
+	parent := task.Task{ID: 1, Title: "parent", State: task.StateTodo, Priority: &pri}
+	child := task.Task{ID: 2, Title: "child", State: task.StateTodo, Priority: &pri}
+
+	// gutter(3) then dot, caret, priority — the child adds only indent.
+	wantParent := "   " + g.State[task.StateTodo] + " " + g.CaretClosed + " " + g.Flag + "B parent"
+	wantChild := "    " + g.State[task.StateTodo] + " " + g.CaretClosed + " " + g.Flag + "B child"
+
+	gotParent := ansi.Strip(d.renderRow(listItem{t: parent, total: 1}, false, 100))
+	gotChild := ansi.Strip(d.renderChildRow(childItem{t: child, depth: 1, total: 1}, false, 100))
+
+	if !strings.HasPrefix(gotParent, wantParent) {
+		t.Errorf("parent row = %q, want prefix %q", gotParent, wantParent)
+	}
+	if !strings.HasPrefix(gotChild, wantChild) {
+		t.Errorf("child row = %q, want prefix %q", gotChild, wantChild)
+	}
+}
+
+// Section headings lead with the same three cells the rows do, so a
+// heading's glyph sits directly above the state dots it labels.
+func TestHeadingGlyphAlignsWithRowStateDots(t *testing.T) {
+	styles := DefaultStyles()
+	d := taskDelegate{styles: styles}
+
+	heading := ansi.Strip(d.renderHeading(sectionItem{state: task.StateTodo, count: 1}, 100))
+	row := ansi.Strip(d.renderRow(listItem{t: task.Task{ID: 1, Title: "a task", State: task.StateTodo}}, false, 100))
+
+	glyph := styles.Glyphs.State[task.StateTodo]
+	if h, r := runeIndex(heading, glyph), runeIndex(row, glyph); h != r {
+		t.Errorf("heading glyph at column %d, row state dot at column %d — they must align\n%q\n%q",
+			h, r, heading, row)
+	}
+}
