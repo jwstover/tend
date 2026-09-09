@@ -194,8 +194,10 @@ func moveOffHeading(m *list.Model, dir int) {
 	}
 }
 
-// taskDelegate renders rows per the design spec: selection gutter, state
-// dot, caret slot, flexible title, and a fixed right-aligned meta block.
+// taskDelegate renders rows per the design spec: a front gutter carrying
+// the selection bar and the agent-session marker, then the state dot,
+// caret slot, priority, flexible title, and a fixed right-aligned meta
+// block.
 type taskDelegate struct {
 	styles Styles
 	// sessions is the latest agent-session status per task id, used for
@@ -209,8 +211,9 @@ type taskDelegate struct {
 }
 
 // sessionCell renders the agent-session marker for a task row: a
-// two-cell column that stays blank unless the task's most recent session
-// is one the user might want to act on.
+// two-cell column, second half of the front gutter, that stays blank
+// unless the task's most recent session is one the user might want to
+// act on.
 //
 // Only live-ish statuses show. A task whose session merely ended would
 // otherwise carry a marker forever — every task ever worked on would
@@ -263,12 +266,14 @@ func (d taskDelegate) Render(w io.Writer, m list.Model, index int, item list.Ite
 	}
 }
 
-// renderHeading draws `  <glyph> <label>  ─────── <count>`.
+// renderHeading draws `   <glyph> <label>  ─────── <count>`. Its lead
+// matches the rows' three-cell gutter, so a section glyph sits in the
+// same column as the state dots below it.
 func (d taskDelegate) renderHeading(sec sectionItem, width int) string {
 	g := d.styles.Glyphs
 	label := strings.ToLower(string(sec.state))
 	count := fmt.Sprintf("%d", sec.count)
-	used := 2 + runeWidth(g.State[sec.state]) + 1 + len(label) + 2 + 1 + len(count)
+	used := 3 + runeWidth(g.State[sec.state]) + 1 + len(label) + 2 + 1 + len(count)
 	fill := max(width-used, 0)
 	// The done section celebrates with complete-green; every other heading
 	// wears its state color.
@@ -277,7 +282,7 @@ func (d taskDelegate) renderHeading(sec sectionItem, width int) string {
 		headStyle = d.styles.CheckDone
 	}
 	var b strings.Builder
-	b.WriteString("  ")
+	b.WriteString("   ")
 	b.WriteString(headStyle.Render(g.State[sec.state] + " "))
 	b.WriteString(headStyle.Bold(true).Render(label))
 	b.WriteString("  ")
@@ -294,33 +299,83 @@ type seg struct {
 	style lipgloss.Style
 }
 
+// rowSpec is the per-row input to renderTaskRow: everything the two item
+// types have in common, plus the depth that distinguishes them.
+type rowSpec struct {
+	t           task.Task
+	depth       int
+	done, total int64
+	expanded    bool
+}
+
+// gutterCells renders the three-cell front gutter every task row opens
+// with: the selection bar, then the agent-session marker.
+//
+// Two segments rather than one because the bar wears the accent style
+// while the marker is colored by session status. Keeping the marker
+// flush left is the point — it scans straight down the screen at every
+// nesting depth, instead of sitting mid-row where the indent shifts it.
+func (d taskDelegate) gutterCells(id int64, selected bool) []seg {
+	bar := seg{" ", d.styles.Normal}
+	if selected {
+		bar = seg{d.styles.Glyphs.SelBar, d.styles.SelBar}
+	}
+	return []seg{bar, d.sessionCell(id)}
+}
+
+// renderRow draws a top-level task row.
 func (d taskDelegate) renderRow(it listItem, selected bool, width int) string {
-	t := it.t
+	return d.renderTaskRow(rowSpec{
+		t: it.t, done: it.done, total: it.total, expanded: it.expanded,
+	}, selected, width)
+}
+
+// renderChildRow draws an expanded sub-task at any depth. Indentation
+// alone conveys nesting; every other column matches a top-level row.
+//
+// childItem is field-for-field a rowSpec, so this converts rather than
+// copying: if the two ever diverge, this line stops compiling instead of
+// quietly dropping a field.
+func (d taskDelegate) renderChildRow(it childItem, selected bool, width int) string {
+	return d.renderTaskRow(rowSpec(it), selected, width)
+}
+
+// renderTaskRow draws one task row at any depth:
+//
+//	gutter(3) indent(depth) dot(2) caret(2) pri(2+1) title ... meta
+//
+// Top-level and sub-task rows share every column, so they share one
+// renderer. Depth 0 additionally carries the right-hand meta block,
+// which is the only structural difference left between them — the two
+// were separate functions once and drifted into different column orders
+// (CHILD-ROW-PARITY.md).
+func (d taskDelegate) renderTaskRow(r rowSpec, selected bool, width int) string {
+	t := r.t
 	g := d.styles.Glyphs
 	s := d.styles
 
 	segs := make([]seg, 0, 12)
 
-	// Selection gutter (2).
-	if selected {
-		segs = append(segs, seg{g.SelBar + " ", s.SelBar})
-	} else {
-		segs = append(segs, seg{"  ", s.Normal})
+	// Front gutter (3): selection bar + agent-session marker.
+	segs = append(segs, d.gutterCells(t.ID, selected)...)
+
+	// Indent: one cell per level, zero-width at top level.
+	if r.depth > 0 {
+		segs = append(segs, seg{strings.Repeat(" ", r.depth), s.Normal})
 	}
 
-	// State dot (2): bold for the attention states.
+	// State dot (2): bold for the attention states. Sub-tasks get the
+	// same treatment — one in doing or blocked has to read as such
+	// rather than collapsing to an unchecked box.
 	dot := s.State[t.State]
 	if t.State == task.StateDoing || t.State == task.StateBlocked {
 		dot = dot.Bold(true)
 	}
 	segs = append(segs, seg{g.State[t.State] + " ", dot})
 
-	// Agent-session marker (2), blank unless a session is live.
-	segs = append(segs, d.sessionCell(t.ID))
-
 	// Caret slot (2): disclosure state when the task has children.
-	if it.total > 0 {
-		segs = append(segs, seg{caretGlyph(g, it.expanded) + " ", caretStyle(s, selected)})
+	if r.total > 0 {
+		segs = append(segs, seg{caretGlyph(g, r.expanded) + " ", caretStyle(s, selected)})
 	} else {
 		segs = append(segs, seg{"  ", s.Normal})
 	}
@@ -331,32 +386,33 @@ func (d taskDelegate) renderRow(it listItem, selected bool, width int) string {
 	segs = append(segs, seg{" ", s.Normal})
 
 	// Right meta block, fixed-width columns; absent fields stay blank so
-	// alignment holds across rows.
+	// alignment holds down the list. Sub-task rows carry no meta block
+	// and give the width back to the title.
 	var meta []seg
-	if width >= compactMetaWidth {
-		meta = append(meta, d.tagsCell(d.tags[t.ID], tagsCellWidth))
-		meta = append(meta, seg{" ", s.Normal})
-		meta = append(meta, d.dueCell(t.Due, 7))
-		meta = append(meta, seg{" ", s.Normal})
-		meta = append(meta, d.subCell(it.done, it.total, 4))
-	} else {
-		meta = append(meta, d.dueCell(t.Due, 6))
-		meta = append(meta, seg{" ", s.Normal})
-		meta = append(meta, d.subCell(it.done, it.total, 4))
+	if r.depth == 0 {
+		if width >= compactMetaWidth {
+			meta = append(meta, d.tagsCell(d.tags[t.ID], tagsCellWidth))
+			meta = append(meta, seg{" ", s.Normal})
+			meta = append(meta, d.dueCell(t.Due, 7))
+			meta = append(meta, seg{" ", s.Normal})
+			meta = append(meta, d.subCell(r.done, r.total, 4))
+		} else {
+			meta = append(meta, d.dueCell(t.Due, 6))
+			meta = append(meta, seg{" ", s.Normal})
+			meta = append(meta, d.subCell(r.done, r.total, 4))
+		}
 	}
 	metaW := segWidth(meta)
 
 	// Flexible title; only the title truncates.
 	lead := segWidth(segs)
 	titleW := max(width-lead-1-metaW, 1)
-	titleStyle := s.Title
-	if t.State == task.StateDone {
-		titleStyle = s.TitleDone
-	}
 	title := truncTail(t.Title, titleW, g.Ellipsis)
-	segs = append(segs, seg{title, titleStyle})
+	segs = append(segs, seg{title, d.titleStyle(t, r.depth, selected)})
 
-	// Gap, then the meta block flush right.
+	// Gap, then the meta block flush right. With no meta block the gap
+	// alone pads the row to full width, so the selected-row background
+	// fills the line.
 	gap := max(width-lead-runeWidth(title)-metaW, 0)
 	segs = append(segs, seg{strings.Repeat(" ", gap), s.Normal})
 	segs = append(segs, meta...)
@@ -372,71 +428,25 @@ func (d taskDelegate) renderRow(it listItem, selected bool, width int) string {
 	return b.String()
 }
 
-// renderChildRow draws an expanded sub-task at any depth: gutter, depth
-// cells of indent (indentation alone conveys nesting), caret slot when the
-// node has its own children, checkbox, title.
-func (d taskDelegate) renderChildRow(it childItem, selected bool, width int) string {
-	g := d.styles.Glyphs
+// titleStyle picks the title treatment. Sub-task titles dim so top-level
+// rows stay dominant — except under the cursor, which is the row being
+// read.
+func (d taskDelegate) titleStyle(t task.Task, depth int, selected bool) lipgloss.Style {
 	s := d.styles
-
-	segs := make([]seg, 0, 6)
-
-	// Selection gutter (2).
-	if selected {
-		segs = append(segs, seg{g.SelBar + " ", s.SelBar})
-	} else {
-		segs = append(segs, seg{"  ", s.Normal})
+	done := t.State == task.StateDone
+	if depth == 0 {
+		if done {
+			return s.TitleDone
+		}
+		return s.Title
 	}
-
-	// Indent: one cell per level.
-	segs = append(segs, seg{strings.Repeat(" ", it.depth), s.Normal})
-
-	// Caret slot (2): only when this node has children of its own.
-	if it.total > 0 {
-		segs = append(segs, seg{caretGlyph(g, it.expanded) + " ", caretStyle(s, selected)})
-	} else {
-		segs = append(segs, seg{"  ", s.Normal})
-	}
-
-	// State dot (2), the same three-signal treatment a top-level row
-	// gets: a sub-task in doing or blocked has to read as such rather
-	// than collapsing to an unchecked box.
-	done := it.t.State == task.StateDone
-	dot := s.State[it.t.State]
-	if it.t.State == task.StateDoing || it.t.State == task.StateBlocked {
-		dot = dot.Bold(true)
-	}
-	segs = append(segs, seg{g.State[it.t.State] + " ", dot})
-
-	// Agent-session marker (2). Sub-tasks own sessions the same way
-	// top-level tasks do, so the row carries the same marker.
-	segs = append(segs, d.sessionCell(it.t.ID))
-
-	titleStyle := s.Dimmed
 	switch {
 	case done:
-		titleStyle = s.SubDoneText
+		return s.SubDoneText
 	case selected:
-		titleStyle = s.Title
+		return s.Title
 	}
-	titleW := max(width-segWidth(segs), 1)
-	title := truncTail(it.t.Title, titleW, g.Ellipsis)
-	segs = append(segs, seg{title, titleStyle})
-
-	// Pad to full width so the selected-row background fills the line.
-	if gap := width - segWidth(segs); gap > 0 {
-		segs = append(segs, seg{strings.Repeat(" ", gap), s.Normal})
-	}
-
-	var b strings.Builder
-	for _, sg := range segs {
-		st := sg.style
-		if selected {
-			st = st.Background(s.Palette.AccentBg)
-		}
-		b.WriteString(st.Render(sg.text))
-	}
-	return b.String()
+	return s.Dimmed
 }
 
 // caretGlyph picks ▸ or ▾ for a branch's disclosure state.
