@@ -13,7 +13,7 @@ import (
 const createProject = `-- name: CreateProject :one
 INSERT INTO projects (name)
 VALUES (?)
-RETURNING id, name, sort_order, archived_at, created_at, updated_at
+RETURNING id, name, sort_order, archived_at, created_at, updated_at, cwd
 `
 
 func (q *Queries) CreateProject(ctx context.Context, name string) (Project, error) {
@@ -26,6 +26,7 @@ func (q *Queries) CreateProject(ctx context.Context, name string) (Project, erro
 		&i.ArchivedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Cwd,
 	)
 	return i, err
 }
@@ -41,7 +42,7 @@ func (q *Queries) DeleteProject(ctx context.Context, id int64) error {
 }
 
 const getProject = `-- name: GetProject :one
-SELECT id, name, sort_order, archived_at, created_at, updated_at
+SELECT id, name, sort_order, archived_at, created_at, updated_at, cwd
 FROM projects
 WHERE id = ?
 `
@@ -56,12 +57,13 @@ func (q *Queries) GetProject(ctx context.Context, id int64) (Project, error) {
 		&i.ArchivedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Cwd,
 	)
 	return i, err
 }
 
 const getProjectByName = `-- name: GetProjectByName :one
-SELECT id, name, sort_order, archived_at, created_at, updated_at
+SELECT id, name, sort_order, archived_at, created_at, updated_at, cwd
 FROM projects
 WHERE name = ?
 `
@@ -76,12 +78,13 @@ func (q *Queries) GetProjectByName(ctx context.Context, name string) (Project, e
 		&i.ArchivedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Cwd,
 	)
 	return i, err
 }
 
 const listProjects = `-- name: ListProjects :many
-SELECT p.id, p.name, p.sort_order, p.archived_at, p.created_at, p.updated_at, COALESCE(c.live, 0) AS live_count
+SELECT p.id, p.name, p.sort_order, p.archived_at, p.created_at, p.updated_at, p.cwd, COALESCE(c.live, 0) AS live_count
 FROM projects p
 LEFT JOIN (
   SELECT t.project_id AS pid, COUNT(*) AS live
@@ -103,6 +106,7 @@ type ListProjectsRow struct {
 	ArchivedAt sql.NullString
 	CreatedAt  string
 	UpdatedAt  string
+	Cwd        string
 	LiveCount  int64
 }
 
@@ -125,6 +129,7 @@ func (q *Queries) ListProjects(ctx context.Context) ([]ListProjectsRow, error) {
 			&i.ArchivedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.Cwd,
 			&i.LiveCount,
 		); err != nil {
 			return nil, err
@@ -190,5 +195,23 @@ type SetProjectArchivedParams struct {
 
 func (q *Queries) SetProjectArchived(ctx context.Context, arg SetProjectArchivedParams) error {
 	_, err := q.db.ExecContext(ctx, setProjectArchived, arg.ArchivedAt, arg.ID)
+	return err
+}
+
+const setProjectCwd = `-- name: SetProjectCwd :exec
+UPDATE projects
+SET cwd        = ?,
+    updated_at = datetime('now')
+WHERE id = ?
+`
+
+type SetProjectCwdParams struct {
+	Cwd string
+	ID  int64
+}
+
+// ” clears the default working directory; see migration 00010.
+func (q *Queries) SetProjectCwd(ctx context.Context, arg SetProjectCwdParams) error {
+	_, err := q.db.ExecContext(ctx, setProjectCwd, arg.Cwd, arg.ID)
 	return err
 }

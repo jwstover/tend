@@ -30,6 +30,7 @@ type Store interface {
 	CreateProject(ctx context.Context, name string) (task.Project, error)
 	RenameProject(ctx context.Context, id int64, name string) error
 	SetProjectArchived(ctx context.Context, id int64, archived bool) error
+	SetProjectCwd(ctx context.Context, id int64, cwd string) error
 	DeleteProject(ctx context.Context, id int64) error
 	ListEvents(ctx context.Context, from, to time.Time) ([]task.Event, error)
 	AddLogEntry(ctx context.Context, taskID *int64, body string) (task.LogEntry, error)

@@ -23,7 +23,7 @@ func (a app) loadSessionsForPicker(t task.Task) tea.Cmd {
 		if err != nil {
 			return errMsg{err}
 		}
-		return sessionsForPickerMsg{taskID: t.ID, label: t.Title, sessions: sessions}
+		return sessionsForPickerMsg{taskID: t.ID, projectID: t.ProjectID, label: t.Title, sessions: sessions}
 	}
 }
 
@@ -34,10 +34,11 @@ func (a app) loadSessionsForPicker(t task.Task) tea.Cmd {
 func (a *app) openSessionPicker(msg sessionsForPickerMsg) tea.Cmd {
 	a.sessionsCache[msg.taskID] = msg.sessions
 	if len(msg.sessions) == 0 {
-		return a.openSessionCwdPrompt(msg.taskID, msg.label, a.defaultCwd(msg.sessions))
+		return a.openSessionCwdPrompt(msg.taskID, msg.label, a.defaultCwd(msg.sessions, msg.projectID))
 	}
 	a.sessionPickerOpen = true
 	a.sessionPickerTaskID = msg.taskID
+	a.sessionPickerProjectID = msg.projectID
 	a.sessionPickerLabel = msg.label
 	a.sessionPickerSessions = msg.sessions
 	a.sessionPickerSel = 0
@@ -50,14 +51,34 @@ func (a *app) closeSessionPicker() {
 	a.sessionPickerSel = 0
 }
 
-// defaultCwd suggests where to launch a new session: the most recently
-// active existing session's directory (ListSessionsForTask orders newest
-// first), else the directory tend itself was started from.
-func (a app) defaultCwd(sessions []task.Session) string {
+// defaultCwd suggests where to launch a new session, most specific
+// evidence first: the most recently active existing session's directory
+// (ListSessionsForTask orders newest first) — the task itself has already
+// been worked on somewhere, and a deliberate choice there beats a
+// project-wide default; else the task's project's default working
+// directory (task.Project.Cwd); else the directory tend itself was
+// started from.
+func (a app) defaultCwd(sessions []task.Session, projectID int64) string {
 	if len(sessions) > 0 {
 		return sessions[0].Cwd
 	}
+	if cwd := a.projectCwd(projectID); cwd != "" {
+		return cwd
+	}
 	return a.startCwd
+}
+
+// projectCwd returns a project's default working directory from the
+// loaded projects column, "" when the project has none or isn't loaded.
+// The column includes archived projects (ListProjects returns them), so a
+// task in an archived project still inherits its default.
+func (a app) projectCwd(id int64) string {
+	for _, p := range a.projects {
+		if p.ID == id {
+			return p.Cwd
+		}
+	}
+	return ""
 }
 
 // openSessionCwdPrompt collects the working directory for a brand-new
@@ -103,10 +124,11 @@ func (a app) handleSessionPickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 // chooseSessionPickerRow acts on a picker row: 0 launches a new session,
 // anything else resumes the session at that index.
 func (a app) chooseSessionPickerRow(row int) (tea.Model, tea.Cmd) {
-	taskID, label, sessions := a.sessionPickerTaskID, a.sessionPickerLabel, a.sessionPickerSessions
+	taskID, projectID := a.sessionPickerTaskID, a.sessionPickerProjectID
+	label, sessions := a.sessionPickerLabel, a.sessionPickerSessions
 	a.closeSessionPicker()
 	if row == 0 {
-		return a, a.openSessionCwdPrompt(taskID, label, a.defaultCwd(sessions))
+		return a, a.openSessionCwdPrompt(taskID, label, a.defaultCwd(sessions, projectID))
 	}
 	if i := row - 1; i >= 0 && i < len(sessions) {
 		return a, resumeSessionCmd(sessions[i], a.dbPath)

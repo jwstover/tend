@@ -114,6 +114,7 @@ func (s *Store) ListProjects(ctx context.Context) ([]task.Project, error) {
 			ArchivedAt: r.ArchivedAt,
 			CreatedAt:  r.CreatedAt,
 			UpdatedAt:  r.UpdatedAt,
+			Cwd:        r.Cwd,
 		}, r.LiveCount)
 		if err != nil {
 			return nil, err
@@ -131,6 +132,20 @@ func (s *Store) RenameProject(ctx context.Context, id int64, name string) error 
 	}
 	if err := s.q.RenameProject(ctx, gen.RenameProjectParams{Name: n, ID: id}); err != nil {
 		return fmt.Errorf("renaming project %d: %w", id, err)
+	}
+	return nil
+}
+
+// SetProjectCwd records the directory a new Claude session on one of the
+// project's tasks should default to (see task.Project.Cwd); "" clears it.
+// The value is normalized (task.NormalizeProjectCwd) but not checked
+// against the filesystem, for the reasons given there.
+func (s *Store) SetProjectCwd(ctx context.Context, id int64, cwd string) error {
+	if err := s.q.SetProjectCwd(ctx, gen.SetProjectCwdParams{
+		Cwd: task.NormalizeProjectCwd(cwd),
+		ID:  id,
+	}); err != nil {
+		return fmt.Errorf("setting project %d cwd: %w", id, err)
 	}
 	return nil
 }
@@ -237,6 +252,7 @@ func projectToDomain(row gen.Project, liveCount int64) (task.Project, error) {
 		ArchivedAt: archived,
 		CreatedAt:  created,
 		UpdatedAt:  updated,
+		Cwd:        row.Cwd,
 		LiveCount:  liveCount,
 	}, nil
 }
