@@ -11,13 +11,15 @@ import "time"
 type SessionStatus string
 
 const (
-	// SessionUnknown is the honest default: a session tend has never
-	// heard from. Also where a brand-new session sits until its first
-	// hook event lands against a row that exists (see the ordering note
-	// on Session.Status).
+	// SessionUnknown is the honest default for a session tend has never
+	// heard from: a row from before launch-time rows existed, or a
+	// status value tend doesn't recognize. A session tend launched
+	// itself never starts here — it starts at SessionStarting.
 	SessionUnknown SessionStatus = "unknown"
-	// SessionStarting is set by the SessionStart hook — claude is up,
-	// but nothing has been observed about what it's doing yet.
+	// SessionStarting means claude is being started, or is up, but
+	// nothing has been observed about what it's doing yet. Written at
+	// launch when the row is created (see Session.Status) and again by
+	// the SessionStart hook.
 	SessionStarting SessionStatus = "starting"
 	// SessionWorking means claude is mid-turn. No hook reports this;
 	// Claude Code fires nothing during a tool call, so only the
@@ -51,11 +53,13 @@ const (
 // so its recap was deliberately skipped and is still owed. Any tend
 // instance drains it once the session is really gone.
 //
-// Status is hook-reported and StatusUpdatedAt is when it last changed,
-// zero if never. Both are a convenience indicator, deliberately
-// not a source of truth: a session's row isn't written until its first
-// terminal handoff *returns*, so hook events fired during a brand-new
-// session's first run land on no row at all and are dropped.
+// Status is what tend last observed about the session and StatusUpdatedAt
+// is when that changed; zero only for a row from before rows were written
+// at launch. Both are a convenience indicator, deliberately not a source
+// of truth (`tmux has-session` is; see SessionEnded). The row is written
+// at launch, ahead of the terminal handoff, with Status SessionStarting —
+// so the session's own hooks find it from the very first turn, and a
+// fresh session reads starting, then idle, without ever being resumed.
 //
 // StepRunID is set when the session ran a workflow step (it points at
 // that step run, see internal/workflow) so the SESSIONS section can say

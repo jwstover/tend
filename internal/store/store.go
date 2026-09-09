@@ -488,11 +488,17 @@ func (s *Store) ListEvents(ctx context.Context, from, to time.Time) ([]task.Even
 	return events, nil
 }
 
-// CreateSession records a Claude Code session launched or resumed against
-// a task: the pinned external session id, the directory it ran in, and
-// the task's title snapshotted as the label. tmuxSession is the wrapping
-// tmux session's name, or "" when the session wasn't launched under tmux
-// (see task.Session).
+// CreateSession records a Claude Code session about to be launched against
+// a task: the pinned external session id, the directory it will run in,
+// and the task's title snapshotted as the label. tmuxSession is the
+// wrapping tmux session's name, or "" when the session isn't launched
+// under tmux (see task.Session).
+//
+// It is called right before the terminal handoff, not after it returns,
+// so the row exists for the session's own hooks to find from its very
+// first turn. The row starts with status 'starting' and a non-zero
+// StatusUpdatedAt; a launch that then fails is expected to take the row
+// back with DeleteSession.
 func (s *Store) CreateSession(ctx context.Context, taskID int64, externalID, cwd, label, tmuxSession string) (task.Session, error) {
 	row, err := s.q.CreateSession(ctx, gen.CreateSessionParams{
 		TaskID: taskID, ExternalID: externalID, Cwd: cwd, Label: label, TmuxSession: tmuxSession,
@@ -504,6 +510,18 @@ func (s *Store) CreateSession(ctx context.Context, taskID int64, externalID, cwd
 		return task.Session{}, fmt.Errorf("inserting session for task %d: %w", taskID, err)
 	}
 	return sessionToDomain(row)
+}
+
+// DeleteSession removes a session row, for the one case a row should not
+// outlive the moment it was written: a launch whose handoff failed (a
+// non-zero exit, a tmux that would not start) never became a session, and
+// the row CreateSession wrote ahead of it would otherwise read as one.
+// Deleting an id that is already gone is not an error.
+func (s *Store) DeleteSession(ctx context.Context, id int64) error {
+	if err := s.q.DeleteSession(ctx, id); err != nil {
+		return fmt.Errorf("deleting session %d: %w", id, err)
+	}
+	return nil
 }
 
 // ListSessionsForTask returns a task's sessions, most recently active
@@ -538,8 +556,7 @@ func (s *Store) TouchSession(ctx context.Context, id int64) error {
 // distinguishing sessions on the same task. Keyed by external_id rather
 // than the row id: it's the identifier
 // recapSessionCmd already has in hand for both a freshly launched
-// session (whose row id it never sees, since CreateSession's caller
-// discards the result) and a resumed one alike.
+// session and a resumed one alike.
 func (s *Store) UpdateSessionLabel(ctx context.Context, externalID, label string) error {
 	if err := s.q.UpdateSessionLabel(ctx, gen.UpdateSessionLabelParams{ExternalID: externalID, Label: label}); err != nil {
 		return fmt.Errorf("updating session label for %s: %w", externalID, err)
@@ -569,10 +586,12 @@ func (s *Store) SetSessionNeedsRecap(ctx context.Context, externalID string, nee
 // carries as session_id, which is what makes the correlation a lookup
 // rather than a join.
 //
-// A session id with no row is not an error: agent_sessions rows are only
-// written once a session's first terminal handoff *returns*, so hooks
-// fired during a brand-new session's first run legitimately match
-// nothing. The UPDATE affects zero rows and that's the whole story.
+// A session id with no row is not an error. Rows are written at launch
+// (CreateSession), so a running session's hooks normally do match one,
+// but a hook can still fire for a session tend has no row for — a launch
+// that failed and had its row deleted, or a claude started outside tend
+// with tend's settings on hand. The UPDATE affects zero rows and that's
+// the whole story.
 //
 // last_active_at is bumped alongside the status because a hook event is
 // genuine activity — it keeps the resume picker's newest-first ordering

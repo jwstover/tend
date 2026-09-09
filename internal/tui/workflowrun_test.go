@@ -317,7 +317,76 @@ func preparedRun(t *testing.T, s *store.Store, tk task.Task) (workflow.Run, work
 	return run, sr
 }
 
-// A workflow session's handoff returning for real records the session
+// launchedStep writes the row launchWorkflowStepCmd writes ahead of its
+// handoff: the step's session, bound to its step run.
+func launchedStep(t *testing.T, s *store.Store, sr workflow.StepRun, tk task.Task, tmux string) task.Session {
+	t.Helper()
+	sess, err := s.CreateStepRunSession(context.Background(), sr.ID, tk.ID, sr.SessionExternalID,
+		"/tmp/repo", "fix a bug — "+tk.Title, tmux)
+	if err != nil {
+		t.Fatalf("CreateStepRunSession: %v", err)
+	}
+	return sess
+}
+
+// finishedStep is finished for a workflow step's session: the run and
+// step run ids ride along so the ending is recorded against them.
+func finishedStep(sess task.Session, run workflow.Run, sr workflow.StepRun) sessionFinishedMsg {
+	msg := finished(sess)
+	msg.runID, msg.stepRunID = run.ID, sr.ID
+	return msg
+}
+
+// The launch half for a workflow step: the session row is written ahead
+// of the handoff, bound to its step run and already starting, so the
+// step's hooks have a row from its first turn like any other session.
+func TestLaunchWorkflowStepCmdWritesStartingRowBeforeHandoff(t *testing.T) {
+	isolateLaunchFiles(t)
+	ctx := context.Background()
+	m, s := newTestApp(t)
+	tk, err := s.AddTask(ctx, "do the thing")
+	if err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	run, sr := preparedRun(t, s, tk)
+	w, _ := oneStepWorkflow(t, s, "another", "unused")
+	req := workflowRunRequest{t: tk, w: w, step: workflow.Step{ID: sr.StepID, Name: "fix"}}
+
+	msg := m.(app).launchWorkflowStepCmd(workflowRunPreparedMsg{req: req, cwd: "/tmp/repo", run: run, stepRun: sr})()
+	if e, ok := msg.(errMsg); ok {
+		t.Fatalf("launch produced an error instead of the handoff: %v", e.err)
+	}
+	if msg == nil {
+		t.Fatal("launch produced no message; want the exec handoff")
+	}
+
+	sessions, err := s.ListSessionsForTask(ctx, tk.ID)
+	if err != nil {
+		t.Fatalf("ListSessionsForTask: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("sessions = %+v, want the row written ahead of the handoff", sessions)
+	}
+	sess := sessions[0]
+	if sess.ExternalID != sr.SessionExternalID || sess.StepRunID == nil || *sess.StepRunID != sr.ID {
+		t.Errorf("session = %+v, want it under the step run's session id and bound to step run %d", sess, sr.ID)
+	}
+	if sess.Status != task.SessionStarting {
+		t.Errorf("Status = %q, want %q right after launch", sess.Status, task.SessionStarting)
+	}
+	if sess.Label != req.label() || sess.Cwd != "/tmp/repo" {
+		t.Errorf("session = %+v, want the step's label and cwd", sess)
+	}
+	got, err := s.GetRun(ctx, run.ID)
+	if err != nil {
+		t.Fatalf("GetRun: %v", err)
+	}
+	if got.State != workflow.RunRunning {
+		t.Errorf("run state = %s, want still running while the step is up", got.State)
+	}
+}
+
+// A workflow session's handoff returning for real keeps the session
 // against its step run and ends the run.
 func TestWorkflowSessionFinishedEndsRun(t *testing.T) {
 	ctx := context.Background()
@@ -327,12 +396,10 @@ func TestWorkflowSessionFinishedEndsRun(t *testing.T) {
 		t.Fatalf("AddTask: %v", err)
 	}
 	run, sr := preparedRun(t, s, tk)
+	sess := launchedStep(t, s, sr, tk, "")
 	m = drive(t, m, refreshMsg{})
 
-	m = drive(t, m, sessionFinishedMsg{
-		taskID: tk.ID, externalID: "ext-wf", cwd: "/tmp/repo", label: "fix a bug — do the thing",
-		runID: run.ID, stepRunID: sr.ID,
-	})
+	m = drive(t, m, finishedStep(sess, run, sr))
 
 	waitFor(t, "run ended", func() bool {
 		got, err := s.GetRun(ctx, run.ID)
@@ -365,13 +432,13 @@ func TestWorkflowSessionBackgroundedKeepsRunRunning(t *testing.T) {
 		t.Fatalf("AddTask: %v", err)
 	}
 	run, sr := preparedRun(t, s, tk)
+	sess := launchedStep(t, s, sr, tk, "tend-ext-wf")
 	stubSessionAlive(t, true) // still running under tmux: the drain must leave it alone
 	m = drive(t, m, refreshMsg{})
 
-	m = drive(t, m, sessionFinishedMsg{
-		taskID: tk.ID, externalID: "ext-wf", cwd: "/tmp/repo", label: "fix a bug — do the thing",
-		tmuxSession: "tend-ext-wf", backgrounded: true, runID: run.ID, stepRunID: sr.ID,
-	})
+	msg := finishedStep(sess, run, sr)
+	msg.backgrounded = true
+	m = drive(t, m, msg)
 
 	waitFor(t, "session recorded", func() bool {
 		sessions, err := s.ListSessionsForTask(ctx, tk.ID)
@@ -423,7 +490,8 @@ func TestDrainEndsRunOfDeadWorkflowSession(t *testing.T) {
 }
 
 // A launch that errors out marks the run failed instead of leaving it
-// running forever with no session behind it.
+// running forever, and takes back the session row written ahead of the
+// handoff so no phantom session is left behind it.
 func TestWorkflowSessionLaunchErrorFailsRun(t *testing.T) {
 	ctx := context.Background()
 	m, s := newTestApp(t)
@@ -432,12 +500,12 @@ func TestWorkflowSessionLaunchErrorFailsRun(t *testing.T) {
 		t.Fatalf("AddTask: %v", err)
 	}
 	run, sr := preparedRun(t, s, tk)
+	sess := launchedStep(t, s, sr, tk, "tend-ext-wf")
 	m = drive(t, m, refreshMsg{})
 
-	m = drive(t, m, sessionFinishedMsg{
-		taskID: tk.ID, externalID: "ext-wf", cwd: "/tmp/repo", label: "x",
-		err: context.DeadlineExceeded, runID: run.ID, stepRunID: sr.ID,
-	})
+	msg := finishedStep(sess, run, sr)
+	msg.err = context.DeadlineExceeded
+	m = drive(t, m, msg)
 	if !m.(app).status.isErr {
 		t.Error("expected an error flash after a failed launch")
 	}
@@ -445,7 +513,8 @@ func TestWorkflowSessionLaunchErrorFailsRun(t *testing.T) {
 		got, err := s.GetRun(ctx, run.ID)
 		return err == nil && got.State == workflow.RunFailed
 	})
-	if sessions, _ := s.ListSessionsForTask(ctx, tk.ID); len(sessions) != 0 {
-		t.Errorf("session recorded despite a launch error: %+v", sessions)
-	}
+	waitFor(t, "launch row deleted", func() bool {
+		sessions, err := s.ListSessionsForTask(ctx, tk.ID)
+		return err == nil && len(sessions) == 0
+	})
 }

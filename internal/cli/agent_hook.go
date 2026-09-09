@@ -72,9 +72,10 @@ func runAgentHook(ctx context.Context, open func(ctx context.Context) (Store, er
 	}
 	defer s.Close()
 
-	// A session id matching no row is the normal case for a brand-new
-	// session's first run — agent_sessions rows are written when the
-	// terminal handoff returns, not at launch — so SetSessionStatus
-	// treats zero rows updated as success, not an error.
+	// The row is written at launch, ahead of the handoff, so a running
+	// session's hooks normally find it — but a session id matching no
+	// row (a launch that failed and was cleaned up, a claude started
+	// outside tend) is still not an error; SetSessionStatus treats zero
+	// rows updated as success.
 	return s.SetSessionStatus(ctx, payload.SessionID, status)
 }

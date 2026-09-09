@@ -9,6 +9,14 @@ import (
 	"github.com/jwstover/tend/internal/task"
 )
 
+// nextStatusTick waits out the millisecond status_updated_at is stamped
+// at. A row is created already stamped (status starting, at launch), so a
+// test that writes a "concurrent" hook status straight after creation can
+// land in the same millisecond and mint a byte-identical CAS token — a
+// timeline no real launch has, since a hook needs a running claude to
+// fire, but one a back-to-back test easily does.
+func nextStatusTick() { time.Sleep(2 * time.Millisecond) }
+
 // stubCapturePane pins pollSessions' pane read to fn, without a real tmux
 // server — the same seam stubSessionAlive gives the drain its liveness
 // answer.
@@ -109,6 +117,7 @@ func TestPollSessionsEndedWriteLosesRaceToConcurrentHook(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
+	nextStatusTick()
 	// Race simulated the same way the working/idle CAS tests do it: the
 	// hook's write happens between SessionsWithTmux's read (inside
 	// pollSessions) and sessionAlive's answer, via the sessionAlive stub
@@ -282,6 +291,7 @@ func TestPollSessionsLosesRaceToConcurrentHook(t *testing.T) {
 	if _, err := s.CreateSession(ctx, parent.ID, "ext-1", "/tmp/work", parent.Title, "tend-ext-1"); err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
+	nextStatusTick()
 	stubCapturePane(t, func(sess task.Session) (string, error) {
 		if err := s.SetSessionStatus(ctx, sess.ExternalID, task.SessionBlocked); err != nil {
 			t.Fatalf("SetSessionStatus: %v", err)

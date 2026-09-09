@@ -622,8 +622,9 @@ func (s *Store) SetStepRunSession(ctx context.Context, id int64, externalID stri
 }
 
 // CreateStepRunSession is CreateSession for a session launched by a
-// workflow step: identical, plus the back-pointer that lets the SESSIONS
-// section say which step the session belonged to.
+// workflow step: identical — written at launch, ahead of the handoff, with
+// status 'starting' — plus the back-pointer that lets the SESSIONS section
+// say which step the session belonged to.
 func (s *Store) CreateStepRunSession(ctx context.Context, stepRunID, taskID int64, externalID, cwd, label, tmuxSession string) (task.Session, error) {
 	row, err := s.q.CreateSession(ctx, gen.CreateSessionParams{
 		TaskID: taskID, ExternalID: externalID, Cwd: cwd, Label: label, TmuxSession: tmuxSession,

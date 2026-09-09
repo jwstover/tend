@@ -29,7 +29,8 @@ import (
 //     task's most recent session directory like a plain launch does.
 //  3. Submitting the cwd renders the prompt and writes the run and step
 //     run rows (workflowRunPreparedMsg), and Update hands the terminal to
-//     claude through the same tea.ExecProcess path launchSessionCmd uses.
+//     claude through the same path launchSessionCmd uses: the session row
+//     is written, then tea.ExecProcess takes over.
 //
 // When the handoff returns, sessionFinishedMsg carries the run and step
 // run ids, so a real exit ends the run and a backgrounded one is settled
@@ -237,58 +238,76 @@ func (a app) prepareWorkflowRunCmd(req workflowRunRequest, cwd string) tea.Cmd {
 // launchWorkflowStepCmd is launchSessionCmd for a prepared step run: the
 // same MCP config, hook settings and tmux wrapping, plus the step's
 // rendered prompt, model and permission mode, under the session id the
-// step run was recorded with. The resulting sessionFinishedMsg carries
-// the run and step run ids so the ending is recorded against them.
+// step run was recorded with. The session row is likewise written ahead
+// of the handoff — bound to its step run — so the step's hooks land on it
+// from the first turn. The resulting sessionFinishedMsg carries the run
+// and step run ids so the ending is recorded against them.
+//
+// A session row that cannot be written is the one launch-time failure
+// with a run already on the books, so it fails the run here rather than
+// leaving it running forever behind a session that never started.
 func (a app) launchWorkflowStepCmd(msg workflowRunPreparedMsg) tea.Cmd {
-	req, sr := msg.req, msg.stepRun
-	mcpPath, mcpCleanup, _ := agent.WriteMCPConfig(req.t.ID, a.dbPath)
-	hooksPath, hooksCleanup, _ := agent.WriteHookSettings(a.dbPath)
-	label := req.label()
-	c, tmuxName, confPath := wrapInTmux(agent.LaunchCmdWith(msg.cwd, sr.SessionExternalID, label, mcpPath, hooksPath,
-		agent.LaunchOpts{Prompt: sr.PromptRendered, Model: sr.Model, PermissionMode: sr.PermissionMode}),
-		sr.SessionExternalID)
-	return tea.ExecProcess(c, func(err error) tea.Msg {
-		bg := err == nil && agent.HasSession(tmuxName, confPath)
-		if !bg {
+	return func() tea.Msg {
+		req, sr := msg.req, msg.stepRun
+		mcpPath, mcpCleanup, _ := agent.WriteMCPConfig(req.t.ID, a.dbPath)
+		hooksPath, hooksCleanup, _ := agent.WriteHookSettings(a.dbPath)
+		label := req.label()
+		c, tmuxName, confPath := wrapInTmux(agent.LaunchCmdWith(msg.cwd, sr.SessionExternalID, label, mcpPath, hooksPath,
+			agent.LaunchOpts{Prompt: sr.PromptRendered, Model: sr.Model, PermissionMode: sr.PermissionMode}),
+			sr.SessionExternalID)
+
+		sess, err := a.store.CreateStepRunSession(a.ctx, sr.ID, req.t.ID,
+			sr.SessionExternalID, msg.cwd, label, tmuxName)
+		if err != nil {
 			mcpCleanup()
 			hooksCleanup()
-		}
-		return sessionFinishedMsg{
-			taskID:       req.t.ID,
-			externalID:   sr.SessionExternalID,
-			cwd:          msg.cwd,
-			label:        label,
-			tmuxSession:  tmuxName,
-			backgrounded: bg,
-			err:          err,
-			runID:        msg.run.ID,
-			stepRunID:    sr.ID,
-		}
-	})
-}
-
-// recordSession writes the session row for a finished launch: bound to
-// its step run when the session was a workflow step, plain otherwise.
-func (a app) recordSession(msg sessionFinishedMsg) error {
-	if msg.stepRunID != 0 {
-		_, err := a.store.CreateStepRunSession(a.ctx, msg.stepRunID, msg.taskID,
-			msg.externalID, msg.cwd, msg.label, msg.tmuxSession)
-		return err
-	}
-	_, err := a.store.CreateSession(a.ctx, msg.taskID, msg.externalID, msg.cwd, msg.label, msg.tmuxSession)
-	return err
-}
-
-// failWorkflowRunCmd marks a run failed after its launch errored. The
-// error flash is already showing, so this refreshes silently: a store
-// error here is reported, success is not.
-func (a app) failWorkflowRunCmd(runID int64) tea.Cmd {
-	return func() tea.Msg {
-		if err := a.store.SetRunState(a.ctx, runID, workflow.RunFailed); err != nil {
+			if ferr := a.store.SetRunState(a.ctx, msg.run.ID, workflow.RunFailed); ferr != nil {
+				return errMsg{fmt.Errorf("%w (and failing run %d: %v)", err, msg.run.ID, ferr)}
+			}
 			return errMsg{err}
 		}
-		return nil
+		return tea.ExecProcess(c, func(err error) tea.Msg {
+			bg := err == nil && agent.HasSession(tmuxName, confPath)
+			if !bg {
+				mcpCleanup()
+				hooksCleanup()
+			}
+			return sessionFinishedMsg{
+				sessionRowID: sess.ID,
+				taskID:       req.t.ID,
+				externalID:   sr.SessionExternalID,
+				cwd:          msg.cwd,
+				label:        label,
+				tmuxSession:  tmuxName,
+				backgrounded: bg,
+				err:          err,
+				runID:        msg.run.ID,
+				stepRunID:    sr.ID,
+			}
+		})()
 	}
+}
+
+// abandonLaunchCmd cleans up after a launch whose handoff returned an
+// error: the session row written ahead of it goes (a session that never
+// ran is not a session, and a row for it would read as one in SESSIONS
+// and to the poller), and a workflow run it was meant to drive is marked
+// failed rather than left running forever. It refreshes afterwards —
+// the poller may have already shown the row, or marked it ended, while
+// the handoff was out — carrying the error flash through so the failure
+// stays on screen rather than being replaced by a success message.
+func (a app) abandonLaunchCmd(msg sessionFinishedMsg, status flash) tea.Cmd {
+	return a.mutate(status, func() error {
+		if msg.sessionRowID != 0 {
+			if err := a.store.DeleteSession(a.ctx, msg.sessionRowID); err != nil {
+				return err
+			}
+		}
+		if msg.runID != 0 {
+			return a.store.SetRunState(a.ctx, msg.runID, workflow.RunFailed)
+		}
+		return nil
+	})
 }
 
 // finishStepRunIfAny ends the run of a session that ran a workflow step,
@@ -303,8 +322,8 @@ func (a app) finishStepRunIfAny(stepRunID *int64) error {
 
 // finishStepRunCmd is finishStepRunIfAny as a Cmd, for the recap drain,
 // which learns about a backgrounded workflow session ending outside any
-// terminal handoff. Silent on success like failWorkflowRunCmd: the drain
-// is housekeeping, not something the user asked for.
+// terminal handoff. Silent on success: the drain is housekeeping, not
+// something the user asked for.
 func (a app) finishStepRunCmd(stepRunID int64) tea.Cmd {
 	return func() tea.Msg {
 		if err := a.store.FinishRunAtStep(a.ctx, stepRunID, workflow.OutcomeDone, ""); err != nil {

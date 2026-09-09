@@ -22,11 +22,11 @@ const tmuxBinary = "tmux"
 const SocketName = "tend"
 
 // sessionPrefix namespaces tend's tmux sessions. The full name is this
-// plus the claude external session id — not the agent_sessions row id,
-// because no row exists at launch time (CreateSession runs when the
-// terminal handoff *returns*). The UUID is already in hand before
-// launch, is shell-safe, and is what Claude Code reports as session_id
-// in its hook payloads, which makes status correlation a direct lookup.
+// plus the claude external session id rather than the agent_sessions row
+// id: the UUID is pinned before anything else happens at launch, is
+// shell-safe, is what Claude Code reports as session_id in its hook
+// payloads (making status correlation a direct lookup), and is what a
+// pre-tmux row can derive a name from without ever having stored one.
 const sessionPrefix = "tend-"
 
 // SessionName is the tmux session name wrapping a given claude session.

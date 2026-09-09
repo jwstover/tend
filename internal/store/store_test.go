@@ -895,9 +895,12 @@ func TestSetSessionNeedsRecap(t *testing.T) {
 	}
 }
 
-// Status starts at the honest default rather than guessing: a session
-// tend has never heard from is unknown, not idle.
-func TestSessionStatusDefaultsToUnknown(t *testing.T) {
+// A row is written at launch, ahead of the terminal handoff, so it starts
+// as 'starting' — claude is being started, nothing observed yet — with the
+// timestamp set so the poller's settle floor counts from launch. Then the
+// first turn's hooks land on it: starting from SessionStart, idle from
+// Stop, with no resume in between.
+func TestCreateSessionStartsAsStarting(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
 	parent := mustAdd(t, s, "do the thing")
@@ -906,13 +909,78 @@ func TestSessionStatusDefaultsToUnknown(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
-	if sess.Status != task.SessionUnknown {
-		t.Errorf("Status = %q, want %q", sess.Status, task.SessionUnknown)
+	if sess.Status != task.SessionStarting {
+		t.Errorf("Status = %q, want %q", sess.Status, task.SessionStarting)
 	}
-	if !sess.StatusUpdatedAt.IsZero() {
-		t.Errorf("StatusUpdatedAt = %v, want zero — nothing has been observed yet", sess.StatusUpdatedAt)
+	if sess.StatusUpdatedAt.IsZero() {
+		t.Error("StatusUpdatedAt is zero, want it stamped at launch")
+	}
+
+	for _, st := range []task.SessionStatus{task.SessionStarting, task.SessionIdle} {
+		if err := s.SetSessionStatus(ctx, "ext-1", st); err != nil {
+			t.Fatalf("SetSessionStatus(%s): %v", st, err)
+		}
+		got, err := s.ListSessionsForTask(ctx, parent.ID)
+		if err != nil {
+			t.Fatalf("ListSessionsForTask: %v", err)
+		}
+		if len(got) != 1 || got[0].Status != st {
+			t.Errorf("after hook %s: sessions = %+v, want that status on the launch row", st, got)
+		}
 	}
 }
+
+// DeleteSession takes back the row a failed launch left behind; a second
+// delete of the same id is a no-op, not an error.
+func TestDeleteSession(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	parent := mustAdd(t, s, "do the thing")
+	sess, err := s.CreateSession(ctx, parent.ID, "ext-1", "/tmp/work", parent.Title, "tend-ext-1")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	keep, err := s.CreateSession(ctx, parent.ID, "ext-2", "/tmp/work", parent.Title, "tend-ext-2")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	if err := s.DeleteSession(ctx, sess.ID); err != nil {
+		t.Fatalf("DeleteSession: %v", err)
+	}
+	if err := s.DeleteSession(ctx, sess.ID); err != nil {
+		t.Errorf("DeleteSession (again): %v, want a no-op", err)
+	}
+
+	got, err := s.ListSessionsForTask(ctx, parent.ID)
+	if err != nil {
+		t.Fatalf("ListSessionsForTask: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != keep.ID {
+		t.Errorf("sessions = %+v, want only the untouched one", got)
+	}
+}
+
+// forgetStatus resets a row to the shape rows had before launch-time
+// writes existed: status unknown and status_updated_at NULL, "never
+// observed". No Store method produces that any more, but such rows are
+// still in real databases, so the NULL branch of the poller's CAS still
+// needs exercising.
+func forgetStatus(t *testing.T, s *Store, externalID string) {
+	t.Helper()
+	if _, err := s.db.ExecContext(context.Background(),
+		`UPDATE agent_sessions SET status = 'unknown', status_updated_at = NULL WHERE external_id = ?`,
+		externalID); err != nil {
+		t.Fatalf("clearing status for %s: %v", externalID, err)
+	}
+}
+
+// nextStatusTick waits out the millisecond status_updated_at is stamped
+// at. A row is created already stamped, so a "concurrent" hook write
+// straight after creation can land in the same millisecond and mint a
+// byte-identical CAS token — a timeline no real launch has (a hook needs
+// a running claude to fire), but one a back-to-back test easily does.
+func nextStatusTick() { time.Sleep(2 * time.Millisecond) }
 
 func TestSetSessionStatusRoundTrips(t *testing.T) {
 	ctx := context.Background()
@@ -937,10 +1005,10 @@ func TestSetSessionStatusRoundTrips(t *testing.T) {
 	}
 }
 
-// A hook fired during a brand-new session's first run legitimately
-// matches no row — agent_sessions rows are written when the terminal
-// handoff returns, not at launch. That must not be an error, or every
-// such session would print a failure into the user's transcript.
+// A hook can still fire for a session id with no row — a launch that
+// failed and had its row deleted, a claude started outside tend with
+// tend's settings — and that must not be an error, or it would print a
+// failure into the user's transcript.
 func TestSetSessionStatusUnknownSessionIsNotAnError(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
@@ -1077,10 +1145,10 @@ func TestSessionStatusesTakesLatestPerTask(t *testing.T) {
 	if got := statuses[a.ID]; got != task.SessionWorking {
 		t.Errorf("task a status = %q, want %q (the newer session)", got, task.SessionWorking)
 	}
-	// A session nothing has reported on still appears, as unknown — the
-	// row renders that as blank, which is not the same as absent.
-	if got, ok := statuses[b.ID]; !ok || got != task.SessionUnknown {
-		t.Errorf("task b status = %q (present=%v), want %q", got, ok, task.SessionUnknown)
+	// A session no hook has reported on yet still appears, as starting —
+	// its launch-time status — which is not the same as absent.
+	if got, ok := statuses[b.ID]; !ok || got != task.SessionStarting {
+		t.Errorf("task b status = %q (present=%v), want %q", got, ok, task.SessionStarting)
 	}
 	if len(statuses) != 2 {
 		t.Errorf("len(statuses) = %d, want 2 — a task with no sessions must not appear", len(statuses))
@@ -1118,18 +1186,23 @@ func TestSessionsWithTmux(t *testing.T) {
 }
 
 // The compare-and-swap succeeds when nothing has moved status_updated_at
-// since the caller's read — a session no hook has ever touched, matched
-// here against SQL NULL via a zero time.Time.
+// since the caller's read — here a pre-launch-row-era session nothing has
+// ever observed, matched against SQL NULL via a zero time.Time.
 func TestSetSessionWorkingIfUnchangedSucceedsWhenNeverObserved(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
 	parent := mustAdd(t, s, "do the thing")
-	sess, err := s.CreateSession(ctx, parent.ID, "ext-1", "/tmp/work", parent.Title, "tend-ext-1")
-	if err != nil {
+	if _, err := s.CreateSession(ctx, parent.ID, "ext-1", "/tmp/work", parent.Title, "tend-ext-1"); err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
+	forgetStatus(t, s, "ext-1")
+	sessions, err := s.ListSessionsForTask(ctx, parent.ID)
+	if err != nil {
+		t.Fatalf("ListSessionsForTask: %v", err)
+	}
+	sess := sessions[0]
 	if !sess.StatusUpdatedAt.IsZero() {
-		t.Fatalf("StatusUpdatedAt = %v, want zero for a brand-new session", sess.StatusUpdatedAt)
+		t.Fatalf("StatusUpdatedAt = %v, want zero for a never-observed row", sess.StatusUpdatedAt)
 	}
 
 	ok, err := s.SetSessionWorkingIfUnchanged(ctx, "ext-1", sess.StatusUpdatedAt)
@@ -1140,7 +1213,7 @@ func TestSetSessionWorkingIfUnchangedSucceedsWhenNeverObserved(t *testing.T) {
 		t.Fatal("SetSessionWorkingIfUnchanged = false, want true — nothing raced it")
 	}
 
-	sessions, err := s.ListSessionsForTask(ctx, parent.ID)
+	sessions, err = s.ListSessionsForTask(ctx, parent.ID)
 	if err != nil {
 		t.Fatalf("ListSessionsForTask: %v", err)
 	}
@@ -1191,7 +1264,8 @@ func TestSetSessionWorkingIfUnchangedLosesToAConcurrentHook(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
-	staleObserved := sess.StatusUpdatedAt // zero — as the poller would have read it pre-hook
+	staleObserved := sess.StatusUpdatedAt // the launch stamp — as the poller would have read it pre-hook
+	nextStatusTick()
 
 	// Simulate a Notification hook landing mid-tick.
 	if err := s.SetSessionStatus(ctx, "ext-1", task.SessionBlocked); err != nil {
@@ -1335,10 +1409,15 @@ func TestSetSessionEndedIfUnchangedSucceedsWhenNeverObserved(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
 	parent := mustAdd(t, s, "do the thing")
-	sess, err := s.CreateSession(ctx, parent.ID, "ext-1", "/tmp/work", parent.Title, "tend-ext-1")
-	if err != nil {
+	if _, err := s.CreateSession(ctx, parent.ID, "ext-1", "/tmp/work", parent.Title, "tend-ext-1"); err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
+	forgetStatus(t, s, "ext-1")
+	sessions, err := s.ListSessionsForTask(ctx, parent.ID)
+	if err != nil {
+		t.Fatalf("ListSessionsForTask: %v", err)
+	}
+	sess := sessions[0]
 
 	ok, err := s.SetSessionEndedIfUnchanged(ctx, "ext-1", sess.StatusUpdatedAt)
 	if err != nil {
@@ -1348,7 +1427,7 @@ func TestSetSessionEndedIfUnchangedSucceedsWhenNeverObserved(t *testing.T) {
 		t.Fatal("SetSessionEndedIfUnchanged = false, want true — nothing raced it")
 	}
 
-	sessions, err := s.ListSessionsForTask(ctx, parent.ID)
+	sessions, err = s.ListSessionsForTask(ctx, parent.ID)
 	if err != nil {
 		t.Fatalf("ListSessionsForTask: %v", err)
 	}
@@ -1369,7 +1448,8 @@ func TestSetSessionEndedIfUnchangedLosesToAConcurrentHook(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
-	staleObserved := sess.StatusUpdatedAt // zero — as the poller would have read it pre-hook
+	staleObserved := sess.StatusUpdatedAt // the launch stamp — as the poller would have read it pre-hook
+	nextStatusTick()
 
 	if err := s.SetSessionStatus(ctx, "ext-1", task.SessionBlocked); err != nil {
 		t.Fatalf("SetSessionStatus: %v", err)
