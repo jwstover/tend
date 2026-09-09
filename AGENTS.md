@@ -133,6 +133,7 @@ tend/
 │   │   ├── detail.go                  #   detail pane: glamour body, sub-tasks, SESSIONS, LOG
 │   │   ├── triage.go                   #   inbox processing view
 │   │   ├── standup.go                   #   standup view: notes + activity summary, yank to clipboard
+│   │   ├── workflows.go                  #   workflows authoring view: workflows + steps, prompt in $EDITOR
 │   │   ├── sessions.go                   #   launch/resume/background tea.Cmds, session picker, recap + status polling
 │   │   ├── palette.go / urlpicker.go / whichkey.go / modal.go / help.go   #   supporting overlays
 │   │   ├── keys.go                       #   key bindings (source of truth — see the in-app `?` help too)
@@ -296,6 +297,7 @@ Built on Bubble Tea v2 + Bubbles v2 + Lip Gloss v2; Glamour v2 renders the body.
 - **Detail pane.** The heart of the tool: glamour-rendered markdown body, a sub-task checklist, a `SESSIONS` section (this task's Claude Code sessions — launch, resume, or attach to a backgrounded one), and a `LOG` section (manual notes plus auto-generated session recaps). Scrollable and independently focusable so long histories are reachable. URL detection lets the user open a link under the cursor or all of them via the OS opener.
 - **Triage view.** Filtered to `inbox`. Fast keys to set state, assign a project, add tags or a due date, open the body in `$EDITOR`, or send to `someday`/`done` — the batched processing pass.
 - **Standup view.** Manual notes grouped by task plus a generated activity summary (completed/blocked/started, derived from `task_events`); yank the whole thing as markdown.
+- **Workflows view.** Authoring for agent workflows (`internal/workflow`): the workflows on the left, the selected one's steps on the right in `sort_order`. Create/rename/duplicate/delete workflows; add, reorder and delete steps; set a step's model, permission mode and kind (agent/gate); edit its prompt template in `$EDITOR` and validate the templates. Edges and the graph preview are not here yet, so a workflow reads as a linear list.
 - **Editing the body.** Shells out to `$EDITOR` — there is no in-terminal markdown editor.
 
 Full key bindings live in `internal/tui/keys.go` and are discoverable in-app via `?` — not duplicated here since they're a fast-moving implementation detail, not architecture.

@@ -67,6 +67,11 @@ func (a app) paletteCommands() []paletteCommand {
 				a.startStandup()
 				return a, a.loadStandup()
 			}},
+		{icon: "⛭", label: "Workflows view", hint: "W", aliases: []string{"workflows", "workflow", "wf"},
+			act: func(a app) (tea.Model, tea.Cmd) {
+				a.startWorkflows()
+				return a, a.loadWorkflows(0)
+			}},
 		{icon: "✎", label: "Capture a note", hint: "N", aliases: []string{"note"},
 			act: func(a app) (tea.Model, tea.Cmd) {
 				return a, a.modal.Open(modalLog, true, "note", 0, "")
