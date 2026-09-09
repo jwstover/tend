@@ -30,6 +30,7 @@ type keyMap struct {
 	Delete         key.Binding // first `d` of the `dd` delete chord
 	MoveProject    key.Binding // move the selected task to another project
 	Archive        key.Binding // archive/restore the selected project
+	ProjectCwd     key.Binding // set the selected project's default cwd for new sessions
 
 	// Workflows authoring view (workflows.go). `n`, `R`, `e` and `dd`
 	// reuse QuickAdd, Rename, EditBody and Delete there.
@@ -103,6 +104,7 @@ func defaultKeyMap() keyMap {
 		Delete:         key.NewBinding(key.WithKeys("d"), key.WithHelp("dd", "delete")),
 		MoveProject:    key.NewBinding(key.WithKeys("P"), key.WithHelp("P", "move to project")),
 		Archive:        key.NewBinding(key.WithKeys("A"), key.WithHelp("A", "archive")),
+		ProjectCwd:     key.NewBinding(key.WithKeys("w"), key.WithHelp("w", "default cwd")),
 
 		Workflows:      key.NewBinding(key.WithKeys("W"), key.WithHelp("W", "workflows")),
 		Duplicate:      key.NewBinding(key.WithKeys("D"), key.WithHelp("D", "duplicate")),

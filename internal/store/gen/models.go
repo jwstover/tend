@@ -37,6 +37,7 @@ type Project struct {
 	ArchivedAt sql.NullString
 	CreatedAt  string
 	UpdatedAt  string
+	Cwd        string
 }
 
 type Setting struct {

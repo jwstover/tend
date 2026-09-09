@@ -123,6 +123,8 @@ type Querier interface {
 	RenameProject(ctx context.Context, arg RenameProjectParams) error
 	RenameWorkflow(ctx context.Context, arg RenameWorkflowParams) error
 	SetProjectArchived(ctx context.Context, arg SetProjectArchivedParams) error
+	// '' clears the default working directory; see migration 00010.
+	SetProjectCwd(ctx context.Context, arg SetProjectCwdParams) error
 	SetRunCurrentStepRun(ctx context.Context, arg SetRunCurrentStepRunParams) error
 	// Terminal is final: the WHERE refuses to move a run that has already
 	// ended, and the caller turns zero rows into ErrRunEnded. ended_at is
