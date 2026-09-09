@@ -154,47 +154,73 @@ func wrapInTmux(c *exec.Cmd, externalID string) (wrapped *exec.Cmd, name, confPa
 	return agent.WrapTmux(c, name, confPath), name, confPath
 }
 
-// launchSessionCmd pins a fresh session id, suspends the TUI, and hands
-// the terminal to claude — wrapped in tmux where available, so tmux's
-// detach chord backgrounds the session rather than ending it. The store
-// row is written only once the process returns cleanly (see
-// sessionFinishedMsg), mirroring editBodyCmd's don't-save-on-error
-// handling for $EDITOR. dbPath wires the session's task-bound MCP tools;
-// a config write failure just means no MCP tools this session, not a
-// failure to launch, so it's swallowed rather than surfaced as errCmd.
+// launchSessionCmd pins a fresh session id, writes the session's store
+// row, suspends the TUI, and hands the terminal to claude — wrapped in
+// tmux where available, so tmux's detach chord backgrounds the session
+// rather than ending it.
+//
+// The row is written *before* the handoff, with status starting, so the
+// session's own hooks (SessionStart, then Stop after its first turn) have
+// a row to land on from the very first run — previously it was written
+// only when the process returned, and every hook fired in between matched
+// nothing. That ordering is what a headless runner needs too: something
+// has to exist for it to watch. sessionFinishedMsg then updates the row
+// on return, and a launch that fails takes it back (see the
+// sessionFinishedMsg case in Update) so a broken launch leaves no
+// phantom session behind — the same don't-keep-on-error contract
+// editBodyCmd has for $EDITOR, one write later.
+//
+// The whole thing is one Cmd rather than a store write in Update followed
+// by the exec: Update stays pure, and the row is written in the same
+// breath as the process starts, so nothing can observe a row for a launch
+// that never happened. The Cmd yields tea.ExecProcess's own message, which
+// the program handles exactly as if ExecProcess had been returned
+// directly. dbPath wires the session's task-bound MCP tools; a config
+// write failure just means no MCP tools this session, not a failure to
+// launch, so it's swallowed rather than surfaced as an error.
 //
 // The MCP config is only cleaned up when the session is really over. A
 // backgrounded session still has a live claude process holding that
 // config, and deleting it out from under a running session would break
 // its tools on any reconnect — leaking a small temp file is the cheaper
 // mistake.
-func launchSessionCmd(taskID int64, cwd, label, dbPath string) tea.Cmd {
-	if err := agent.CheckInstalled(); err != nil {
-		return errCmd(err)
-	}
-	id, err := agent.NewSessionID()
-	if err != nil {
-		return errCmd(err)
-	}
-	mcpPath, mcpCleanup, _ := agent.WriteMCPConfig(taskID, dbPath)
-	hooksPath, hooksCleanup, _ := agent.WriteHookSettings(dbPath)
-	c, tmuxName, confPath := wrapInTmux(agent.LaunchCmd(cwd, id, label, mcpPath, hooksPath), id)
-	return tea.ExecProcess(c, func(err error) tea.Msg {
-		bg := err == nil && agent.HasSession(tmuxName, confPath)
-		if !bg {
+func (a app) launchSessionCmd(taskID int64, cwd, label string) tea.Cmd {
+	return func() tea.Msg {
+		if err := checkInstalled(); err != nil {
+			return errMsg{err}
+		}
+		id, err := agent.NewSessionID()
+		if err != nil {
+			return errMsg{err}
+		}
+		mcpPath, mcpCleanup, _ := agent.WriteMCPConfig(taskID, a.dbPath)
+		hooksPath, hooksCleanup, _ := agent.WriteHookSettings(a.dbPath)
+		c, tmuxName, confPath := wrapInTmux(agent.LaunchCmd(cwd, id, label, mcpPath, hooksPath), id)
+
+		sess, err := a.store.CreateSession(a.ctx, taskID, id, cwd, label, tmuxName)
+		if err != nil {
 			mcpCleanup()
 			hooksCleanup()
+			return errMsg{err}
 		}
-		return sessionFinishedMsg{
-			taskID:       taskID,
-			externalID:   id,
-			cwd:          cwd,
-			label:        label,
-			tmuxSession:  tmuxName,
-			backgrounded: bg,
-			err:          err,
-		}
-	})
+		return tea.ExecProcess(c, func(err error) tea.Msg {
+			bg := err == nil && agent.HasSession(tmuxName, confPath)
+			if !bg {
+				mcpCleanup()
+				hooksCleanup()
+			}
+			return sessionFinishedMsg{
+				sessionRowID: sess.ID,
+				taskID:       taskID,
+				externalID:   id,
+				cwd:          cwd,
+				label:        label,
+				tmuxSession:  tmuxName,
+				backgrounded: bg,
+				err:          err,
+			}
+		})()
+	}
 }
 
 // resumeSessionCmd reopens an existing session in its stored directory.
@@ -487,11 +513,10 @@ var runRecap = func(ctx context.Context, cwd, externalID, excerpt string) (strin
 // the session actually did, and a successfully-parsed label is persisted
 // via Store.UpdateSessionLabel, replacing the static task-title snapshot
 // CreateSession wrote at launch. Keyed by externalID rather than a row
-// id since that's what's in hand for both a freshly launched session
-// (whose row id this func never sees — sessionFinishedMsg's CreateSession
-// call is a sibling in the same tea.Batch, not a dependency of this one)
-// and a resumed one alike. A response that doesn't parse into a label
-// just skips the rename — the recap itself still logs normally.
+// id since that's what the recap call itself is keyed by, for a freshly
+// launched session and a resumed one alike. A response that doesn't
+// parse into a label just skips the rename — the recap itself still logs
+// normally.
 //
 // since is nil for a freshly launched session (the whole transcript is
 // new, so the recap is naturally unscoped) and non-nil for a resumed

@@ -58,6 +58,7 @@ type Store interface {
 	SetBody(ctx context.Context, id int64, body string) error
 	DeleteTask(ctx context.Context, id int64) error
 	CreateSession(ctx context.Context, taskID int64, externalID, cwd, label, tmuxSession string) (task.Session, error)
+	DeleteSession(ctx context.Context, id int64) error
 	ListSessionsForTask(ctx context.Context, taskID int64) ([]task.Session, error)
 	TouchSession(ctx context.Context, id int64) error
 	UpdateSessionLabel(ctx context.Context, externalID, label string) error
@@ -290,15 +291,19 @@ type (
 		sessions  []task.Session
 	}
 	// sessionFinishedMsg reports a launched session's terminal handoff
-	// returning; the store row is only written on a clean exit.
-	// tmuxSession is the wrapping tmux session's name, "" when the
-	// session ran without tmux. backgrounded distinguishes a detach from
-	// a real exit — both are a clean return from tea.ExecProcess, so it's
-	// resolved by asking tmux whether the session is still alive (see
-	// launchSessionCmd). runID and stepRunID are set when the session
-	// was a workflow step (see launchWorkflowStepCmd): the session row
-	// then points at the step run, and a real exit ends the run.
+	// returning. The store row was already written at launch, ahead of
+	// the handoff, with status starting (see launchSessionCmd);
+	// sessionRowID is that row, touched on a clean return and deleted on
+	// an error so a launch that never became a session leaves no row
+	// behind. tmuxSession is the wrapping tmux session's name, "" when
+	// the session ran without tmux. backgrounded distinguishes a detach
+	// from a real exit — both are a clean return from tea.ExecProcess, so
+	// it's resolved by asking tmux whether the session is still alive.
+	// runID and stepRunID are set when the session was a workflow step
+	// (see launchWorkflowStepCmd): a real exit then ends the run and a
+	// failed launch fails it.
 	sessionFinishedMsg struct {
+		sessionRowID int64
 		taskID       int64
 		externalID   string
 		cwd          string
@@ -664,12 +669,10 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case sessionFinishedMsg:
 		if msg.err != nil {
 			a.status = flash{text: "claude: " + msg.err.Error(), isErr: true}
-			// A workflow step that never got going leaves its run failed
-			// rather than running forever; the flash above stands.
-			if msg.runID != 0 {
-				return a, a.failWorkflowRunCmd(msg.runID)
-			}
-			return a, nil
+			// The row written at launch goes, and a workflow step that
+			// never got going leaves its run failed rather than running
+			// forever; the flash above stands through the refresh.
+			return a, a.abandonLaunchCmd(msg, a.status)
 		}
 		// Backgrounded: claude is still running under tmux, so the recap
 		// is deliberately skipped — `claude -p --resume` against a live
@@ -678,7 +681,7 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// SessionEnd hook to settle later.
 		if msg.backgrounded {
 			return a, a.mutate(flash{kind: flashEdit, text: "session backgrounded"}, func() error {
-				if err := a.recordSession(msg); err != nil {
+				if err := a.store.TouchSession(a.ctx, msg.sessionRowID); err != nil {
 					return err
 				}
 				return a.store.SetSessionNeedsRecap(a.ctx, msg.externalID, true)
@@ -691,7 +694,9 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return a, tea.Batch(
 			a.mutate(flash{kind: flashEdit, text: text}, func() error {
-				if err := a.recordSession(msg); err != nil {
+				// The row itself was written at launch; returning is
+				// activity, so bump last_active_at the way a resume does.
+				if err := a.store.TouchSession(a.ctx, msg.sessionRowID); err != nil {
 					return err
 				}
 				if msg.stepRunID == 0 {
@@ -1800,7 +1805,7 @@ func (a app) submitPrompt() (tea.Model, tea.Cmd) {
 		if value == "" {
 			return a, nil
 		}
-		return a, launchSessionCmd(target, value, label, a.dbPath)
+		return a, a.launchSessionCmd(target, value, label)
 	case promptWorkflowCwd:
 		if value == "" || pendingRun == nil {
 			return a, nil

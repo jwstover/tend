@@ -40,7 +40,7 @@ func TestRecapLogsEntryOnSessionFinished(t *testing.T) {
 	}
 	m = drive(t, m, refreshMsg{})
 
-	m = drive(t, m, sessionFinishedMsg{taskID: parent.ID, externalID: "ext-1", cwd: "/tmp/work", label: parent.Title})
+	m = drive(t, m, finished(launched(t, s, parent, "ext-1", "/tmp/work", "")))
 	_ = m
 
 	waitFor(t, "recap logged", func() bool {
@@ -59,7 +59,7 @@ func TestRecapSwallowsFailureQuietly(t *testing.T) {
 	}
 	m = drive(t, m, refreshMsg{})
 
-	m = drive(t, m, sessionFinishedMsg{taskID: parent.ID, externalID: "ext-1", cwd: "/tmp/work", label: parent.Title})
+	m = drive(t, m, finished(launched(t, s, parent, "ext-1", "/tmp/work", "")))
 
 	waitFor(t, "session recorded", func() bool {
 		sessions, err := s.ListSessionsForTask(ctx, parent.ID)
@@ -87,7 +87,7 @@ func TestRecapEmptyOutputSkipsLogEntry(t *testing.T) {
 	}
 	m = drive(t, m, refreshMsg{})
 
-	_ = drive(t, m, sessionFinishedMsg{taskID: parent.ID, externalID: "ext-1", cwd: "/tmp/work", label: parent.Title})
+	_ = drive(t, m, finished(launched(t, s, parent, "ext-1", "/tmp/work", "")))
 
 	waitFor(t, "session recorded", func() bool {
 		sessions, err := s.ListSessionsForTask(ctx, parent.ID)
@@ -112,7 +112,7 @@ func TestRecapAutoNamesSessionOnSessionFinished(t *testing.T) {
 	}
 	m = drive(t, m, refreshMsg{})
 
-	_ = drive(t, m, sessionFinishedMsg{taskID: parent.ID, externalID: "ext-1", cwd: "/tmp/work", label: parent.Title})
+	_ = drive(t, m, finished(launched(t, s, parent, "ext-1", "/tmp/work", "")))
 
 	waitFor(t, "recap logged", func() bool {
 		entries, err := s.ListTaskLog(ctx, parent.ID)
@@ -137,7 +137,7 @@ func TestRecapWithoutLabelMarkerLeavesSessionLabelUnchanged(t *testing.T) {
 	}
 	m = drive(t, m, refreshMsg{})
 
-	_ = drive(t, m, sessionFinishedMsg{taskID: parent.ID, externalID: "ext-1", cwd: "/tmp/work", label: parent.Title})
+	_ = drive(t, m, finished(launched(t, s, parent, "ext-1", "/tmp/work", "")))
 
 	waitFor(t, "recap logged", func() bool {
 		entries, err := s.ListTaskLog(ctx, parent.ID)
@@ -166,7 +166,7 @@ func TestQuitAsksConfirmationWhileRecapPending(t *testing.T) {
 	// incremented synchronously in the Update case, before the recap
 	// itself ever runs, so this leaves it "in flight" from the test's
 	// point of view without needing a goroutine/channel dance.
-	m, _ = m.Update(sessionFinishedMsg{taskID: parent.ID, externalID: "ext-1", cwd: "/tmp/work", label: parent.Title})
+	m, _ = m.Update(finished(launched(t, s, parent, "ext-1", "/tmp/work", "")))
 	if got := m.(app).pendingRecaps; got != 1 {
 		t.Fatalf("pendingRecaps = %d, want 1", got)
 	}
@@ -216,7 +216,7 @@ func TestRecapDoneDecrementsPendingRecaps(t *testing.T) {
 	}
 	m = drive(t, m, refreshMsg{})
 
-	m, _ = m.Update(sessionFinishedMsg{taskID: parent.ID, externalID: "ext-1", cwd: "/tmp/work", label: parent.Title})
+	m, _ = m.Update(finished(launched(t, s, parent, "ext-1", "/tmp/work", "")))
 	if got := m.(app).pendingRecaps; got != 1 {
 		t.Fatalf("pendingRecaps = %d, want 1", got)
 	}

@@ -1,9 +1,24 @@
 -- name: CreateSession :one
 -- workflow_step_run_id is NULL for an ordinary session and set when the
 -- session runs a workflow step (Store.CreateStepRunSession).
-INSERT INTO agent_sessions (task_id, external_id, cwd, label, tmux_session, workflow_step_run_id)
-VALUES (?, ?, ?, ?, ?, ?)
+--
+-- The row is written at launch, right before the terminal handoff, so
+-- hooks fired during the session's very first run have a row to land on.
+-- status starts at 'starting' with status_updated_at set (same %f
+-- precision as SetSessionStatus below, since it is the poller's CAS
+-- token): claude is being started but nothing has been observed yet,
+-- and the settle floor in pollSessions counts from now rather than from
+-- the epoch a NULL would read as.
+INSERT INTO agent_sessions (task_id, external_id, cwd, label, tmux_session, workflow_step_run_id, status, status_updated_at)
+VALUES (?, ?, ?, ?, ?, ?, 'starting', strftime('%Y-%m-%d %H:%M:%f', 'now'))
 RETURNING *;
+
+-- name: DeleteSession :exec
+-- For a launch that failed before it ever became a session: the row was
+-- written ahead of the handoff (CreateSession), and a broken launch must
+-- not leave it behind as a phantom.
+DELETE FROM agent_sessions
+WHERE id = ?;
 
 -- name: ListSessionsForTask :many
 SELECT *

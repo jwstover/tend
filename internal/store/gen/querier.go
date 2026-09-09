@@ -27,6 +27,14 @@ type Querier interface {
 	CreateRun(ctx context.Context, arg CreateRunParams) (WorkflowRun, error)
 	// workflow_step_run_id is NULL for an ordinary session and set when the
 	// session runs a workflow step (Store.CreateStepRunSession).
+	//
+	// The row is written at launch, right before the terminal handoff, so
+	// hooks fired during the session's very first run have a row to land on.
+	// status starts at 'starting' with status_updated_at set (same %f
+	// precision as SetSessionStatus below, since it is the poller's CAS
+	// token): claude is being started but nothing has been observed yet,
+	// and the settle floor in pollSessions counts from now rather than from
+	// the epoch a NULL would read as.
 	CreateSession(ctx context.Context, arg CreateSessionParams) (AgentSession, error)
 	// Appends: the new step sorts after every existing step of the workflow.
 	CreateStep(ctx context.Context, arg CreateStepParams) (WorkflowStep, error)
@@ -50,6 +58,10 @@ type Querier interface {
 	// last reference drops the tag, so the tag list can't accumulate ghosts.
 	DeleteOrphanTags(ctx context.Context) error
 	DeleteProject(ctx context.Context, id int64) error
+	// For a launch that failed before it ever became a session: the row was
+	// written ahead of the handoff (CreateSession), and a broken launch must
+	// not leave it behind as a phantom.
+	DeleteSession(ctx context.Context, id int64) error
 	DeleteStep(ctx context.Context, id int64) error
 	DeleteTask(ctx context.Context, id int64) error
 	DeleteWorkflow(ctx context.Context, id int64) error

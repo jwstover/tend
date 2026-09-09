@@ -7,7 +7,49 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
+
+	"github.com/jwstover/tend/internal/agent"
+	"github.com/jwstover/tend/internal/store"
+	"github.com/jwstover/tend/internal/task"
 )
+
+// launched writes the row launchSessionCmd would have written right
+// before handing the terminal to claude, so a test can drive the return
+// half (sessionFinishedMsg) against a row that exists the way it does in
+// production. tmux is the wrapping tmux session's name, "" for a launch
+// without tmux.
+func launched(t *testing.T, s *store.Store, tk task.Task, externalID, cwd, tmux string) task.Session {
+	t.Helper()
+	sess, err := s.CreateSession(context.Background(), tk.ID, externalID, cwd, tk.Title, tmux)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	return sess
+}
+
+// finished builds the sessionFinishedMsg a clean return of that launched
+// session's handoff would produce. Callers set backgrounded/err/run ids on
+// the result for the other outcomes.
+func finished(sess task.Session) sessionFinishedMsg {
+	return sessionFinishedMsg{
+		sessionRowID: sess.ID,
+		taskID:       sess.TaskID,
+		externalID:   sess.ExternalID,
+		cwd:          sess.Cwd,
+		label:        sess.Label,
+		tmuxSession:  sess.TmuxSession,
+	}
+}
+
+// isolateLaunchFiles points every file a launch writes — the tmux config
+// under XDG_CONFIG_HOME and the MCP/hook temp files under TMPDIR — at
+// per-test directories, so exercising the launch path leaves nothing in
+// the developer's real config or temp directories.
+func isolateLaunchFiles(t *testing.T) {
+	t.Helper()
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("TMPDIR", t.TempDir())
+}
 
 // stepR presses `r` on the selected task and runs the resulting load
 // command by hand, stopping short of anything that would shell out to
@@ -143,49 +185,146 @@ func TestSessionPickerEscDismisses(t *testing.T) {
 	}
 }
 
-func TestSessionFinishedMsgRecordsSession(t *testing.T) {
+// The launch half: launchSessionCmd writes the session row *before* it
+// hands the terminal over, with status starting, so the session's own
+// hooks land on a row from its first turn. The Cmd is run by hand and
+// stopped at the message it yields — the exec itself is bubbletea's to
+// perform and never happens here — and the store is inspected in between,
+// exactly the window a SessionStart/Stop hook fires in.
+func TestLaunchSessionCmdWritesStartingRowBeforeHandoff(t *testing.T) {
+	stubClaudeInstalled(t)
+	isolateLaunchFiles(t)
 	ctx := context.Background()
 	m, s := newTestApp(t)
 	parent, err := s.AddTask(ctx, "ongoing work")
 	if err != nil {
 		t.Fatalf("AddTask: %v", err)
 	}
-	m = drive(t, m, refreshMsg{})
 
-	m = drive(t, m, sessionFinishedMsg{
-		taskID: parent.ID, externalID: "ext-new", cwd: "/tmp/new-work", label: parent.Title,
-	})
+	msg := m.(app).launchSessionCmd(parent.ID, "/tmp/new-work", parent.Title)()
+	if e, ok := msg.(errMsg); ok {
+		t.Fatalf("launch produced an error instead of the handoff: %v", e.err)
+	}
+	if msg == nil {
+		t.Fatal("launch produced no message; want the exec handoff")
+	}
 
-	waitFor(t, "session recorded", func() bool {
-		sessions, err := s.ListSessionsForTask(ctx, parent.ID)
-		return err == nil && len(sessions) == 1 && sessions[0].ExternalID == "ext-new"
-	})
-	_ = m
+	sessions, err := s.ListSessionsForTask(ctx, parent.ID)
+	if err != nil {
+		t.Fatalf("ListSessionsForTask: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("sessions = %+v, want the row written ahead of the handoff", sessions)
+	}
+	sess := sessions[0]
+	if sess.Cwd != "/tmp/new-work" || sess.Label != parent.Title || sess.ExternalID == "" {
+		t.Errorf("session = %+v, want cwd, label and a pinned external id recorded", sess)
+	}
+	if sess.Status != task.SessionStarting {
+		t.Errorf("Status = %q, want %q right after launch", sess.Status, task.SessionStarting)
+	}
+	if sess.StatusUpdatedAt.IsZero() {
+		t.Error("StatusUpdatedAt is zero; want the settle floor to count from launch")
+	}
+	// tmux_session is what the row will be attached/polled by, so it has
+	// to match what the launch actually wrapped claude in.
+	if agent.TmuxInstalled() && sess.TmuxSession != agent.SessionName(sess.ExternalID) {
+		t.Errorf("TmuxSession = %q, want %q", sess.TmuxSession, agent.SessionName(sess.ExternalID))
+	}
+	if !agent.TmuxInstalled() && sess.TmuxSession != "" {
+		t.Errorf("TmuxSession = %q, want empty without tmux", sess.TmuxSession)
+	}
+
+	// The acceptance case: the first turn's Stop hook now finds a row,
+	// and the session reads idle without ever having been resumed.
+	if err := s.SetSessionStatus(ctx, sess.ExternalID, task.SessionIdle); err != nil {
+		t.Fatalf("SetSessionStatus: %v", err)
+	}
+	sessions, err = s.ListSessionsForTask(ctx, parent.ID)
+	if err != nil {
+		t.Fatalf("ListSessionsForTask: %v", err)
+	}
+	if sessions[0].Status != task.SessionIdle {
+		t.Errorf("Status after the first Stop hook = %q, want %q", sessions[0].Status, task.SessionIdle)
+	}
 }
 
-func TestSessionFinishedMsgErrDoesNotRecord(t *testing.T) {
+// A launch that never gets as far as the handoff — claude missing —
+// writes nothing: the row is only worth having once the process is about
+// to start.
+func TestLaunchSessionCmdWithoutClaudeWritesNoRow(t *testing.T) {
+	prev := checkInstalled
+	checkInstalled = func() error { return context.DeadlineExceeded }
+	t.Cleanup(func() { checkInstalled = prev })
 	ctx := context.Background()
 	m, s := newTestApp(t)
 	parent, err := s.AddTask(ctx, "ongoing work")
 	if err != nil {
 		t.Fatalf("AddTask: %v", err)
 	}
-	m = drive(t, m, refreshMsg{})
 
-	m = drive(t, m, sessionFinishedMsg{
-		taskID: parent.ID, externalID: "ext-fail", cwd: "/tmp/x", label: parent.Title,
-		err: context.DeadlineExceeded,
-	})
-	if !m.(app).status.isErr {
-		t.Error("expected an error flash after a failed session")
+	msg := m.(app).launchSessionCmd(parent.ID, "/tmp/new-work", parent.Title)()
+	if _, ok := msg.(errMsg); !ok {
+		t.Fatalf("launch produced %T, want errMsg", msg)
 	}
 	sessions, err := s.ListSessionsForTask(ctx, parent.ID)
 	if err != nil {
 		t.Fatalf("ListSessionsForTask: %v", err)
 	}
 	if len(sessions) != 0 {
-		t.Errorf("session recorded despite a non-nil exec error: %+v", sessions)
+		t.Errorf("sessions = %+v, want none for a launch that never started", sessions)
 	}
+}
+
+// The return half of a clean exit keeps the launch-time row (there is no
+// second write of it) and reports the session recorded.
+func TestSessionFinishedMsgKeepsLaunchRow(t *testing.T) {
+	ctx := context.Background()
+	m, s := newTestApp(t)
+	parent, err := s.AddTask(ctx, "ongoing work")
+	if err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	sess := launched(t, s, parent, "ext-new", "/tmp/new-work", "")
+	m = drive(t, m, refreshMsg{})
+
+	m = drive(t, m, finished(sess))
+
+	waitFor(t, "session recorded", func() bool {
+		return m.(app).status.text == "session recorded"
+	})
+	sessions, err := s.ListSessionsForTask(ctx, parent.ID)
+	if err != nil {
+		t.Fatalf("ListSessionsForTask: %v", err)
+	}
+	if len(sessions) != 1 || sessions[0].ID != sess.ID || sessions[0].ExternalID != "ext-new" {
+		t.Errorf("sessions = %+v, want exactly the launch-time row", sessions)
+	}
+}
+
+// A handoff that returns an error was never a session: the row written
+// ahead of it is taken back so it does not linger as a phantom in the
+// SESSIONS section or as a poller candidate.
+func TestSessionFinishedMsgErrDeletesLaunchRow(t *testing.T) {
+	ctx := context.Background()
+	m, s := newTestApp(t)
+	parent, err := s.AddTask(ctx, "ongoing work")
+	if err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	sess := launched(t, s, parent, "ext-fail", "/tmp/x", "tend-ext-fail")
+	m = drive(t, m, refreshMsg{})
+
+	msg := finished(sess)
+	msg.err = context.DeadlineExceeded
+	m = drive(t, m, msg)
+	if !m.(app).status.isErr {
+		t.Error("expected an error flash after a failed session")
+	}
+	waitFor(t, "launch row deleted", func() bool {
+		sessions, err := s.ListSessionsForTask(ctx, parent.ID)
+		return err == nil && len(sessions) == 0
+	})
 }
 
 func TestSessionResumedMsgTouchesSession(t *testing.T) {

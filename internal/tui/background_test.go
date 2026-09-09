@@ -21,16 +21,12 @@ func TestBackgroundedSessionSkipsRecap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AddTask: %v", err)
 	}
+	sess := launched(t, s, parent, "ext-1", "/tmp/work", "tend-ext-1")
 	m = drive(t, m, refreshMsg{})
 
-	m = drive(t, m, sessionFinishedMsg{
-		taskID:       parent.ID,
-		externalID:   "ext-1",
-		cwd:          "/tmp/work",
-		label:        parent.Title,
-		tmuxSession:  "tend-ext-1",
-		backgrounded: true,
-	})
+	msg := finished(sess)
+	msg.backgrounded = true
+	m = drive(t, m, msg)
 	_ = m
 
 	sessions, err := s.ListSessionsForTask(ctx, parent.ID)
@@ -67,15 +63,10 @@ func TestExitedSessionStillRecaps(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AddTask: %v", err)
 	}
+	sess := launched(t, s, parent, "ext-1", "/tmp/work", "tend-ext-1")
 	m = drive(t, m, refreshMsg{})
 
-	m = drive(t, m, sessionFinishedMsg{
-		taskID:      parent.ID,
-		externalID:  "ext-1",
-		cwd:         "/tmp/work",
-		label:       parent.Title,
-		tmuxSession: "tend-ext-1",
-	})
+	m = drive(t, m, finished(sess))
 	_ = m
 
 	waitFor(t, "recap logged for an exited session", func() bool {

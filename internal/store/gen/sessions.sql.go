@@ -25,8 +25,8 @@ func (q *Queries) ClaimSessionRecap(ctx context.Context, externalID string) (int
 }
 
 const createSession = `-- name: CreateSession :one
-INSERT INTO agent_sessions (task_id, external_id, cwd, label, tmux_session, workflow_step_run_id)
-VALUES (?, ?, ?, ?, ?, ?)
+INSERT INTO agent_sessions (task_id, external_id, cwd, label, tmux_session, workflow_step_run_id, status, status_updated_at)
+VALUES (?, ?, ?, ?, ?, ?, 'starting', strftime('%Y-%m-%d %H:%M:%f', 'now'))
 RETURNING id, task_id, external_id, cwd, label, started_at, last_active_at, tmux_session, needs_recap, status, status_updated_at, workflow_step_run_id
 `
 
@@ -41,6 +41,14 @@ type CreateSessionParams struct {
 
 // workflow_step_run_id is NULL for an ordinary session and set when the
 // session runs a workflow step (Store.CreateStepRunSession).
+//
+// The row is written at launch, right before the terminal handoff, so
+// hooks fired during the session's very first run have a row to land on.
+// status starts at 'starting' with status_updated_at set (same %f
+// precision as SetSessionStatus below, since it is the poller's CAS
+// token): claude is being started but nothing has been observed yet,
+// and the settle floor in pollSessions counts from now rather than from
+// the epoch a NULL would read as.
 func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) (AgentSession, error) {
 	row := q.db.QueryRowContext(ctx, createSession,
 		arg.TaskID,
@@ -66,6 +74,19 @@ func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) (A
 		&i.WorkflowStepRunID,
 	)
 	return i, err
+}
+
+const deleteSession = `-- name: DeleteSession :exec
+DELETE FROM agent_sessions
+WHERE id = ?
+`
+
+// For a launch that failed before it ever became a session: the row was
+// written ahead of the handoff (CreateSession), and a broken launch must
+// not leave it behind as a phantom.
+func (q *Queries) DeleteSession(ctx context.Context, id int64) error {
+	_, err := q.db.ExecContext(ctx, deleteSession, id)
+	return err
 }
 
 const listSessionStatuses = `-- name: ListSessionStatuses :many
