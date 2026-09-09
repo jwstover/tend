@@ -11,6 +11,10 @@ import (
 
 type Querier interface {
 	AttachTag(ctx context.Context, arg AttachTagParams) error
+	// Compare-and-swap for starting a runner: only a pending or paused run can
+	// be taken to running, so two runners racing for one run see exactly one
+	// success. Same idiom as ClaimSessionRecap.
+	ClaimRun(ctx context.Context, id int64) (int64, error)
 	ClaimSessionRecap(ctx context.Context, externalID string) (int64, error)
 	ClearTaskTags(ctx context.Context, taskID int64) error
 	CountInboxTasks(ctx context.Context, projectID interface{}) (int64, error)
@@ -20,7 +24,19 @@ type Querier interface {
 	CreateChildTask(ctx context.Context, arg CreateChildTaskParams) (Task, error)
 	CreateLogEntry(ctx context.Context, arg CreateLogEntryParams) (LogEntry, error)
 	CreateProject(ctx context.Context, name string) (Project, error)
+	CreateRun(ctx context.Context, arg CreateRunParams) (WorkflowRun, error)
+	// workflow_step_run_id is NULL for an ordinary session and set when the
+	// session runs a workflow step (Store.CreateStepRunSession).
 	CreateSession(ctx context.Context, arg CreateSessionParams) (AgentSession, error)
+	// Appends: the new step sorts after every existing step of the workflow.
+	CreateStep(ctx context.Context, arg CreateStepParams) (WorkflowStep, error)
+	// Used by Store.DuplicateWorkflow to copy a step wholesale, sort_order
+	// included.
+	CreateStepFull(ctx context.Context, arg CreateStepFullParams) (WorkflowStep, error)
+	// iteration is derived here rather than passed in, so a runner can never
+	// miscount: it is one more than the number of times this step has already
+	// run within this run.
+	CreateStepRun(ctx context.Context, arg CreateStepRunParams) (WorkflowStepRun, error)
 	CreateTask(ctx context.Context, arg CreateTaskParams) (Task, error)
 	// The one event the store writes itself rather than leaving to a trigger.
 	// A project move applies to a whole sub-tree, so a per-row trigger would
@@ -28,15 +44,34 @@ type Querier interface {
 	// in the log.
 	CreateTaskEvent(ctx context.Context, arg CreateTaskEventParams) error
 	CreateTaskWithBody(ctx context.Context, arg CreateTaskWithBodyParams) (Task, error)
+	CreateWorkflow(ctx context.Context, arg CreateWorkflowParams) (Workflow, error)
+	DeleteEdge(ctx context.Context, id int64) error
 	// Tags are implicit: they exist because a task carries them. Dropping the
 	// last reference drops the tag, so the tag list can't accumulate ghosts.
 	DeleteOrphanTags(ctx context.Context) error
 	DeleteProject(ctx context.Context, id int64) error
+	DeleteStep(ctx context.Context, id int64) error
 	DeleteTask(ctx context.Context, id int64) error
+	DeleteWorkflow(ctx context.Context, id int64) error
+	// One-shot handoff: only an unfinished step run takes an outcome, so a
+	// second finish_step call affects zero rows and the first outcome stands.
+	FinishStepRun(ctx context.Context, arg FinishStepRunParams) (int64, error)
 	GetProject(ctx context.Context, id int64) (Project, error)
 	GetProjectByName(ctx context.Context, name string) (Project, error)
+	GetRun(ctx context.Context, id int64) (WorkflowRun, error)
 	GetSetting(ctx context.Context, key string) (string, error)
+	GetStep(ctx context.Context, id int64) (WorkflowStep, error)
+	GetStepRun(ctx context.Context, id int64) (WorkflowStepRun, error)
 	GetTask(ctx context.Context, id int64) (Task, error)
+	GetWorkflow(ctx context.Context, id int64) (Workflow, error)
+	GetWorkflowByName(ctx context.Context, name string) (Workflow, error)
+	// Half of Store.DeleteStep: a step that has run (or is running) within a
+	// run in a non-terminal state cannot be removed under it.
+	ListActiveRunIDsForStep(ctx context.Context, stepID int64) ([]int64, error)
+	// Half of Store.DeleteWorkflow: a run in a non-terminal state pins its
+	// definition in place.
+	ListActiveRunIDsForWorkflow(ctx context.Context, workflowID int64) ([]int64, error)
+	ListActiveRuns(ctx context.Context) ([]WorkflowRun, error)
 	// Batch load for the list view: one query for every visible row's tags,
 	// collapsed into a map[taskID][]string, rather than N+1 per-row queries.
 	// Same idiom as ListChildCounts.
@@ -45,6 +80,8 @@ type Querier interface {
 	// One level of the sub-tree walk that stands in for the recursive CTE.
 	ListChildIDs(ctx context.Context, parentID sql.NullInt64) ([]int64, error)
 	ListChildTasks(ctx context.Context, parentID sql.NullInt64) ([]Task, error)
+	ListEdgesForWorkflow(ctx context.Context, workflowID int64) ([]WorkflowEdge, error)
+	ListEdgesFromStep(ctx context.Context, fromStepID int64) ([]WorkflowEdge, error)
 	ListEventsBetween(ctx context.Context, arg ListEventsBetweenParams) ([]TaskEvent, error)
 	ListInboxTasks(ctx context.Context, projectID interface{}) ([]Task, error)
 	ListLiveTasks(ctx context.Context, projectID interface{}) ([]Task, error)
@@ -60,6 +97,7 @@ type Querier interface {
 	// renders as rows, so the number beside a project is what selecting it
 	// produces, not a larger figure that counts sub-tasks the list hides.
 	ListProjects(ctx context.Context) ([]ListProjectsRow, error)
+	ListRunsForTask(ctx context.Context, taskID int64) ([]WorkflowRun, error)
 	// Ordered oldest-first so a caller building a per-task map ends up with
 	// the most-recently-active session's status per task (plan section 8.4).
 	ListSessionStatuses(ctx context.Context) ([]ListSessionStatusesRow, error)
@@ -69,13 +107,29 @@ type Querier interface {
 	// were launched under tmux at all, and not ones already known to have
 	// ended (a session that already reported ended has nothing to poll).
 	ListSessionsWithTmux(ctx context.Context) ([]AgentSession, error)
+	ListStepRunsForRun(ctx context.Context, runID int64) ([]WorkflowStepRun, error)
+	ListSteps(ctx context.Context, workflowID int64) ([]WorkflowStep, error)
 	ListTags(ctx context.Context) ([]Tag, error)
 	ListTagsForTask(ctx context.Context, taskID int64) ([]string, error)
+	// Comments in this file stay ASCII-only: sqlc v1.31.1 corrupts any query
+	// that uses alias.* when its comment block contains non-ASCII (a
+	// byte-vs-rune offset bug in star expansion; one em dash yields SELECp).
+	// Columns are enumerated rather than written as w.* so this query
+	// survives a non-ASCII comment slipping in.
+	ListWorkflows(ctx context.Context) ([]ListWorkflowsRow, error)
 	// Half of Store.DeleteProject's transaction: project_id carries no foreign
 	// key (see 00007's comment), so orphan prevention is explicit here.
 	ReassignProjectTasks(ctx context.Context, arg ReassignProjectTasksParams) error
 	RenameProject(ctx context.Context, arg RenameProjectParams) error
+	RenameWorkflow(ctx context.Context, arg RenameWorkflowParams) error
 	SetProjectArchived(ctx context.Context, arg SetProjectArchivedParams) error
+	SetRunCurrentStepRun(ctx context.Context, arg SetRunCurrentStepRunParams) error
+	// Terminal is final: the WHERE refuses to move a run that has already
+	// ended, and the caller turns zero rows into ErrRunEnded. ended_at is
+	// computed by the caller (now for a terminal state, NULL otherwise)
+	// because sqlc v1.31.1 leaves a named arg inside a CASE unrewritten.
+	SetRunState(ctx context.Context, arg SetRunStateParams) (int64, error)
+	SetRunTmuxSession(ctx context.Context, arg SetRunTmuxSessionParams) error
 	// Closes the SessionEnd gap: a host that dies takes its chance to fire
 	// the hook with it, so the poller is the only thing left that will ever
 	// learn the session is gone (via tmux has-session, checked by the
@@ -117,6 +171,10 @@ type Querier interface {
 	// ClaimSessionRecap's compare-and-clear.
 	SetSessionWorkingIfUnchanged(ctx context.Context, arg SetSessionWorkingIfUnchangedParams) (int64, error)
 	SetSetting(ctx context.Context, arg SetSettingParams) error
+	SetStepPrompt(ctx context.Context, arg SetStepPromptParams) error
+	SetStepRunLogPath(ctx context.Context, arg SetStepRunLogPathParams) error
+	SetStepRunSession(ctx context.Context, arg SetStepRunSessionParams) error
+	SetStepSortOrder(ctx context.Context, arg SetStepSortOrderParams) error
 	SetTaskBody(ctx context.Context, arg SetTaskBodyParams) error
 	SetTaskDue(ctx context.Context, arg SetTaskDueParams) error
 	SetTaskPriority(ctx context.Context, arg SetTaskPriorityParams) error
@@ -129,8 +187,13 @@ type Querier interface {
 	// UPDATE ("relation \"tree\" does not exist") nor a plain SELECT
 	// ("*ast.ResTarget has nil name").
 	SetTasksProject(ctx context.Context, arg SetTasksProjectParams) error
+	SetWorkflowDescription(ctx context.Context, arg SetWorkflowDescriptionParams) error
 	TouchSession(ctx context.Context, id int64) error
 	UpdateSessionLabel(ctx context.Context, arg UpdateSessionLabelParams) error
+	UpdateStep(ctx context.Context, arg UpdateStepParams) error
+	// One edge per (from_step, outcome): re-adding an outcome re-routes it.
+	// DO UPDATE rather than DO NOTHING so RETURNING always yields the row.
+	UpsertEdge(ctx context.Context, arg UpsertEdgeParams) (WorkflowEdge, error)
 	// DO UPDATE rather than DO NOTHING so RETURNING always yields the row:
 	// with DO NOTHING a conflicting insert returns no rows at all.
 	UpsertTag(ctx context.Context, name string) (Tag, error)

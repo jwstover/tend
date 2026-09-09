@@ -9,17 +9,18 @@ import (
 )
 
 type AgentSession struct {
-	ID              int64
-	TaskID          int64
-	ExternalID      string
-	Cwd             string
-	Label           string
-	StartedAt       string
-	LastActiveAt    string
-	TmuxSession     string
-	NeedsRecap      int64
-	Status          string
-	StatusUpdatedAt sql.NullString
+	ID                int64
+	TaskID            int64
+	ExternalID        string
+	Cwd               string
+	Label             string
+	StartedAt         string
+	LastActiveAt      string
+	TmuxSession       string
+	NeedsRecap        int64
+	Status            string
+	StatusUpdatedAt   sql.NullString
+	WorkflowStepRunID sql.NullInt64
 }
 
 type LogEntry struct {
@@ -83,4 +84,62 @@ type TaskEvent struct {
 type TaskTag struct {
 	TaskID int64
 	TagID  int64
+}
+
+type Workflow struct {
+	ID          int64
+	Name        string
+	Description string
+	CreatedAt   string
+	UpdatedAt   string
+}
+
+type WorkflowEdge struct {
+	ID            int64
+	FromStepID    int64
+	Outcome       string
+	ToStepID      int64
+	MaxIterations sql.NullInt64
+}
+
+type WorkflowRun struct {
+	ID               int64
+	WorkflowID       int64
+	TaskID           int64
+	Cwd              string
+	State            string
+	CurrentStepRunID sql.NullInt64
+	TmuxSession      string
+	StartedAt        string
+	EndedAt          sql.NullString
+}
+
+type WorkflowStep struct {
+	ID             int64
+	WorkflowID     int64
+	Name           string
+	Kind           string
+	PromptMd       string
+	Model          string
+	PermissionMode string
+	SortOrder      int64
+	CreatedAt      string
+	UpdatedAt      string
+}
+
+type WorkflowStepRun struct {
+	ID                int64
+	RunID             int64
+	StepID            int64
+	Iteration         int64
+	SessionExternalID string
+	PromptRendered    string
+	Model             string
+	PermissionMode    string
+	Input             string
+	Outcome           string
+	Deliverable       string
+	LogPath           string
+	StartedAt         string
+	EndedAt           sql.NullString
 }

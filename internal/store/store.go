@@ -496,6 +496,9 @@ func (s *Store) ListEvents(ctx context.Context, from, to time.Time) ([]task.Even
 func (s *Store) CreateSession(ctx context.Context, taskID int64, externalID, cwd, label, tmuxSession string) (task.Session, error) {
 	row, err := s.q.CreateSession(ctx, gen.CreateSessionParams{
 		TaskID: taskID, ExternalID: externalID, Cwd: cwd, Label: label, TmuxSession: tmuxSession,
+		// An ordinary session belongs to no workflow step; see
+		// CreateStepRunSession for the one that does.
+		WorkflowStepRunID: sql.NullInt64{},
 	})
 	if err != nil {
 		return task.Session{}, fmt.Errorf("inserting session for task %d: %w", taskID, err)
@@ -827,6 +830,7 @@ func sessionToDomain(row gen.AgentSession) (task.Session, error) {
 		StatusUpdatedAt: statusUpdated,
 		StartedAt:       started,
 		LastActiveAt:    lastActive,
+		StepRunID:       nullInt64(row.WorkflowStepRunID),
 	}, nil
 }
 
