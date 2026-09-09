@@ -1,6 +1,8 @@
 -- name: CreateSession :one
-INSERT INTO agent_sessions (task_id, external_id, cwd, label, tmux_session)
-VALUES (?, ?, ?, ?, ?)
+-- workflow_step_run_id is NULL for an ordinary session and set when the
+-- session runs a workflow step (Store.CreateStepRunSession).
+INSERT INTO agent_sessions (task_id, external_id, cwd, label, tmux_session, workflow_step_run_id)
+VALUES (?, ?, ?, ?, ?, ?)
 RETURNING *;
 
 -- name: ListSessionsForTask :many

@@ -56,6 +56,10 @@ const (
 // not a source of truth: a session's row isn't written until its first
 // terminal handoff *returns*, so hook events fired during a brand-new
 // session's first run land on no row at all and are dropped.
+//
+// StepRunID is set when the session ran a workflow step (it points at
+// that step run, see internal/workflow) so the SESSIONS section can say
+// which step a session belonged to; nil for an ordinary session.
 type Session struct {
 	ID              int64
 	TaskID          int64
@@ -68,4 +72,5 @@ type Session struct {
 	StatusUpdatedAt time.Time
 	StartedAt       time.Time
 	LastActiveAt    time.Time
+	StepRunID       *int64
 }

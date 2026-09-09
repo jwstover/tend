@@ -25,19 +25,22 @@ func (q *Queries) ClaimSessionRecap(ctx context.Context, externalID string) (int
 }
 
 const createSession = `-- name: CreateSession :one
-INSERT INTO agent_sessions (task_id, external_id, cwd, label, tmux_session)
-VALUES (?, ?, ?, ?, ?)
-RETURNING id, task_id, external_id, cwd, label, started_at, last_active_at, tmux_session, needs_recap, status, status_updated_at
+INSERT INTO agent_sessions (task_id, external_id, cwd, label, tmux_session, workflow_step_run_id)
+VALUES (?, ?, ?, ?, ?, ?)
+RETURNING id, task_id, external_id, cwd, label, started_at, last_active_at, tmux_session, needs_recap, status, status_updated_at, workflow_step_run_id
 `
 
 type CreateSessionParams struct {
-	TaskID      int64
-	ExternalID  string
-	Cwd         string
-	Label       string
-	TmuxSession string
+	TaskID            int64
+	ExternalID        string
+	Cwd               string
+	Label             string
+	TmuxSession       string
+	WorkflowStepRunID sql.NullInt64
 }
 
+// workflow_step_run_id is NULL for an ordinary session and set when the
+// session runs a workflow step (Store.CreateStepRunSession).
 func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) (AgentSession, error) {
 	row := q.db.QueryRowContext(ctx, createSession,
 		arg.TaskID,
@@ -45,6 +48,7 @@ func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) (A
 		arg.Cwd,
 		arg.Label,
 		arg.TmuxSession,
+		arg.WorkflowStepRunID,
 	)
 	var i AgentSession
 	err := row.Scan(
@@ -59,6 +63,7 @@ func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) (A
 		&i.NeedsRecap,
 		&i.Status,
 		&i.StatusUpdatedAt,
+		&i.WorkflowStepRunID,
 	)
 	return i, err
 }
@@ -100,7 +105,7 @@ func (q *Queries) ListSessionStatuses(ctx context.Context) ([]ListSessionStatuse
 }
 
 const listSessionsForTask = `-- name: ListSessionsForTask :many
-SELECT id, task_id, external_id, cwd, label, started_at, last_active_at, tmux_session, needs_recap, status, status_updated_at
+SELECT id, task_id, external_id, cwd, label, started_at, last_active_at, tmux_session, needs_recap, status, status_updated_at, workflow_step_run_id
 FROM agent_sessions
 WHERE task_id = ?
 ORDER BY last_active_at DESC, id DESC
@@ -127,6 +132,7 @@ func (q *Queries) ListSessionsForTask(ctx context.Context, taskID int64) ([]Agen
 			&i.NeedsRecap,
 			&i.Status,
 			&i.StatusUpdatedAt,
+			&i.WorkflowStepRunID,
 		); err != nil {
 			return nil, err
 		}
@@ -142,7 +148,7 @@ func (q *Queries) ListSessionsForTask(ctx context.Context, taskID int64) ([]Agen
 }
 
 const listSessionsNeedingRecap = `-- name: ListSessionsNeedingRecap :many
-SELECT id, task_id, external_id, cwd, label, started_at, last_active_at, tmux_session, needs_recap, status, status_updated_at
+SELECT id, task_id, external_id, cwd, label, started_at, last_active_at, tmux_session, needs_recap, status, status_updated_at, workflow_step_run_id
 FROM agent_sessions
 WHERE needs_recap = 1
 ORDER BY last_active_at DESC, id DESC
@@ -169,6 +175,7 @@ func (q *Queries) ListSessionsNeedingRecap(ctx context.Context) ([]AgentSession,
 			&i.NeedsRecap,
 			&i.Status,
 			&i.StatusUpdatedAt,
+			&i.WorkflowStepRunID,
 		); err != nil {
 			return nil, err
 		}
@@ -184,7 +191,7 @@ func (q *Queries) ListSessionsNeedingRecap(ctx context.Context) ([]AgentSession,
 }
 
 const listSessionsWithTmux = `-- name: ListSessionsWithTmux :many
-SELECT id, task_id, external_id, cwd, label, started_at, last_active_at, tmux_session, needs_recap, status, status_updated_at
+SELECT id, task_id, external_id, cwd, label, started_at, last_active_at, tmux_session, needs_recap, status, status_updated_at, workflow_step_run_id
 FROM agent_sessions
 WHERE tmux_session != '' AND status != 'ended'
 ORDER BY last_active_at DESC, id DESC
@@ -214,6 +221,7 @@ func (q *Queries) ListSessionsWithTmux(ctx context.Context) ([]AgentSession, err
 			&i.NeedsRecap,
 			&i.Status,
 			&i.StatusUpdatedAt,
+			&i.WorkflowStepRunID,
 		); err != nil {
 			return nil, err
 		}

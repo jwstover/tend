@@ -15,6 +15,7 @@ import (
 	"github.com/pressly/goose/v3/database"
 
 	"github.com/jwstover/tend/internal/task"
+	"github.com/jwstover/tend/internal/workflow"
 )
 
 // schemaBeforeProjects is the last migration that predates projects and
@@ -252,5 +253,99 @@ func TestTaskEventsRebuildKeepsHistoryAndTriggers(t *testing.T) {
 	}
 	if err := s.SetProject(ctx, created.ID, p.ID); err != nil {
 		t.Fatalf("SetProject: %v", err)
+	}
+}
+
+// schemaBeforeWorkflows is the last migration before the workflow tables.
+const schemaBeforeWorkflows = 8
+
+// providerFor builds a goose provider over an already-open handle, for
+// tests that need to roll a schema down as well as up.
+func providerFor(t *testing.T, db *sql.DB) *goose.Provider {
+	t.Helper()
+	sub, err := fs.Sub(migrationsFS, "migrations")
+	if err != nil {
+		t.Fatalf("reading embedded migrations: %v", err)
+	}
+	provider, err := goose.NewProvider(database.DialectSQLite3, db, sub)
+	if err != nil {
+		t.Fatalf("building provider: %v", err)
+	}
+	return provider
+}
+
+// Migration 00009 adds five tables and a REFERENCES column on
+// agent_sessions. Up is exercised by every other store test; this one
+// drives it down and back up on a database with existing sessions, since
+// ALTER TABLE ... DROP COLUMN has a list of reasons it can refuse (an
+// index, a CHECK, a trigger naming the column) and a Down that cannot run
+// is a trap discovered only when it is needed.
+func TestWorkflowsMigrationRoundTrips(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "tend.db")
+
+	db := openAt(t, path, schemaBeforeWorkflows)
+	if _, err := db.Exec(`INSERT INTO tasks (title) VALUES ('has a session')`); err != nil {
+		t.Fatalf("seeding a task: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO agent_sessions (task_id, external_id, cwd, label) VALUES (1, 'sess-1', '/tmp', 'label')`); err != nil {
+		t.Fatalf("seeding a session: %v", err)
+	}
+	provider := providerFor(t, db)
+
+	// Up.
+	if _, err := provider.UpTo(ctx, schemaBeforeWorkflows+1); err != nil {
+		t.Fatalf("migrating up to 00009: %v", err)
+	}
+	for _, table := range []string{"workflows", "workflow_steps", "workflow_edges", "workflow_runs", "workflow_step_runs"} {
+		if _, err := db.ExecContext(ctx, "SELECT 1 FROM "+table+" LIMIT 1"); err != nil {
+			t.Errorf("after up, table %s is missing: %v", table, err)
+		}
+	}
+	var bound sql.NullInt64
+	if err := db.QueryRowContext(ctx, `SELECT workflow_step_run_id FROM agent_sessions WHERE external_id = 'sess-1'`).Scan(&bound); err != nil {
+		t.Fatalf("after up, agent_sessions.workflow_step_run_id is missing: %v", err)
+	}
+	if bound.Valid {
+		t.Errorf("a pre-existing session got workflow_step_run_id %d, want NULL", bound.Int64)
+	}
+
+	// Down: the column and the tables go, the session stays.
+	if _, err := provider.DownTo(ctx, schemaBeforeWorkflows); err != nil {
+		t.Fatalf("migrating back down to 00008: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `SELECT workflow_step_run_id FROM agent_sessions LIMIT 1`); err == nil {
+		t.Error("after down, agent_sessions.workflow_step_run_id still exists")
+	}
+	if _, err := db.ExecContext(ctx, `SELECT 1 FROM workflows LIMIT 1`); err == nil {
+		t.Error("after down, the workflows table still exists")
+	}
+	var n int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM agent_sessions`).Scan(&n); err != nil || n != 1 {
+		t.Errorf("after down, agent_sessions holds %d rows (%v), want the 1 seeded", n, err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("closing: %v", err)
+	}
+
+	// And up again through the normal path, then use it.
+	s, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("re-migrating: %v", err)
+	}
+	t.Cleanup(func() { s.Close() })
+	w, err := s.CreateWorkflow(ctx, "after round trip", "")
+	if err != nil {
+		t.Fatalf("CreateWorkflow after the round trip: %v", err)
+	}
+	if _, err := s.AddStep(ctx, w.ID, "step", workflow.StepAgent); err != nil {
+		t.Fatalf("AddStep after the round trip: %v", err)
+	}
+	sessions, err := s.ListSessionsForTask(ctx, 1)
+	if err != nil {
+		t.Fatalf("ListSessionsForTask: %v", err)
+	}
+	if len(sessions) != 1 || sessions[0].StepRunID != nil {
+		t.Errorf("seeded session after the round trip = %+v, want one unbound session", sessions)
 	}
 }
