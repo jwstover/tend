@@ -158,7 +158,7 @@ func (a app) checkWorkflowRunnableCmd(t task.Task, w workflow.Workflow) tea.Cmd 
 		}
 		return workflowRunReadyMsg{
 			req:        workflowRunRequest{t: t, w: w, step: steps[0]},
-			defaultCwd: a.defaultCwd(sessions),
+			defaultCwd: a.defaultCwd(sessions, t.ProjectID),
 		}
 	}
 }
