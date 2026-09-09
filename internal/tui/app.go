@@ -82,6 +82,15 @@ type Store interface {
 	SetStepPrompt(ctx context.Context, id int64, prompt string) error
 	ReorderSteps(ctx context.Context, workflowID int64, ids []int64) error
 	DeleteStep(ctx context.Context, id int64) error
+
+	// Interactive workflow runs (workflowrun.go): the one-step POC that
+	// launches a step as an ordinary session with a templated prompt.
+	OutgoingEdges(ctx context.Context, stepID int64) ([]workflow.Edge, error)
+	CreateRun(ctx context.Context, workflowID, taskID int64, cwd string) (workflow.Run, error)
+	SetRunState(ctx context.Context, id int64, st workflow.RunState) error
+	CreateStepRun(ctx context.Context, sr workflow.StepRun) (workflow.StepRun, error)
+	FinishRunAtStep(ctx context.Context, stepRunID int64, outcome, deliverable string) error
+	CreateStepRunSession(ctx context.Context, stepRunID, taskID int64, externalID, cwd, label, tmuxSession string) (task.Session, error)
 }
 
 // Run starts the TUI and blocks until it exits. dbPath is shown on the
@@ -164,6 +173,7 @@ const (
 	promptTags
 	promptDue
 	promptSessionCwd
+	promptWorkflowCwd // cwd for a workflow run; the pending request is wfRunPending
 	promptRename
 	promptNewProject
 	promptRenameProject
@@ -285,7 +295,9 @@ type (
 	// session ran without tmux. backgrounded distinguishes a detach from
 	// a real exit — both are a clean return from tea.ExecProcess, so it's
 	// resolved by asking tmux whether the session is still alive (see
-	// launchSessionCmd).
+	// launchSessionCmd). runID and stepRunID are set when the session
+	// was a workflow step (see launchWorkflowStepCmd): the session row
+	// then points at the step run, and a real exit ends the run.
 	sessionFinishedMsg struct {
 		taskID       int64
 		externalID   string
@@ -294,12 +306,16 @@ type (
 		tmuxSession  string
 		backgrounded bool
 		err          error
+		runID        int64
+		stepRunID    int64
 	}
 	// sessionResumedMsg reports a resumed session's terminal handoff
 	// returning; last_active_at is only bumped on a clean exit. since is
 	// the transcript's line count at the moment it was resumed (see
 	// resumeSessionCmd), passed to recapSessionCmd to scope the recap to
-	// only what happened after that point.
+	// only what happened after that point. stepRunID is the session's
+	// workflow step run, if it ran one, so a re-attached workflow session
+	// that now really exits still ends its run.
 	sessionResumedMsg struct {
 		sessionRowID int64
 		taskID       int64
@@ -308,6 +324,26 @@ type (
 		since        int
 		backgrounded bool
 		err          error
+		stepRunID    *int64
+	}
+
+	// Interactive workflow run messages (workflowrun.go), in the order
+	// the flow produces them: the workflows to pick from, the picked
+	// workflow validated and ready for a cwd, and the run + step run rows
+	// written and ready to launch.
+	workflowsForRunMsg struct {
+		t         task.Task
+		workflows []workflow.Workflow
+	}
+	workflowRunReadyMsg struct {
+		req        workflowRunRequest
+		defaultCwd string
+	}
+	workflowRunPreparedMsg struct {
+		req     workflowRunRequest
+		cwd     string
+		run     workflow.Run
+		stepRun workflow.StepRun
 	}
 	// recapsDrainedMsg carries the backgrounded sessions this instance
 	// successfully claimed the owed recap for (see drainRecapsCmd) —
@@ -428,6 +464,15 @@ type app struct {
 	wfPickerKind   wfPickerKind
 	wfPickerStepID int64
 	wfPickerSel    int
+
+	// Workflow-run picker overlay (workflowrun.go): choose a workflow to
+	// run on a task. wfRunPending is the validated request while its cwd
+	// prompt is open, nil otherwise.
+	wfRunPickerOpen      bool
+	wfRunPickerTask      task.Task
+	wfRunPickerWorkflows []workflow.Workflow
+	wfRunPickerSel       int
+	wfRunPending         *workflowRunRequest
 
 	showDetail bool
 	focus      pane // which column owns j/k and the scroll keys
@@ -607,9 +652,23 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case sessionsForPickerMsg:
 		return a, a.openSessionPicker(msg)
 
+	case workflowsForRunMsg:
+		return a, a.openWorkflowRunPicker(msg)
+
+	case workflowRunReadyMsg:
+		return a, a.openWorkflowCwdPrompt(msg)
+
+	case workflowRunPreparedMsg:
+		return a, a.launchWorkflowStepCmd(msg)
+
 	case sessionFinishedMsg:
 		if msg.err != nil {
 			a.status = flash{text: "claude: " + msg.err.Error(), isErr: true}
+			// A workflow step that never got going leaves its run failed
+			// rather than running forever; the flash above stands.
+			if msg.runID != 0 {
+				return a, a.failWorkflowRunCmd(msg.runID)
+			}
 			return a, nil
 		}
 		// Backgrounded: claude is still running under tmux, so the recap
@@ -619,17 +678,28 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// SessionEnd hook to settle later.
 		if msg.backgrounded {
 			return a, a.mutate(flash{kind: flashEdit, text: "session backgrounded"}, func() error {
-				if _, err := a.store.CreateSession(a.ctx, msg.taskID, msg.externalID, msg.cwd, msg.label, msg.tmuxSession); err != nil {
+				if err := a.recordSession(msg); err != nil {
 					return err
 				}
 				return a.store.SetSessionNeedsRecap(a.ctx, msg.externalID, true)
 			})
 		}
 		a.pendingRecaps++
+		text := "session recorded"
+		if msg.stepRunID != 0 {
+			text = "workflow run done"
+		}
 		return a, tea.Batch(
-			a.mutate(flash{kind: flashEdit, text: "session recorded"}, func() error {
-				_, err := a.store.CreateSession(a.ctx, msg.taskID, msg.externalID, msg.cwd, msg.label, msg.tmuxSession)
-				return err
+			a.mutate(flash{kind: flashEdit, text: text}, func() error {
+				if err := a.recordSession(msg); err != nil {
+					return err
+				}
+				if msg.stepRunID == 0 {
+					return nil
+				}
+				// A one-step run ends with its step. The deliverable is
+				// left empty: an interactive session hands nothing off.
+				return a.store.FinishRunAtStep(a.ctx, msg.stepRunID, workflow.OutcomeDone, "")
 			}),
 			a.recapSessionCmd(msg.taskID, msg.cwd, msg.externalID, nil),
 		)
@@ -650,7 +720,10 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.pendingRecaps++
 		return a, tea.Batch(
 			a.mutate(flash{kind: flashEdit, text: "session resumed"}, func() error {
-				return a.store.TouchSession(a.ctx, msg.sessionRowID)
+				if err := a.store.TouchSession(a.ctx, msg.sessionRowID); err != nil {
+					return err
+				}
+				return a.finishStepRunIfAny(msg.stepRunID)
 			}),
 			a.recapSessionCmd(msg.taskID, msg.cwd, msg.externalID, &msg.since),
 		)
@@ -667,6 +740,11 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// so a drained recap is unscoped — still far better than no
 			// recap at all.
 			cmds = append(cmds, a.recapSessionCmd(sess.TaskID, sess.Cwd, sess.ExternalID, nil))
+			// A backgrounded workflow session found dead is also the
+			// first anyone has heard of its step ending.
+			if sess.StepRunID != nil {
+				cmds = append(cmds, a.finishStepRunCmd(*sess.StepRunID))
+			}
 		}
 		return a, tea.Batch(cmds...)
 
@@ -814,6 +892,11 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// An open session picker swallows all keys.
 	if a.sessionPickerOpen {
 		return a.handleSessionPickerKey(msg)
+	}
+
+	// As does the workflow-run picker.
+	if a.wfRunPickerOpen {
+		return a.handleWorkflowRunPickerKey(msg)
 	}
 
 	// An open palette swallows all keys.
@@ -1204,6 +1287,12 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, a.keys.Sessions):
 		if t, ok := a.selected(); ok {
 			return a, a.loadSessionsForPicker(t)
+		}
+		return a, nil
+
+	case key.Matches(msg, a.keys.RunWorkflow):
+		if t, ok := a.selected(); ok {
+			return a, a.loadWorkflowsForRun(t)
 		}
 		return a, nil
 	}
@@ -1660,12 +1749,13 @@ func (a *app) closePrompt() {
 	a.promptKind = promptNone
 	a.promptTarget = 0
 	a.sessionLabel = ""
+	a.wfRunPending = nil
 	a.prompt.Reset()
 	a.prompt.Blur()
 }
 
 func (a app) submitPrompt() (tea.Model, tea.Cmd) {
-	kind, target, label := a.promptKind, a.promptTarget, a.sessionLabel
+	kind, target, label, pendingRun := a.promptKind, a.promptTarget, a.sessionLabel, a.wfRunPending
 	value := strings.TrimSpace(a.prompt.Value())
 	a.closePrompt()
 
@@ -1711,6 +1801,11 @@ func (a app) submitPrompt() (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 		return a, launchSessionCmd(target, value, label, a.dbPath)
+	case promptWorkflowCwd:
+		if value == "" || pendingRun == nil {
+			return a, nil
+		}
+		return a, a.prepareWorkflowRunCmd(*pendingRun, value)
 	case promptNewProject:
 		if value == "" {
 			return a, nil
@@ -1966,7 +2061,7 @@ func (a app) View() tea.View {
 	// body rows. A panel taller than the screen loses its top rows, like
 	// the design's splice.
 	if a.paletteOpen || a.helpOpen || a.urlPickerOpen || a.sessionPickerOpen ||
-		a.projectPickerOpen || a.wfPickerOpen {
+		a.projectPickerOpen || a.wfPickerOpen || a.wfRunPickerOpen {
 		box := a.paletteView()
 		switch {
 		case a.helpOpen:
@@ -1979,6 +2074,8 @@ func (a app) View() tea.View {
 			box = a.projectPickerView()
 		case a.wfPickerOpen:
 			box = a.wfPickerView()
+		case a.wfRunPickerOpen:
+			box = a.workflowRunPickerView()
 		}
 		rows := strings.Split(box, "\n")
 		if maxRows := max(a.height-1, 1); len(rows) > maxRows {

@@ -446,6 +446,57 @@ func TestStepRunsIterateAndFinishOnce(t *testing.T) {
 	}
 }
 
+// The interactive POC ends a run with its one step: FinishRunAtStep
+// finishes the step run and marks the run done together, and a repeat
+// call from another observer of the same session ending is a no-op.
+func TestFinishRunAtStepEndsRunOnce(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	w := mustWorkflow(t, s, "fix a bug")
+	st := mustStep(t, s, w.ID, "fix")
+	run := mustRun(t, s, w.ID)
+	if err := s.SetRunState(ctx, run.ID, workflow.RunRunning); err != nil {
+		t.Fatalf("SetRunState: %v", err)
+	}
+	sr, err := s.CreateStepRun(ctx, workflow.StepRun{RunID: run.ID, StepID: st.ID, PromptRendered: "go"})
+	if err != nil {
+		t.Fatalf("CreateStepRun: %v", err)
+	}
+
+	if err := s.FinishRunAtStep(ctx, sr.ID, "Done", "PR #7"); err != nil {
+		t.Fatalf("FinishRunAtStep: %v", err)
+	}
+	fin, err := s.GetStepRun(ctx, sr.ID)
+	if err != nil {
+		t.Fatalf("GetStepRun: %v", err)
+	}
+	if !fin.Finished() || fin.Outcome != workflow.OutcomeDone || fin.Deliverable != "PR #7" {
+		t.Errorf("step run after FinishRunAtStep = %+v, want finished with done / PR #7", fin)
+	}
+	got, err := s.GetRun(ctx, run.ID)
+	if err != nil {
+		t.Fatalf("GetRun: %v", err)
+	}
+	if got.State != workflow.RunDone || got.EndedAt == nil {
+		t.Errorf("run after FinishRunAtStep = %+v, want done with ended_at set", got)
+	}
+
+	// A second observer of the same ending changes nothing and gets nil.
+	if err := s.FinishRunAtStep(ctx, sr.ID, "reject", "late"); err != nil {
+		t.Errorf("repeat FinishRunAtStep = %v, want nil", err)
+	}
+	if fin, _ = s.GetStepRun(ctx, sr.ID); fin.Outcome != workflow.OutcomeDone || fin.Deliverable != "PR #7" {
+		t.Errorf("first outcome did not stand: %+v", fin)
+	}
+
+	if err := s.FinishRunAtStep(ctx, sr.ID, "  ", ""); !errors.Is(err, workflow.ErrEmptyOutcome) {
+		t.Errorf("FinishRunAtStep(blank) = %v, want ErrEmptyOutcome", err)
+	}
+	if err := s.FinishRunAtStep(ctx, 9999, "done", ""); !errors.Is(err, workflow.ErrStepRunNotFound) {
+		t.Errorf("FinishRunAtStep(unknown) = %v, want ErrStepRunNotFound", err)
+	}
+}
+
 func stepRunIDs(runs []workflow.StepRun) []int64 {
 	out := make([]int64, 0, len(runs))
 	for _, r := range runs {
