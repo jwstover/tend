@@ -125,7 +125,7 @@ tend/
 │   │   └── keyring.go             #   credential storage via the OS keychain
 │   ├── mcpserver/                # MCP tool surface — third consumer of Store, alongside tui and cli
 │   │   ├── server.go               #   builds the MCP server bound to one task, runs the stdio transport
-│   │   ├── tools.go                 #   tool schemas + handlers (get_current_task, create_subtask, set_task_state, ...)
+│   │   ├── tools.go                 #   tool schemas + handlers (get_current_task, create_subtask, set_task_state, ...). No log-entry tool: log entries are the user's; agents write to the task body
 │   │   └── store.go                  #   mcpserver's own narrow Store interface
 │   ├── tui/                       # PRESENTATION — Bubble Tea
 │   │   ├── app.go                   #   root Model (Init/Update/View), message wiring

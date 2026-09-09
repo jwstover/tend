@@ -31,6 +31,5 @@ type Store interface {
 	ListProjects(ctx context.Context) ([]task.Project, error)
 	SetPriority(ctx context.Context, id int64, p *int64) error
 	SetDue(ctx context.Context, id int64, due *string) error
-	AddLogEntry(ctx context.Context, taskID *int64, body string) (task.LogEntry, error)
 	Close() error
 }
