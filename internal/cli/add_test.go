@@ -95,6 +95,16 @@ func (f *fakeStore) RenameProject(_ context.Context, id int64, name string) erro
 	return task.ErrProjectNotFound
 }
 
+func (f *fakeStore) SetProjectCwd(_ context.Context, id int64, cwd string) error {
+	for i := range f.projects {
+		if f.projects[i].ID == id {
+			f.projects[i].Cwd = task.NormalizeProjectCwd(cwd)
+			return nil
+		}
+	}
+	return task.ErrProjectNotFound
+}
+
 func (f *fakeStore) SetProjectArchived(_ context.Context, id int64, archived bool) error {
 	for i := range f.projects {
 		if f.projects[i].ID == id {

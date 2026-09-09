@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
@@ -86,8 +87,59 @@ func newProjectsCmd(open func(context.Context) (Store, error)) *cobra.Command {
 		},
 		newArchiveCmd(open, "archive", "Hide a project from the projects column", true),
 		newArchiveCmd(open, "unarchive", "Restore an archived project", false),
+		newCwdCmd(open),
 	)
 	return root
+}
+
+// newCwdCmd shows or sets a project's default working directory: the
+// directory a new Claude session on one of its tasks is offered when the
+// task has no earlier session to copy from.
+func newCwdCmd(open func(context.Context) (Store, error)) *cobra.Command {
+	var clear bool
+	cmd := &cobra.Command{
+		Use:   "cwd <name> [path]",
+		Short: "Show or set a project's default working directory for new sessions",
+		Long: "Show or set the directory a new Claude session on one of the project's " +
+			"tasks starts in, unless the task already has a session to copy from. " +
+			"A relative path is resolved against the current directory before it is " +
+			"stored. With no path, prints the current default; --clear removes it.",
+		Args: cobra.RangeArgs(1, 2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return withStore(cmd, open, func(ctx context.Context, s Store) error {
+				p, err := resolveProject(ctx, s, args[0])
+				if err != nil {
+					return err
+				}
+				switch {
+				case clear:
+					if err := s.SetProjectCwd(ctx, p.ID, ""); err != nil {
+						return err
+					}
+					fmt.Fprintf(cmd.OutOrStdout(), "cleared default cwd for %s\n", p.Name)
+				case len(args) == 2:
+					// Resolve relative paths here, where the shell's cwd is
+					// known; stored relative, the value would mean something
+					// different from every other directory.
+					path, err := filepath.Abs(task.NormalizeProjectCwd(args[1]))
+					if err != nil {
+						return fmt.Errorf("resolving %q: %w", args[1], err)
+					}
+					if err := s.SetProjectCwd(ctx, p.ID, path); err != nil {
+						return err
+					}
+					fmt.Fprintf(cmd.OutOrStdout(), "default cwd for %s → %s\n", p.Name, path)
+				case p.Cwd == "":
+					fmt.Fprintf(cmd.OutOrStdout(), "%s has no default cwd\n", p.Name)
+				default:
+					fmt.Fprintln(cmd.OutOrStdout(), p.Cwd)
+				}
+				return nil
+			})
+		},
+	}
+	cmd.Flags().BoolVar(&clear, "clear", false, "remove the project's default working directory")
+	return cmd
 }
 
 func newArchiveCmd(open func(context.Context) (Store, error), use, short string, archived bool) *cobra.Command {
@@ -125,7 +177,7 @@ func listProjects(cmd *cobra.Command, open func(context.Context) (Store, error))
 			if p.Archived() {
 				suffix = "  (archived)"
 			}
-			fmt.Fprintf(w, "%d\t%s\t%d%s\n", p.ID, p.Name, p.LiveCount, suffix)
+			fmt.Fprintf(w, "%d\t%s\t%d\t%s%s\n", p.ID, p.Name, p.LiveCount, p.Cwd, suffix)
 		}
 		return w.Flush()
 	})

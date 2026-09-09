@@ -43,6 +43,7 @@ type projectOut struct {
 	ID       int64  `json:"id"`
 	Name     string `json:"name"`
 	Tasks    int64  `json:"live_task_count"`
+	Cwd      string `json:"cwd,omitempty"` // default working directory for new sessions, if set
 	Archived bool   `json:"archived,omitempty"`
 }
 
@@ -54,7 +55,7 @@ type projectsOut struct {
 }
 
 func toProjectOut(p task.Project) projectOut {
-	return projectOut{ID: p.ID, Name: p.Name, Tasks: p.LiveCount, Archived: p.Archived()}
+	return projectOut{ID: p.ID, Name: p.Name, Tasks: p.LiveCount, Cwd: p.Cwd, Archived: p.Archived()}
 }
 
 // logOut is an added log entry rendered for a tool response.

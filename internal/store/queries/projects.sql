@@ -37,6 +37,13 @@ SET name       = ?,
     updated_at = datetime('now')
 WHERE id = ?;
 
+-- name: SetProjectCwd :exec
+-- '' clears the default working directory; see migration 00010.
+UPDATE projects
+SET cwd        = ?,
+    updated_at = datetime('now')
+WHERE id = ?;
+
 -- name: SetProjectArchived :exec
 UPDATE projects
 SET archived_at = ?,

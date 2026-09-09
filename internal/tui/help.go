@@ -49,6 +49,13 @@ func helpGroups() []helpGroup {
 			{"r", "launch / resume a Claude session"},
 			{"w", "run a workflow on the task"},
 		}},
+		{"PROJECTS", []helpEntry{
+			{"h / [", "focus / toggle the projects column"},
+			{"n / R", "new / rename project"},
+			{"w", "default cwd for new sessions"},
+			{"A", "archive / restore project"},
+			{"dd", "delete project; tasks move to Unsorted"},
+		}},
 		{"STANDUP", []helpEntry{
 			{"S", "open the standup view"},
 			{"N / U", "note / note on task"},

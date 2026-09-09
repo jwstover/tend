@@ -48,6 +48,7 @@ type Store interface {
 	CreateProject(ctx context.Context, name string) (task.Project, error)
 	RenameProject(ctx context.Context, id int64, name string) error
 	SetProjectArchived(ctx context.Context, id int64, archived bool) error
+	SetProjectCwd(ctx context.Context, id int64, cwd string) error
 	DeleteProject(ctx context.Context, id int64) error
 	ActiveProjectID(ctx context.Context) (int64, error)
 	SetActiveProject(ctx context.Context, id int64) error
@@ -176,6 +177,7 @@ const (
 	promptRename
 	promptNewProject
 	promptRenameProject
+	promptProjectCwd // a project's default working directory for new sessions
 	promptNewWorkflow
 	promptRenameWorkflow
 	promptDuplicateWorkflow
@@ -279,10 +281,13 @@ type (
 	// sessionsForPickerMsg carries a freshly loaded session list for the
 	// `r` picker (see sessions.go); label is the task title, snapshotted
 	// for use as both the picker heading and a new session's -n arg.
+	// projectID is the task's project, for its default working directory
+	// (see defaultCwd).
 	sessionsForPickerMsg struct {
-		taskID   int64
-		label    string
-		sessions []task.Session
+		taskID    int64
+		projectID int64
+		label     string
+		sessions  []task.Session
 	}
 	// sessionFinishedMsg reports a launched session's terminal handoff
 	// returning; the store row is only written on a clean exit.
@@ -484,11 +489,12 @@ type app struct {
 
 	// Session picker overlay: choose an existing session to resume, or
 	// launch a new one, for a task.
-	sessionPickerOpen     bool
-	sessionPickerTaskID   int64
-	sessionPickerLabel    string
-	sessionPickerSessions []task.Session
-	sessionPickerSel      int
+	sessionPickerOpen      bool
+	sessionPickerTaskID    int64
+	sessionPickerProjectID int64 // the task's project, for its default cwd
+	sessionPickerLabel     string
+	sessionPickerSessions  []task.Session
+	sessionPickerSel       int
 
 	// Command palette overlay: a fuzzy-matched command list anchored just
 	// above the footer.
@@ -1815,6 +1821,17 @@ func (a app) submitPrompt() (tea.Model, tea.Cmd) {
 		return a, a.mutate(flash{kind: flashEdit, text: "renamed to " + value}, func() error {
 			return a.store.RenameProject(a.ctx, target, value)
 		})
+	case promptProjectCwd:
+		// Unlike the prompts above, empty is meaningful here: it clears the
+		// default, the same way an empty tags or due prompt clears those.
+		cwd := task.NormalizeProjectCwd(value)
+		text := "default cwd cleared"
+		if cwd != "" {
+			text = "default cwd → " + tildePath(cwd)
+		}
+		return a, a.mutate(flash{kind: flashEdit, text: text}, func() error {
+			return a.store.SetProjectCwd(a.ctx, target, cwd)
+		})
 	case promptRename:
 		// A blank title is a no-op; renaming to nothing would strand the row.
 		if value == "" {
@@ -2224,7 +2241,7 @@ func (a app) footer() string {
 	case a.focus == paneProjects && a.mode == modeList:
 		hints = [][2]string{
 			{"j/k", "switch project"}, {"l/⏎", "to tasks"}, {"n", "new"}, {"R", "rename"},
-			{"dd", "delete"}, {"A", "archive"}, {"?", "help"}, {"q", "quit"},
+			{"w", "cwd"}, {"dd", "delete"}, {"A", "archive"}, {"?", "help"}, {"q", "quit"},
 		}
 	case a.focus == paneDetail:
 		hints = [][2]string{

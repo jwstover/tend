@@ -2,6 +2,8 @@ package task
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -36,6 +38,14 @@ type Project struct {
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
 
+	// Cwd is the project's default working directory: where a new Claude
+	// session on one of its tasks starts unless the task already has a
+	// session to copy from (see tui.defaultCwd). A project is typically
+	// scoped to one application checkout, so this is almost always the
+	// right answer and saves retyping it per task. "" means unset; it is a
+	// prompt prefill, never a constraint on where a session may run.
+	Cwd string
+
 	// LiveCount is live top-level tasks in this project: the population
 	// the list view renders as rows, so the number shown beside a project
 	// matches what selecting it produces. Zero unless the project came
@@ -45,6 +55,26 @@ type Project struct {
 
 // Archived reports whether the project is hidden from the projects column.
 func (p Project) Archived() bool { return p.ArchivedAt != nil }
+
+// NormalizeProjectCwd canonicalizes a default working directory as typed
+// at a prompt: surrounding whitespace goes, a leading "~" expands to the
+// home directory (a terminal user types paths that way, and exec.Cmd.Dir
+// does not expand it), and the result is cleaned. Blank normalizes to "",
+// which is the stored form of "no default". The path is deliberately not
+// checked for existence: it is a prefill the user can still edit, and a
+// checkout that isn't cloned yet is a fine thing to plan for.
+func NormalizeProjectCwd(s string) string {
+	p := strings.TrimSpace(s)
+	if p == "" {
+		return ""
+	}
+	if p == "~" || strings.HasPrefix(p, "~/") {
+		if home, err := os.UserHomeDir(); err == nil && home != "" {
+			p = home + p[1:]
+		}
+	}
+	return filepath.Clean(p)
+}
 
 // NormalizeProjectName trims surrounding whitespace and rejects blank
 // names. Case is preserved as typed; the schema's NOCASE collation is what

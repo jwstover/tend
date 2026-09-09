@@ -174,6 +174,21 @@ func (a *app) handleProjectsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) 
 		a.status = flash{text: "All is not a project"}
 		return *a, nil, true
 
+	case key.Matches(msg, a.keys.ProjectCwd):
+		if p, ok := a.selectedProject(); ok {
+			// Seeded with the current default, or tend's own directory when
+			// there is none yet, so enter alone accepts the likely answer —
+			// the same move openSessionCwdPrompt makes.
+			seed := p.Cwd
+			if seed == "" {
+				seed = a.startCwd
+			}
+			return *a, a.openPromptWith(promptProjectCwd,
+				fmt.Sprintf("default cwd for %s: ", p.Name), seed, p.ID), true
+		}
+		a.status = flash{text: "All is not a project"}
+		return *a, nil, true
+
 	case key.Matches(msg, a.keys.Delete):
 		if _, ok := a.selectedProject(); ok {
 			a.deletePending = true

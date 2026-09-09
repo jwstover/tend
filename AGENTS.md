@@ -142,7 +142,7 @@ tend/
 │   └── cli/                        # cobra commands
 │       ├── root.go                   #   command tree, Store/MCPStoreFactory/TUIRunner interfaces, --db resolution
 │       ├── add.go / ls.go / log.go / standup.go   #   fast, scriptable one-shots
-│       ├── projects.go                 #   `tend projects` — list/add/rename/rm/archive/unarchive
+│       ├── projects.go                 #   `tend projects` — list/add/rename/rm/archive/unarchive/cwd
 │       ├── auth.go                    #   `tend auth jira {login,status,logout}`
 │       ├── mcp.go                      #   hidden `tend mcp --task-id <id>`, spawned by a launched claude session
 │       └── agent_hook.go                #   hidden `tend agent-hook <event>`, spawned by Claude Code's own hooks
@@ -202,8 +202,9 @@ CREATE TABLE projects (          -- a workspace; every task belongs to exactly o
     UNIQUE COLLATE NOCASE,
   sort_order INTEGER NOT NULL DEFAULT 0,  -- 'Unsorted' is seeded as id 1, sort_order -1 (pinned first); it is the
   archived_at TEXT,                        -- default capture target and the fallback every delete path reassigns to,
-  created_at, updated_at                    -- so Store.DeleteProject refuses to delete it. archived_at hides a project.
-);
+  cwd TEXT NOT NULL DEFAULT '',            -- so Store.DeleteProject refuses to delete it. archived_at hides a project.
+  created_at, updated_at                    -- cwd (migration 00010) is the default working directory a new Claude
+);                                          -- session on one of its tasks is offered; '' = unset.
 
 CREATE TABLE tags (              -- free-form labels; multi-valued per task. The old flat `tasks.project` string
   id, name TEXT NOT NULL          -- was migrated into here as one tag per task by 00007.
