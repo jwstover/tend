@@ -562,6 +562,45 @@ func (s *Store) FinishStepRun(ctx context.Context, id int64, outcome, deliverabl
 	return nil
 }
 
+// FinishRunAtStep finishes a step run (FinishStepRun) and, in the same
+// transaction, marks its run done -- the interactive POC's handoff, where
+// there is no runner to route the outcome onward and a one-step run ends
+// with its step. Unlike FinishStepRun it is idempotent: a step run that
+// has already finished is left alone and nil is returned, because every
+// path that observes a workflow session ending (the terminal handoff
+// returning, a re-attach exiting, the recap drain finding it dead) calls
+// this, and only the first of them should decide anything. A run that
+// has already ended is likewise left as it is.
+func (s *Store) FinishRunAtStep(ctx context.Context, stepRunID int64, outcome, deliverable string) error {
+	o, err := workflow.NormalizeOutcome(outcome)
+	if err != nil {
+		return err
+	}
+	return s.inTx(ctx, func(q *gen.Queries) error {
+		sr, err := q.GetStepRun(ctx, stepRunID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("step run %d: %w", stepRunID, workflow.ErrStepRunNotFound)
+		}
+		if err != nil {
+			return fmt.Errorf("loading step run %d: %w", stepRunID, err)
+		}
+		n, err := q.FinishStepRun(ctx, gen.FinishStepRunParams{Outcome: o, Deliverable: deliverable, ID: stepRunID})
+		if err != nil {
+			return fmt.Errorf("finishing step run %d: %w", stepRunID, err)
+		}
+		if n == 0 {
+			return nil // already finished; the first outcome stands
+		}
+		ended := sql.NullString{String: time.Now().UTC().Format(sqliteTimeLayout), Valid: true}
+		if _, err := q.SetRunState(ctx, gen.SetRunStateParams{
+			State: string(workflow.RunDone), EndedAt: ended, ID: sr.RunID,
+		}); err != nil {
+			return fmt.Errorf("ending run %d: %w", sr.RunID, err)
+		}
+		return nil
+	})
+}
+
 // SetStepRunLogPath records where a step's stream-json log was written.
 // Separate from CreateStepRun because the path is derived from the step
 // run's own id.

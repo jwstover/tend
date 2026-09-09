@@ -49,12 +49,46 @@ func CheckInstalled() error {
 // a session with no MCP tools still reports status, and one with no
 // hooks still gets its tools.
 func LaunchCmd(cwd, sessionID, label, mcpConfigPath, settingsPath string) *exec.Cmd {
+	return LaunchCmdWith(cwd, sessionID, label, mcpConfigPath, settingsPath, LaunchOpts{})
+}
+
+// LaunchOpts are the per-launch extras a workflow step adds to a plain
+// session (see LaunchCmdWith). Each is forwarded to claude only when set,
+// so the zero value is exactly LaunchCmd.
+type LaunchOpts struct {
+	// Prompt is the session's first user message, passed as claude's
+	// positional prompt argument: the session opens interactively with
+	// the message already sent, which is how a workflow step's rendered
+	// template reaches the agent.
+	Prompt string
+	// Model is claude's --model: an alias like "opus" or a full model
+	// name; "" leaves the choice to claude.
+	Model string
+	// PermissionMode is claude's --permission-mode; "" inherits the
+	// user's default.
+	PermissionMode string
+}
+
+// LaunchCmdWith is LaunchCmd plus the step-level options a workflow run
+// sets: an initial prompt, a model, and a permission mode. Options come
+// before the prompt so a prompt that happens to start with a dash is
+// still the last thing on the line, where claude expects it.
+func LaunchCmdWith(cwd, sessionID, label, mcpConfigPath, settingsPath string, opts LaunchOpts) *exec.Cmd {
 	args := []string{"--session-id", sessionID, "-n", label}
 	if mcpConfigPath != "" {
 		args = append(args, "--mcp-config", mcpConfigPath)
 	}
 	if settingsPath != "" {
 		args = append(args, "--settings", settingsPath)
+	}
+	if opts.Model != "" {
+		args = append(args, "--model", opts.Model)
+	}
+	if opts.PermissionMode != "" {
+		args = append(args, "--permission-mode", opts.PermissionMode)
+	}
+	if opts.Prompt != "" {
+		args = append(args, opts.Prompt)
 	}
 	c := exec.Command(binary, args...)
 	c.Dir = cwd

@@ -47,6 +47,7 @@ func helpGroups() []helpGroup {
 			{"R", "rename task"},
 			{"e", "edit body in $EDITOR"},
 			{"r", "launch / resume a Claude session"},
+			{"w", "run a workflow on the task"},
 		}},
 		{"PROJECTS", []helpEntry{
 			{"h / [", "focus / toggle the projects column"},
