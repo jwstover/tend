@@ -237,6 +237,7 @@ func resumeSessionCmd(sess task.Session, dbPath string) tea.Cmd {
 			since:        since,
 			backgrounded: bg,
 			err:          err,
+			stepRunID:    sess.StepRunID,
 		}
 	})
 }

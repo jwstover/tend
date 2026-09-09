@@ -19,6 +19,7 @@ type keyMap struct {
 	Help           key.Binding
 	EditBody       key.Binding
 	Sessions       key.Binding // launch/resume a Claude Code session on the selected task
+	RunWorkflow    key.Binding // run a workflow on the selected task (workflowrun.go)
 	LogEntry       key.Binding // note attached to the selected task
 	Note           key.Binding // freestanding standup note, from anywhere
 	Yank           key.Binding // copy the standup markdown (standup view)
@@ -92,6 +93,7 @@ func defaultKeyMap() keyMap {
 		Help:           key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
 		EditBody:       key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "edit body")),
 		Sessions:       key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "sessions")),
+		RunWorkflow:    key.NewBinding(key.WithKeys("w"), key.WithHelp("w", "run workflow")),
 		LogEntry:       key.NewBinding(key.WithKeys("U"), key.WithHelp("U", "note on task")),
 		Note:           key.NewBinding(key.WithKeys("N"), key.WithHelp("N", "note")),
 		Yank:           key.NewBinding(key.WithKeys("y"), key.WithHelp("y", "yank standup")),

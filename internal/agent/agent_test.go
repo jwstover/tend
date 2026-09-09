@@ -275,6 +275,40 @@ func TestLaunchCmdSettingsWithoutMCPConfig(t *testing.T) {
 	}
 }
 
+// A workflow step's launch adds model, permission mode and the rendered
+// prompt; the prompt is positional and must come last.
+func TestLaunchCmdWithStepOptions(t *testing.T) {
+	c := LaunchCmdWith("/tmp/work", "abc-123", "fix a bug — flaky test", "/tmp/mcp.json", "/tmp/hooks.json",
+		LaunchOpts{Prompt: "Fix the flaky test in /tmp/work", Model: "opus", PermissionMode: "acceptEdits"})
+	want := []string{
+		binary, "--session-id", "abc-123", "-n", "fix a bug — flaky test",
+		"--mcp-config", "/tmp/mcp.json", "--settings", "/tmp/hooks.json",
+		"--model", "opus", "--permission-mode", "acceptEdits",
+		"Fix the flaky test in /tmp/work",
+	}
+	if got := c.Args; !equalArgs(got, want) {
+		t.Errorf("Args = %v, want %v", got, want)
+	}
+	if c.Dir != "/tmp/work" {
+		t.Errorf("Dir = %q, want /tmp/work", c.Dir)
+	}
+}
+
+// Empty options add nothing: LaunchCmdWith with the zero LaunchOpts is
+// LaunchCmd, and an unset model or mode inherits claude's own default.
+func TestLaunchCmdWithZeroOptionsMatchesLaunchCmd(t *testing.T) {
+	plain := LaunchCmd("/tmp/work", "abc-123", "fix the bug", "/tmp/mcp.json", "")
+	with := LaunchCmdWith("/tmp/work", "abc-123", "fix the bug", "/tmp/mcp.json", "", LaunchOpts{})
+	if !equalArgs(plain.Args, with.Args) {
+		t.Errorf("LaunchCmdWith(zero) = %v, want LaunchCmd's %v", with.Args, plain.Args)
+	}
+	prompted := LaunchCmdWith("/tmp/work", "abc-123", "fix the bug", "", "", LaunchOpts{Prompt: "go"})
+	want := []string{binary, "--session-id", "abc-123", "-n", "fix the bug", "go"}
+	if !equalArgs(prompted.Args, want) {
+		t.Errorf("Args = %v, want %v", prompted.Args, want)
+	}
+}
+
 func TestResumeCmdWithHookSettings(t *testing.T) {
 	c := ResumeCmd("/tmp/work", "abc-123", "/tmp/mcp.json", "/tmp/hooks.json")
 	want := []string{binary, "--resume", "abc-123", "--mcp-config", "/tmp/mcp.json", "--settings", "/tmp/hooks.json"}
