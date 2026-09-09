@@ -136,7 +136,7 @@ type Workflow struct {
 }
 
 // Step is one node of a workflow. PromptMD is a Go text/template rendered
-// per run (see the templating task, #174); Model and PermissionMode are
+// per run by RenderPrompt; Model and PermissionMode are
 // forwarded to claude as-is, "" meaning "inherit the default". SortOrder
 // is authoring order only: execution order is defined by the Edges.
 type Step struct {
