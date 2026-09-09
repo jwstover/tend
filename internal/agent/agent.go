@@ -184,19 +184,37 @@ func RecapCmd(ctx context.Context, cwd, externalID, prompt string) *exec.Cmd {
 
 // transcriptPath locates a session's local Claude Code transcript on
 // disk: one JSONL file per session under
-// ~/.claude/projects/<cwd, with "/" and "." replaced by "-">/<externalID>.jsonl.
+// ~/.claude/projects/<cwd, every non-alphanumeric byte replaced by "-">/<externalID>.jsonl.
 // This is an on-disk convention of the claude CLI itself, not a stable
 // public API, so TranscriptLineCount/TranscriptExcerptSince degrade to
 // "nothing found" rather than erroring if it ever changes — a Claude
 // Code update can only make recaps fall back to unscoped, never break
 // them outright.
+//
+// cwd must be the path as claude sees it, symlinks resolved: on macOS a
+// session started under /var/... is filed under -private-var-....
 func transcriptPath(cwd, externalID string) (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
-	sanitized := strings.NewReplacer("/", "-", ".", "-").Replace(cwd)
-	return filepath.Join(home, ".claude", "projects", sanitized, externalID+".jsonl"), nil
+	return filepath.Join(home, ".claude", "projects", sanitizeProjectDir(cwd), externalID+".jsonl"), nil
+}
+
+// sanitizeProjectDir mirrors how claude names a cwd's transcript
+// directory: each byte outside [A-Za-z0-9] becomes "-", so "/a_b.c" is
+// "-a-b-c". Verified against the real CLI (a cwd with an underscore was
+// filed under a hyphen), not just "/" and "." as first assumed.
+func sanitizeProjectDir(cwd string) string {
+	b := []byte(cwd)
+	for i, c := range b {
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		default:
+			b[i] = '-'
+		}
+	}
+	return string(b)
 }
 
 // TranscriptLineCount returns how many lines are currently in a
