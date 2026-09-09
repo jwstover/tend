@@ -34,13 +34,13 @@ WHERE s.is_terminal = 0
 ORDER BY s.sort_order, t.priority IS NULL, t.priority, t.id;
 
 -- name: ListLiveWithCompletedTasks :many
--- Like ListLiveTasks but also surfaces completed (done) tasks, for when the
--- list view has the completed section toggled on.
+-- Like ListLiveTasks but also surfaces completed (done) tasks and
+-- hidden-by-default states (someday), for when the list view has the
+-- completed section toggled on. Snoozed tasks stay hidden either way.
 SELECT t.*
 FROM tasks t
 JOIN states s ON s.name = t.state
-WHERE (s.is_terminal = 0 OR t.state = 'done')
-  AND s.hidden_by_default = 0
+WHERE (s.is_terminal = 0 OR t.state = 'done' OR s.hidden_by_default = 1)
   AND (t.snooze_until IS NULL OR t.snooze_until <= date('now'))
   AND (sqlc.narg(project_id) IS NULL OR t.project_id = sqlc.narg(project_id))
 ORDER BY s.sort_order, t.priority IS NULL, t.priority, t.id;

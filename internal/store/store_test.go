@@ -1404,3 +1404,64 @@ func TestSetSessionEndedIfUnchangedUnknownSessionIsNotAnError(t *testing.T) {
 		t.Error("SetSessionEndedIfUnchanged reported success for a session that doesn't exist")
 	}
 }
+
+func TestListLiveWithCompletedIncludesDoneAndSomeday(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	future := time.Now().AddDate(0, 0, 7).Format("2006-01-02")
+	fixtures := []struct {
+		title  string
+		column string
+		value  string
+		want   bool
+	}{
+		{"live task", "state", "todo", true},
+		{"done task", "state", "done", true},
+		{"someday task", "state", "someday", true},
+		{"snoozed future", "snooze_until", future, false},
+	}
+	wantTitles := map[string]bool{}
+	for _, f := range fixtures {
+		created, err := s.AddTask(ctx, f.title)
+		if err != nil {
+			t.Fatalf("AddTask(%q): %v", f.title, err)
+		}
+		if _, err := s.db.ExecContext(ctx,
+			"UPDATE tasks SET "+f.column+" = ? WHERE id = ?", f.value, created.ID,
+		); err != nil {
+			t.Fatalf("fixture update for %q: %v", f.title, err)
+		}
+		if f.want {
+			wantTitles[f.title] = true
+		}
+	}
+
+	got, err := s.ListLiveWithCompleted(ctx, nil)
+	if err != nil {
+		t.Fatalf("ListLiveWithCompleted: %v", err)
+	}
+	gotTitles := map[string]bool{}
+	for _, tk := range got {
+		gotTitles[tk.Title] = true
+	}
+	if len(gotTitles) != len(wantTitles) {
+		t.Errorf("ListLiveWithCompleted returned %v, want titles %v", gotTitles, wantTitles)
+	}
+	for title := range wantTitles {
+		if !gotTitles[title] {
+			t.Errorf("ListLiveWithCompleted missing %q", title)
+		}
+	}
+
+	// The plain live view must still hide someday: only the toggle reveals it.
+	live, err := s.ListLive(ctx, nil)
+	if err != nil {
+		t.Fatalf("ListLive: %v", err)
+	}
+	for _, tk := range live {
+		if tk.State == task.StateSomeday {
+			t.Errorf("ListLive returned someday task %q", tk.Title)
+		}
+	}
+}

@@ -26,7 +26,7 @@ func helpGroups() []helpGroup {
 			{"⏎ / tab", "expand / collapse children"},
 			{"l / h", "expand / collapse branch"},
 			{"]", "toggle detail pane"},
-			{"C", "show / hide completed"},
+			{"C", "show / hide completed + someday"},
 			{"o / O", "open link(s) in body + log"},
 		}},
 		{"CAPTURE & FIND", []helpEntry{

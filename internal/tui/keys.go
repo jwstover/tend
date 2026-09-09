@@ -43,7 +43,7 @@ type keyMap struct {
 	PageUp     key.Binding
 	PageDown   key.Binding
 
-	ToggleCompleted key.Binding // C shows/hides the completed (done) section
+	ToggleCompleted key.Binding // C shows/hides the completed (done) and someday sections
 
 	ChangePriority key.Binding
 
