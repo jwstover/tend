@@ -1402,7 +1402,7 @@ func TestHelpOverlay(t *testing.T) {
 
 	// The full reference outgrew the default 30-row test window (the
 	// splice drops top rows); give it room so every group is visible.
-	m = drive(t, m, tea.WindowSizeMsg{Width: 100, Height: 45})
+	m = drive(t, m, tea.WindowSizeMsg{Width: 100, Height: 60})
 	m = drive(t, m, keyPress('?'))
 	if !m.(app).helpOpen {
 		t.Fatal("help not open after ?")

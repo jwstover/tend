@@ -245,11 +245,22 @@ func openURLCmd(url string) tea.Cmd {
 // editBodyCmd writes the body to a temp file and suspends the TUI to run
 // $EDITOR on it; the callback message carries the file for reading back.
 func editBodyCmd(t task.Task) tea.Cmd {
-	f, err := os.CreateTemp("", fmt.Sprintf("tend-%d-*.md", t.ID))
+	id := t.ID
+	return editInEditorCmd(fmt.Sprintf("tend-%d-*.md", t.ID), t.BodyMD, func(path string, err error) tea.Msg {
+		return editorFinishedMsg{id: id, path: path, err: err}
+	})
+}
+
+// editInEditorCmd is the $EDITOR round-trip shared by the task body and a
+// workflow step's prompt: content goes to a temp file named after pattern,
+// the terminal is handed to the editor on it, and done receives the path
+// (still on disk -- the caller reads and removes it) once the editor exits.
+func editInEditorCmd(pattern, content string, done func(path string, err error) tea.Msg) tea.Cmd {
+	f, err := os.CreateTemp("", pattern)
 	if err != nil {
 		return errCmd(fmt.Errorf("creating temp file: %w", err))
 	}
-	if _, err := f.WriteString(t.BodyMD); err != nil {
+	if _, err := f.WriteString(content); err != nil {
 		f.Close()
 		os.Remove(f.Name())
 		return errCmd(fmt.Errorf("writing temp file: %w", err))
@@ -258,10 +269,9 @@ func editBodyCmd(t task.Task) tea.Cmd {
 
 	parts := strings.Fields(editorCommand())
 	c := exec.Command(parts[0], append(parts[1:], f.Name())...)
-	id := t.ID
 	path := f.Name()
 	return tea.ExecProcess(c, func(err error) tea.Msg {
-		return editorFinishedMsg{id: id, path: path, err: err}
+		return done(path, err)
 	})
 }
 

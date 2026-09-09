@@ -55,6 +55,16 @@ func helpGroups() []helpGroup {
 			{"s", "group by task / time (standup)"},
 			{"y", "yank markdown (standup)"},
 		}},
+		{"WORKFLOWS", []helpEntry{
+			{"W", "open the workflows view"},
+			{"h / l", "workflows ↔ steps pane"},
+			{"n / R / D", "new / rename / duplicate workflow"},
+			{"e", "edit step prompt in $EDITOR"},
+			{"m / p / t", "step model / permission mode / kind"},
+			{"J / K", "move step down / up"},
+			{"v", "validate prompt templates"},
+			{"dd", "delete workflow or step"},
+		}},
 	}
 }
 

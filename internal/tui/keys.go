@@ -31,6 +31,17 @@ type keyMap struct {
 	MoveProject    key.Binding // move the selected task to another project
 	Archive        key.Binding // archive/restore the selected project
 
+	// Workflows authoring view (workflows.go). `n`, `R`, `e` and `dd`
+	// reuse QuickAdd, Rename, EditBody and Delete there.
+	Workflows      key.Binding // open the view
+	Duplicate      key.Binding // copy the selected workflow under a new name
+	StepModel      key.Binding // model picker for the selected step
+	StepPermission key.Binding // permission-mode picker for the selected step
+	StepKind       key.Binding // flip the selected step between agent and gate
+	StepDown       key.Binding // move the selected step later in the order
+	StepUp         key.Binding // move the selected step earlier in the order
+	Validate       key.Binding // check every step prompt of the selected workflow
+
 	// Tree expansion in the list view.
 	ExpandToggle key.Binding // ⏎/Tab flips a branch (⏎ falls back to detail on leaves)
 	ExpandOpen   key.Binding
@@ -92,6 +103,17 @@ func defaultKeyMap() keyMap {
 		Delete:         key.NewBinding(key.WithKeys("d"), key.WithHelp("dd", "delete")),
 		MoveProject:    key.NewBinding(key.WithKeys("P"), key.WithHelp("P", "move to project")),
 		Archive:        key.NewBinding(key.WithKeys("A"), key.WithHelp("A", "archive")),
+
+		Workflows:      key.NewBinding(key.WithKeys("W"), key.WithHelp("W", "workflows")),
+		Duplicate:      key.NewBinding(key.WithKeys("D"), key.WithHelp("D", "duplicate")),
+		StepModel:      key.NewBinding(key.WithKeys("m"), key.WithHelp("m", "model")),
+		StepPermission: key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "permission mode")),
+		// `t` (type) rather than the `k` the task sketch named: `k` is
+		// "up" in every pane of this app, and `J`/`K` reorder right here.
+		StepKind: key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "agent / gate")),
+		StepDown: key.NewBinding(key.WithKeys("J"), key.WithHelp("J", "move down")),
+		StepUp:   key.NewBinding(key.WithKeys("K"), key.WithHelp("K", "move up")),
+		Validate: key.NewBinding(key.WithKeys("v"), key.WithHelp("v", "validate prompts")),
 
 		ExpandToggle: key.NewBinding(key.WithKeys("enter", "tab"), key.WithHelp("⏎", "expand")),
 		ExpandOpen:   key.NewBinding(key.WithKeys("l", "right"), key.WithHelp("l", "expand")),

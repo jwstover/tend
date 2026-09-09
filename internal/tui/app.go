@@ -20,6 +20,7 @@ import (
 
 	"github.com/jwstover/tend/internal/jira"
 	"github.com/jwstover/tend/internal/task"
+	"github.com/jwstover/tend/internal/workflow"
 )
 
 // Store is the slice of the persistence layer the TUI needs.
@@ -66,6 +67,20 @@ type Store interface {
 	SetSessionWorkingIfUnchanged(ctx context.Context, externalID string, prevStatusUpdatedAt time.Time) (bool, error)
 	SetSessionIdleIfUnchanged(ctx context.Context, externalID string, prevStatusUpdatedAt time.Time) (bool, error)
 	SetSessionEndedIfUnchanged(ctx context.Context, externalID string, prevStatusUpdatedAt time.Time) (bool, error)
+
+	// Workflow authoring (workflows.go). Edges are deferred to a later
+	// task; for now a workflow is its steps in sort order.
+	ListWorkflows(ctx context.Context) ([]workflow.Workflow, error)
+	CreateWorkflow(ctx context.Context, name, description string) (workflow.Workflow, error)
+	RenameWorkflow(ctx context.Context, id int64, name string) error
+	DeleteWorkflow(ctx context.Context, id int64) error
+	DuplicateWorkflow(ctx context.Context, id int64, newName string) (workflow.Workflow, error)
+	ListSteps(ctx context.Context, workflowID int64) ([]workflow.Step, error)
+	AddStep(ctx context.Context, workflowID int64, name string, kind workflow.StepKind) (workflow.Step, error)
+	UpdateStep(ctx context.Context, st workflow.Step) error
+	SetStepPrompt(ctx context.Context, id int64, prompt string) error
+	ReorderSteps(ctx context.Context, workflowID int64, ids []int64) error
+	DeleteStep(ctx context.Context, id int64) error
 }
 
 // Run starts the TUI and blocks until it exits. dbPath is shown on the
@@ -122,6 +137,7 @@ const (
 	modeList viewMode = iota
 	modeTriage
 	modeStandup
+	modeWorkflows
 )
 
 // pane identifies which column owns the keyboard. It replaces an earlier
@@ -150,6 +166,10 @@ const (
 	promptRename
 	promptNewProject
 	promptRenameProject
+	promptNewWorkflow
+	promptRenameWorkflow
+	promptDuplicateWorkflow
+	promptNewStep
 )
 
 // flashKind picks the glyph + semantic color a footer flash leads with;
@@ -209,6 +229,34 @@ type (
 		id   int64
 		path string
 		err  error
+	}
+
+	// Workflows view messages (workflows.go). workflowsLoadedMsg carries
+	// the whole list plus the steps of the workflow the view should land
+	// on; stepsLoadedMsg alone follows a cursor move between workflows.
+	// The created messages exist so the cursor can land on the new row,
+	// which a bare refreshMsg has no id to do with.
+	workflowsLoadedMsg struct {
+		workflows []workflow.Workflow
+		selected  int64 // workflow the steps belong to; 0 = none
+		steps     []workflow.Step
+	}
+	stepsLoadedMsg struct {
+		workflowID int64
+		steps      []workflow.Step
+	}
+	workflowCreatedMsg struct {
+		w      workflow.Workflow
+		status flash
+	}
+	stepCreatedMsg struct {
+		st     workflow.Step
+		status flash
+	}
+	stepEditorFinishedMsg struct {
+		stepID int64
+		path   string
+		err    error
 	}
 
 	// urlsResolvedMsg carries a task's collected links (body + log
@@ -356,6 +404,25 @@ type app struct {
 	standupCursor       int             // focused note-group index, grouped view only
 	standupCollapsed    map[string]bool // collapsed note-group keys, see standupGroupKey
 	standupJumpToLatest bool
+
+	// Workflows authoring view (workflows.go): the workflows on the left,
+	// the selected one's steps on the right. wfStepsFor names the workflow
+	// wfSteps was loaded for, so a stale stepsLoadedMsg can be dropped.
+	// wfSelectStepID asks the next steps load to land the cursor on that
+	// step (a just-added or just-moved one); 0 keeps the cursor's index.
+	workflows      []workflow.Workflow
+	wfCursor       int
+	wfSteps        []workflow.Step
+	wfStepsFor     int64
+	wfStepCursor   int
+	wfFocus        wfPane
+	wfSelectStepID int64
+
+	// Step attribute picker overlay: model or permission mode for one step.
+	wfPickerOpen   bool
+	wfPickerKind   wfPickerKind
+	wfPickerStepID int64
+	wfPickerSel    int
 
 	showDetail bool
 	focus      pane // which column owns j/k and the scroll keys
@@ -605,12 +672,53 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a.Update(msg.inner)
 
 	case sessionsPolledMsg:
-		// Standup mode renders no session markers, so there's nothing
-		// there worth reloading for — mirrors refreshMsg's same branch.
-		if !msg.changed || a.mode == modeStandup {
+		// Standup and workflows render no session markers, so there's
+		// nothing there worth reloading for — mirrors refreshMsg's same
+		// branches.
+		if !msg.changed || a.mode == modeStandup || a.mode == modeWorkflows {
 			return a, nil
 		}
 		return a, a.loadTasks(a.mode)
+
+	case workflowsLoadedMsg:
+		if a.mode != modeWorkflows {
+			return a, nil
+		}
+		a.workflows = msg.workflows
+		a.wfCursor = 0
+		for i, w := range msg.workflows {
+			if w.ID == msg.selected {
+				a.wfCursor = i
+			}
+		}
+		a.setSteps(msg.selected, msg.steps)
+		return a, nil
+
+	case stepsLoadedMsg:
+		// Stale if the cursor has moved on since the load was issued.
+		if a.mode != modeWorkflows || msg.workflowID != a.selectedWorkflowID() {
+			return a, nil
+		}
+		a.setSteps(msg.workflowID, msg.steps)
+		return a, nil
+
+	case workflowCreatedMsg:
+		a.status = msg.status
+		return a, a.loadWorkflows(msg.w.ID)
+
+	case stepCreatedMsg:
+		a.status = msg.status
+		a.wfSelectStepID = msg.st.ID
+		return a, a.loadWorkflows(a.selectedWorkflowID())
+
+	case stepEditorFinishedMsg:
+		if msg.err != nil {
+			os.Remove(msg.path)
+			a.status = flash{text: "editor: " + msg.err.Error(), isErr: true}
+			return a, nil
+		}
+		a.wfSelectStepID = msg.stepID
+		return a, a.saveStepPrompt(msg.stepID, msg.path)
 
 	case standupLoadedMsg:
 		if a.mode != modeStandup {
@@ -636,6 +744,9 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// in the common case.
 		if a.mode == modeStandup {
 			return a, tea.Batch(a.loadStandup(), a.drainRecapsCmd())
+		}
+		if a.mode == modeWorkflows {
+			return a, tea.Batch(a.loadWorkflows(a.selectedWorkflowID()), a.drainRecapsCmd())
 		}
 		return a, tea.Batch(a.loadTasks(a.mode), a.loadProjects(), a.drainRecapsCmd())
 
@@ -687,6 +798,11 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// So does an open project picker.
 	if a.projectPickerOpen {
 		return a.handleProjectPickerKey(msg)
+	}
+
+	// And a step attribute picker (workflows view).
+	if a.wfPickerOpen {
+		return a.handleWfPickerKey(msg)
 	}
 
 	// An open session picker swallows all keys.
@@ -749,6 +865,12 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// navigate or mutate, so unhandled keys stop here.
 	if a.mode == modeStandup {
 		return a.handleStandupKey(msg)
+	}
+
+	// Likewise the workflows view, which owns its own two panes and the
+	// `dd` chord within them.
+	if a.mode == modeWorkflows {
+		return a.handleWorkflowsKey(msg)
 	}
 
 	// A pending `c` chord consumes the next key: a state key applies it,
@@ -879,6 +1001,10 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, a.keys.Standup):
 		a.startStandup()
 		return a, a.loadStandup()
+
+	case key.Matches(msg, a.keys.Workflows):
+		a.startWorkflows()
+		return a, a.loadWorkflows(0)
 
 	case key.Matches(msg, a.keys.Note):
 		return a, a.modal.Open(modalLog, true, "note", 0, "")
@@ -1188,11 +1314,17 @@ func (a app) priorityPanel() string {
 // second `d` deletes, anything else cancels.
 func (a app) deletePanel() string {
 	label, desc := "delete", "delete"
-	if a.focus == paneProjects && a.mode == modeList {
+	switch {
+	case a.focus == paneProjects && a.mode == modeList:
 		// Deleting a project never deletes work, and the panel says so:
 		// the store reassigns its tasks to Unsorted first.
 		label = "delete project"
 		desc = "delete; tasks move to Unsorted"
+	case a.mode == modeWorkflows && a.wfFocus == wfPaneSteps:
+		label = "delete step"
+	case a.mode == modeWorkflows:
+		label = "delete workflow"
+		desc = "delete, with all its steps"
 	}
 	entries := []panelEntry{
 		{key: "d", desc: desc, keyStyle: a.styles.State[task.StateDone]},
@@ -1596,6 +1728,11 @@ func (a app) submitPrompt() (tea.Model, tea.Cmd) {
 		return a, a.mutate(flash{kind: flashEdit, text: fmt.Sprintf("#%d renamed", target)}, func() error {
 			return a.store.SetTitle(a.ctx, target, value)
 		})
+	case promptNewWorkflow, promptRenameWorkflow, promptDuplicateWorkflow, promptNewStep:
+		if value == "" {
+			return a, nil
+		}
+		return a, a.submitWorkflowPrompt(kind, target, value)
 	}
 	return a, nil
 }
@@ -1787,6 +1924,10 @@ func (a app) View() tea.View {
 		at, _ := a.standupWidths()
 		splits = []int{at}
 		body = a.standupView()
+	case modeWorkflows:
+		at, _ := a.workflowsWidths()
+		splits = []int{at}
+		body = a.workflowsView()
 	default:
 		body = a.listBody()
 	}
@@ -1808,7 +1949,7 @@ func (a app) View() tea.View {
 	// body rows. A panel taller than the screen loses its top rows, like
 	// the design's splice.
 	if a.paletteOpen || a.helpOpen || a.urlPickerOpen || a.sessionPickerOpen ||
-		a.projectPickerOpen {
+		a.projectPickerOpen || a.wfPickerOpen {
 		box := a.paletteView()
 		switch {
 		case a.helpOpen:
@@ -1819,6 +1960,8 @@ func (a app) View() tea.View {
 			box = a.sessionPickerView()
 		case a.projectPickerOpen:
 			box = a.projectPickerView()
+		case a.wfPickerOpen:
+			box = a.wfPickerView()
 		}
 		rows := strings.Split(box, "\n")
 		if maxRows := max(a.height-1, 1); len(rows) > maxRows {
@@ -1871,15 +2014,17 @@ func (a app) headerLine() string {
 		left += s.State[task.StateInbox].Bold(true).Render("triage")
 	case modeStandup:
 		left += s.HeaderView.Render("standup")
+	case modeWorkflows:
+		left += s.HeaderView.Render("workflows")
 	default:
 		left += s.HeaderView.Render("live")
 	}
 	// Name the project the view is scoped to. The projects column usually
 	// says this, but it hides on a narrow terminal and triage never shows
 	// it at all -- so without this you cannot tell whether you are
-	// triaging one project or everything. Standup is deliberately global,
-	// so it stays unqualified.
-	if a.mode != modeStandup {
+	// triaging one project or everything. Standup and workflows are
+	// deliberately global, so they stay unqualified.
+	if a.mode != modeStandup && a.mode != modeWorkflows {
 		if p, ok := a.selectedProject(); ok {
 			left += s.HeaderSep.Render("  ·  ") + s.HeaderView.Render(p.Name)
 		}
@@ -1889,6 +2034,13 @@ func (a app) headerLine() string {
 	switch {
 	case a.mode == modeStandup:
 		right = s.CountLabel.Render(task.WindowLabel(a.standupSince, time.Now())) + "  "
+	case a.mode == modeWorkflows:
+		noun := "workflows"
+		if len(a.workflows) == 1 {
+			noun = "workflow"
+		}
+		right = s.CountNum.Render(fmt.Sprintf("%d", len(a.workflows))) +
+			s.CountLabel.Render(" "+noun) + "  "
 	case a.mode == modeTriage && len(a.triageQueue) > 0:
 		total := a.triageProcessed + len(a.triageQueue)
 		right = s.CountNum.Render(fmt.Sprintf("%d of %d", a.triageProcessed+1, total)) +
@@ -2028,6 +2180,9 @@ func (a app) footer() string {
 			{"n", "note"}, {"y", "yank"}, {"h/l", "window"}, {"s", sort}, {"C", recaps},
 			{"j/k", "scroll"}, {"tab", "expand"}, {"esc/q", "back"}, {"?", "help"},
 		}
+	}
+	if a.mode == modeWorkflows {
+		hints = a.workflowsHints()
 	}
 	return a.hintLine(hints)
 }
