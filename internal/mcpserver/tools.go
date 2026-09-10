@@ -58,13 +58,6 @@ func toProjectOut(p task.Project) projectOut {
 	return projectOut{ID: p.ID, Name: p.Name, Tasks: p.LiveCount, Cwd: p.Cwd, Archived: p.Archived()}
 }
 
-// logOut is an added log entry rendered for a tool response.
-type logOut struct {
-	ID     int64  `json:"id"`
-	TaskID *int64 `json:"task_id,omitempty"`
-	Body   string `json:"body"`
-}
-
 // subtasksOut wraps the sub-task list in an object: MCP's outputSchema
 // describes the structuredContent object, so a bare slice generates a
 // top-level array schema that clients reject.
@@ -148,9 +141,14 @@ func registerTools(srv *mcp.Server, store Store, boundTaskID int64) {
 		return nil, toTaskOut(t, nil), nil
 	})
 
+	// The only free-form write an agent gets. There is deliberately no
+	// add_log_entry tool: log entries are the user's standup notes, so an
+	// agent that wants to leave a record on a task edits its body instead.
 	mcp.AddTool(srv, &mcp.Tool{
-		Name:        "update_task_body",
-		Description: "Replace a task's markdown body; defaults to the bound task.",
+		Name: "update_task_body",
+		Description: "Replace a task's markdown body; defaults to the bound task. This is the " +
+			"place to record progress, links, or a summary of the work — log entries are " +
+			"reserved for the user.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in struct {
 		BodyMD string `json:"body_md" jsonschema:"the new markdown body, replacing the existing one"`
 		TaskID *int64 `json:"task_id,omitempty" jsonschema:"task id to update; defaults to the session's bound task"`
@@ -283,22 +281,6 @@ func registerTools(srv *mcp.Server, store Store, boundTaskID int64) {
 			return nil, taskOut{}, err
 		}
 		return fetchTask(ctx, store, id)
-	})
-
-	mcp.AddTool(srv, &mcp.Tool{
-		Name: "add_log_entry",
-		Description: "Add a standup-style note to a task's log — the direct replacement for a " +
-			"scratch doc's running notes. Defaults to the bound task.",
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, in struct {
-		Body   string `json:"body" jsonschema:"the note text"`
-		TaskID *int64 `json:"task_id,omitempty" jsonschema:"task id to attach the note to; defaults to the session's bound task"`
-	}) (*mcp.CallToolResult, logOut, error) {
-		id := resolveID(in.TaskID, boundTaskID)
-		entry, err := store.AddLogEntry(ctx, &id, in.Body)
-		if err != nil {
-			return nil, logOut{}, err
-		}
-		return nil, logOut{ID: entry.ID, TaskID: entry.TaskID, Body: entry.Body}, nil
 	})
 }
 

@@ -20,7 +20,6 @@ type fakeStore struct {
 	tags     map[int64][]string
 	projects []task.Project
 	nextID   int64
-	logs     []task.LogEntry
 }
 
 func newFakeStore(seed ...task.Task) *fakeStore {
@@ -170,12 +169,6 @@ func (s *fakeStore) SetDue(_ context.Context, id int64, due *string) error {
 	return nil
 }
 
-func (s *fakeStore) AddLogEntry(_ context.Context, taskID *int64, body string) (task.LogEntry, error) {
-	e := task.LogEntry{ID: int64(len(s.logs) + 1), TaskID: taskID, Body: body}
-	s.logs = append(s.logs, e)
-	return e, nil
-}
-
 func (s *fakeStore) Close() error { return nil }
 
 // dial spins up a Server backed by store, bound to taskID, and connects
@@ -307,16 +300,21 @@ func TestSetTaskTagsReplacesWholeList(t *testing.T) {
 	}
 }
 
-func TestAddLogEntryDefaultsToBoundTask(t *testing.T) {
+// TestNoLogEntryTool pins the deliberate absence of add_log_entry: log
+// entries are the user's standup notes, and an agent that wants to leave
+// a record on a task must go through update_task_body instead.
+func TestNoLogEntryTool(t *testing.T) {
 	store := newFakeStore(task.Task{ID: 7, Title: "bound"})
 	cs := dial(t, store, 7)
 
-	got := callTool[logOut](t, cs, "add_log_entry", map[string]any{"body": "made progress"})
-	if got.TaskID == nil || *got.TaskID != 7 {
-		t.Errorf("add_log_entry task_id = %v, want 7 (the bound task)", got.TaskID)
+	tools, err := cs.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
 	}
-	if got.Body != "made progress" {
-		t.Errorf("add_log_entry body = %q, want %q", got.Body, "made progress")
+	for _, tool := range tools.Tools {
+		if strings.Contains(tool.Name, "log") {
+			t.Errorf("tool %q exposed; agents must not write log entries", tool.Name)
+		}
 	}
 }
 
