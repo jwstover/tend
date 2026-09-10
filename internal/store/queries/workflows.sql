@@ -197,6 +197,17 @@ SET state    = ?,
 WHERE id = ?
   AND state NOT IN ('done', 'failed', 'cancelled');
 
+-- name: FailRun :execrows
+-- SetRunState for the failed state, recording why in the same statement
+-- so a run can never read as failed for no reason. Same terminal-is-final
+-- WHERE as SetRunState; the caller turns zero rows into ErrRunEnded.
+UPDATE workflow_runs
+SET state    = 'failed',
+    error    = ?,
+    ended_at = ?
+WHERE id = ?
+  AND state NOT IN ('done', 'failed', 'cancelled');
+
 -- name: ClaimRun :execrows
 -- Compare-and-swap for starting a runner: only a pending or paused run can
 -- be taken to running, so two runners racing for one run see exactly one

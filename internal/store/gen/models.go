@@ -113,6 +113,7 @@ type WorkflowRun struct {
 	TmuxSession      string
 	StartedAt        string
 	EndedAt          sql.NullString
+	Error            string
 }
 
 type WorkflowStep struct {
