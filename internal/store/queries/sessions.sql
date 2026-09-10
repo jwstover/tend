@@ -26,6 +26,19 @@ FROM agent_sessions
 WHERE task_id = ?
 ORDER BY last_active_at DESC, id DESC;
 
+-- name: ListSessionsForProject :many
+-- Every session on every task of one project (or of all projects, when
+-- project_id is NULL -- the projects column's All row), most recently
+-- active first: the agents view's list. agent_sessions has no project
+-- column of its own, so the scope comes through the owning task; the
+-- task's title and state ride along so a row can say which task the
+-- session belongs to without a second read per session.
+SELECT sqlc.embed(s), t.title AS task_title, t.state AS task_state
+FROM agent_sessions s
+JOIN tasks t ON t.id = s.task_id
+WHERE (sqlc.narg(project_id) IS NULL OR t.project_id = sqlc.narg(project_id))
+ORDER BY s.last_active_at DESC, s.id DESC;
+
 -- name: TouchSession :exec
 UPDATE agent_sessions
 SET last_active_at = datetime('now')

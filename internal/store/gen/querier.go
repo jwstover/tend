@@ -121,6 +121,13 @@ type Querier interface {
 	// Ordered oldest-first so a caller building a per-task map ends up with
 	// the most-recently-active session's status per task (plan section 8.4).
 	ListSessionStatuses(ctx context.Context) ([]ListSessionStatusesRow, error)
+	// Every session on every task of one project (or of all projects, when
+	// project_id is NULL -- the projects column's All row), most recently
+	// active first: the agents view's list. agent_sessions has no project
+	// column of its own, so the scope comes through the owning task; the
+	// task's title and state ride along so a row can say which task the
+	// session belongs to without a second read per session.
+	ListSessionsForProject(ctx context.Context, projectID interface{}) ([]ListSessionsForProjectRow, error)
 	ListSessionsForTask(ctx context.Context, taskID int64) ([]AgentSession, error)
 	ListSessionsNeedingRecap(ctx context.Context) ([]AgentSession, error)
 	// Candidates for section 8.3's capture-pane poller: only sessions that

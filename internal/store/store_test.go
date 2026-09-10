@@ -882,6 +882,73 @@ func TestUpdateSessionLabel(t *testing.T) {
 	}
 }
 
+// ListSessionsForProject scopes through the owning task: one project's
+// sessions with the task's title and state attached, newest first, or
+// every project's for nil.
+func TestListSessionsForProject(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	proj, err := s.CreateProject(ctx, "hapi")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	inProj, err := s.AddTaskIn(ctx, proj.ID, "fix the bug")
+	if err != nil {
+		t.Fatalf("AddTaskIn: %v", err)
+	}
+	if err := s.SetState(ctx, inProj.ID, task.StateDoing); err != nil {
+		t.Fatalf("SetState: %v", err)
+	}
+	elsewhere := mustAdd(t, s, "unrelated")
+
+	older, err := s.CreateSession(ctx, inProj.ID, "ext-1", "/tmp/work", inProj.Title, "tend-ext-1")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	newer, err := s.CreateSession(ctx, inProj.ID, "ext-2", "/tmp/work", inProj.Title, "")
+	if err != nil {
+		t.Fatalf("CreateSession (second): %v", err)
+	}
+	if _, err := s.CreateSession(ctx, elsewhere.ID, "ext-3", "/tmp/other", elsewhere.Title, ""); err != nil {
+		t.Fatalf("CreateSession (other project): %v", err)
+	}
+
+	got, err := s.ListSessionsForProject(ctx, &proj.ID)
+	if err != nil {
+		t.Fatalf("ListSessionsForProject: %v", err)
+	}
+	if len(got) != 2 || got[0].ID != newer.ID || got[1].ID != older.ID {
+		t.Fatalf("sessions for project = %+v, want the project's two, newest first", got)
+	}
+	if got[0].TaskTitle != inProj.Title || got[0].TaskState != task.StateDoing || got[0].TaskID != inProj.ID {
+		t.Errorf("row = %+v, want the owning task's title and state attached", got[0])
+	}
+	if got[1].TmuxSession != "tend-ext-1" || got[1].Status != task.SessionStarting {
+		t.Errorf("row = %+v, want the session columns to round-trip", got[1])
+	}
+
+	all, err := s.ListSessionsForProject(ctx, nil)
+	if err != nil {
+		t.Fatalf("ListSessionsForProject(nil): %v", err)
+	}
+	if len(all) != 3 {
+		t.Errorf("sessions for all projects = %d, want 3", len(all))
+	}
+
+	// Deleting the task takes its sessions out of the project's list too.
+	if err := s.DeleteTask(ctx, inProj.ID); err != nil {
+		t.Fatalf("DeleteTask: %v", err)
+	}
+	got, err = s.ListSessionsForProject(ctx, &proj.ID)
+	if err != nil {
+		t.Fatalf("ListSessionsForProject after delete: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("sessions survived task delete: %+v", got)
+	}
+}
+
 func TestAgentSessionsCascadeDeleteWithTask(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

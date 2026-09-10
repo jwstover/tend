@@ -600,6 +600,28 @@ func (s *Store) ListSessionsForTask(ctx context.Context, taskID int64) ([]task.S
 	return sessions, nil
 }
 
+// ListSessionsForProject returns every session on every task in a project,
+// most recently active first, each with its task's title and state — the
+// agents view's list. A nil projectID means all projects (the projects
+// column's All row), the same convention ListLive uses.
+func (s *Store) ListSessionsForProject(ctx context.Context, projectID *int64) ([]task.TaskSession, error) {
+	rows, err := s.q.ListSessionsForProject(ctx, projectFilter(projectID))
+	if err != nil {
+		return nil, fmt.Errorf("listing sessions for project: %w", err)
+	}
+	sessions := make([]task.TaskSession, 0, len(rows))
+	for _, row := range rows {
+		sess, err := sessionToDomain(row.AgentSession)
+		if err != nil {
+			return nil, err
+		}
+		sessions = append(sessions, task.TaskSession{
+			Session: sess, TaskTitle: row.TaskTitle, TaskState: task.State(row.TaskState),
+		})
+	}
+	return sessions, nil
+}
+
 // TouchSession bumps a session's last-active timestamp after a resume.
 func (s *Store) TouchSession(ctx context.Context, id int64) error {
 	if err := s.q.TouchSession(ctx, id); err != nil {

@@ -46,8 +46,8 @@ import (
 // plus the names and liveness facts that need extra reads to know.
 type runSummary struct {
 	run      workflow.Run
-	workflow string           // the workflow's name; "" if it could not be read
-	step     string           // the current step's name; "" before the first step
+	workflow string            // the workflow's name; "" if it could not be read
+	step     string            // the current step's name; "" before the first step
 	stepRun  *workflow.StepRun // the current step run, nil before the first step
 	// lastOutput is the current step's log mtime -- when the step last
 	// wrote anything -- zero when there is no log yet. A stat, not a
@@ -369,8 +369,13 @@ func (rv runView) selected() (workflow.StepRun, bool) {
 	return rv.stepRuns[rv.cursor], true
 }
 
-// openRunView switches into the view on run and loads it.
+// openRunView switches into the view on run and loads it, remembering
+// which view to go back to: the agents view, or the list.
 func (a *app) openRunView(run workflow.Run) tea.Cmd {
+	a.rvBack = modeList
+	if a.mode == modeAgents {
+		a.rvBack = modeAgents
+	}
 	a.mode = modeRun
 	a.cancelPending = false
 	a.rv = runView{runID: run.ID, run: run, follow: true, vp: viewport.New()}
@@ -378,10 +383,14 @@ func (a *app) openRunView(run workflow.Run) tea.Cmd {
 	return a.loadRunView(run.ID)
 }
 
-// leaveRunView returns to the list view.
+// leaveRunView returns to the view `v` was pressed in.
 func (a *app) leaveRunView() tea.Cmd {
-	a.mode = modeList
 	a.cancelPending = false
+	if a.rvBack == modeAgents {
+		a.startAgents()
+		return a.loadAgentSessions()
+	}
+	a.mode = modeList
 	a.resize()
 	return a.loadTasks(modeList)
 }
@@ -521,9 +530,16 @@ func loadRunLog(stepRunID int64, path string, offset int64) tea.Cmd {
 // first. A read from zero replaces (the file was rewritten or is being
 // shown for the first time); any other appends.
 func (a *app) applyRunLog(msg runLogLoadedMsg) {
-	lg := &a.rv.log
+	if a.rv.log.apply(msg) {
+		a.renderRunLog()
+	}
+}
+
+// apply folds a log read into lg, reporting whether it applied. Shared by
+// the run view and the agents view, which tail the same logs.
+func (lg *runLog) apply(msg runLogLoadedMsg) bool {
 	if msg.stepRunID != lg.stepRunID || msg.path != lg.path || (msg.from != lg.offset && msg.from != 0) {
-		return
+		return false
 	}
 	if msg.from == 0 {
 		lg.rendered, lg.raw = nil, nil
@@ -531,7 +547,21 @@ func (a *app) applyRunLog(msg runLogLoadedMsg) {
 	lg.offset = msg.to
 	lg.rendered = append(lg.rendered, msg.rendered...)
 	lg.raw = append(lg.raw, msg.raw...)
-	a.renderRunLog()
+	return true
+}
+
+// renderLogLines styles and wraps log lines to a pane: tool lines in the
+// accent when rendered (raw lines are left as they are).
+func renderLogLines(lines []string, raw bool, width int, s Styles) []string {
+	out := make([]string, 0, len(lines))
+	for _, l := range lines {
+		styled := l
+		if !raw && strings.HasPrefix(l, agent.ToolGlyph+" ") {
+			styled = s.Accent.Render(l)
+		}
+		out = append(out, strings.Split(ansi.Wrap(styled, max(width-2, 10), ""), "\n")...)
+	}
+	return out
 }
 
 // renderRunLog rebuilds the log viewport's content from the selected
@@ -558,14 +588,7 @@ func (a *app) renderRunLog() {
 	case len(lines) == 0:
 		out = []string{a.styles.Muted.Render("waiting for output…")}
 	default:
-		out = make([]string, 0, len(lines))
-		for _, l := range lines {
-			styled := l
-			if !rv.raw && strings.HasPrefix(l, agent.ToolGlyph+" ") {
-				styled = a.styles.Accent.Render(l)
-			}
-			out = append(out, strings.Split(ansi.Wrap(styled, max(w-2, 10), ""), "\n")...)
-		}
+		out = renderLogLines(lines, rv.raw, w, a.styles)
 	}
 	for i := range out {
 		out[i] = " " + out[i]
