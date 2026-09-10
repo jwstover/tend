@@ -211,9 +211,9 @@ func TestParentAndChildRowsShareColumnOrder(t *testing.T) {
 	parent := task.Task{ID: 1, Title: "parent", State: task.StateTodo, Priority: &pri}
 	child := task.Task{ID: 2, Title: "child", State: task.StateTodo, Priority: &pri}
 
-	// gutter(3) then dot, caret, priority — the child adds only indent.
-	wantParent := "   " + g.State[task.StateTodo] + " " + g.CaretClosed + " " + g.Flag + "B parent"
-	wantChild := "    " + g.State[task.StateTodo] + " " + g.CaretClosed + " " + g.Flag + "B child"
+	// gutter(3) then dot, caret, title — the child adds only indent.
+	wantParent := "   " + g.State[task.StateTodo] + " " + g.CaretClosed + " " + "parent"
+	wantChild := "    " + g.State[task.StateTodo] + " " + g.CaretClosed + " " + "child"
 
 	gotParent := ansi.Strip(d.renderRow(listItem{t: parent, total: 1}, false, 100))
 	gotChild := ansi.Strip(d.renderChildRow(childItem{t: child, depth: 1, total: 1}, false, 100))
@@ -223,6 +223,57 @@ func TestParentAndChildRowsShareColumnOrder(t *testing.T) {
 	}
 	if !strings.HasPrefix(gotChild, wantChild) {
 		t.Errorf("child row = %q, want prefix %q", gotChild, wantChild)
+	}
+
+	// The priority follows the title on both rows, at the same column.
+	pp, cp := runeIndex(gotParent, g.Flag+"B"), runeIndex(gotChild, g.Flag+"B")
+	if pp < 0 || cp < 0 {
+		t.Fatalf("priority badge missing:\nparent %q\nchild  %q", gotParent, gotChild)
+	}
+	if pp <= runeIndex(gotParent, "parent") || cp <= runeIndex(gotChild, "child") {
+		t.Errorf("priority must follow the title:\nparent %q\nchild  %q", gotParent, gotChild)
+	}
+	if pp != cp {
+		t.Errorf("priority at column %d on parent, %d on child — they must align\n%q\n%q",
+			pp, cp, gotParent, gotChild)
+	}
+}
+
+// The priority moved from before the title to the head of the meta
+// block. It is a column, so it sits at one cell on every row: with and
+// without tags, due and sub-task counts beside it, at both meta widths,
+// and on child rows, whose otherwise-empty meta block pads to match.
+func TestPriorityColumnIsAtTheSameCellOnEveryRow(t *testing.T) {
+	styles := DefaultStyles()
+	g := styles.Glyphs
+	pri := int64(1)
+	due := "2026-12-01"
+
+	for _, width := range []int{100, compactMetaWidth - 1} {
+		d := taskDelegate{styles: styles, tags: map[int64][]string{1: {"support"}}}
+		bare := task.Task{ID: 2, Title: "bare", State: task.StateTodo, Priority: &pri}
+		full := task.Task{ID: 1, Title: "full", State: task.StateDoing, Priority: &pri, Due: &due}
+		child := task.Task{ID: 3, Title: "child", State: task.StateTodo, Priority: &pri}
+
+		rows := map[string]string{
+			"bare":     ansi.Strip(d.renderRow(listItem{t: bare}, false, width)),
+			"full":     ansi.Strip(d.renderRow(listItem{t: full, done: 1, total: 3, expanded: true}, false, width)),
+			"selected": ansi.Strip(d.renderRow(listItem{t: full, done: 1, total: 3}, true, width)),
+			"depth 1":  ansi.Strip(d.renderChildRow(childItem{t: child, depth: 1}, false, width)),
+			"depth 3":  ansi.Strip(d.renderChildRow(childItem{t: child, depth: 3}, false, width)),
+		}
+		want := runeIndex(rows["bare"], g.Flag+"A")
+		if want < 0 {
+			t.Fatalf("width %d: bare row has no priority badge: %q", width, rows["bare"])
+		}
+		for name, row := range rows {
+			if got := runeIndex(row, g.Flag+"A"); got != want {
+				t.Errorf("width %d, %s: priority at column %d, want %d:\n%q", width, name, got, want, row)
+			}
+			if w := len([]rune(row)); w != width {
+				t.Errorf("width %d, %s: row is %d cells wide:\n%q", width, name, w, row)
+			}
+		}
 	}
 }
 
