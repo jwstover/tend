@@ -72,6 +72,7 @@ type keyMap struct {
 	// `c` chord everywhere else.
 	SetTodo    key.Binding
 	SetDoing   key.Binding
+	SetReview  key.Binding // v: `r` is taken by sessions in the list, and the triage grid shares these keys
 	SetBlocked key.Binding
 	SetDone    key.Binding
 	SetSomeday key.Binding
@@ -149,6 +150,7 @@ func defaultKeyMap() keyMap {
 
 		SetTodo:    key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "todo")),
 		SetDoing:   key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "doing")),
+		SetReview:  key.NewBinding(key.WithKeys("v"), key.WithHelp("v", "in review")),
 		SetBlocked: key.NewBinding(key.WithKeys("b"), key.WithHelp("b", "blocked")),
 		SetDone:    key.NewBinding(key.WithKeys("x"), key.WithHelp("x", "done")),
 		SetSomeday: key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "someday")),

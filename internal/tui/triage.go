@@ -143,9 +143,10 @@ func (a app) triageCardLines(width int) []string {
 	acts := []act{
 		{"t", "→ todo", s.State[task.StateTodo]}, {"s", "→ someday", s.State[task.StateSomeday]},
 		{"d", "→ doing", s.State[task.StateDoing]}, {"e", "edit body in $EDITOR", s.Accent},
-		{"b", "→ blocked", s.State[task.StateBlocked]}, {"T", "set tags", s.Accent},
-		{"x", "→ done", s.State[task.StateDone]}, {"u", "set due", s.Accent},
-		{"p", "set priority", s.Accent}, {"⏎", "skip for now", s.Muted},
+		{"v", "→ in review", s.State[task.StateReview]}, {"T", "set tags", s.Accent},
+		{"b", "→ blocked", s.State[task.StateBlocked]}, {"u", "set due", s.Accent},
+		{"x", "→ done", s.State[task.StateDone]}, {"p", "set priority", s.Accent},
+		{"⏎", "skip for now", s.Muted},
 	}
 	colW := width / 2
 	for i := 0; i < len(acts); i += 2 {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -115,6 +116,7 @@ func TestListLiveFiltering(t *testing.T) {
 	}{
 		{"done task", "state", "done", false},
 		{"someday task", "state", "someday", false},
+		{"review task", "state", "review", true},
 		{"snoozed future", "snooze_until", future, false},
 		{"snoozed past", "snooze_until", past, true},
 	}
@@ -149,6 +151,34 @@ func TestListLiveFiltering(t *testing.T) {
 		if !gotTitles[title] {
 			t.Errorf("ListLive missing %q", title)
 		}
+	}
+}
+
+// The live view's state order is the states table's sort_order, and
+// review sits between todo and doing there: handed-off work reads before
+// the work still in flight (tend task #199).
+func TestListLiveOrdersReviewBeforeDoing(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	for _, st := range []task.State{task.StateBlocked, task.StateDoing, task.StateReview, task.StateTodo, task.StateInbox} {
+		created := mustAdd(t, s, string(st))
+		if err := s.SetState(ctx, created.ID, st); err != nil {
+			t.Fatalf("SetState(%s): %v", st, err)
+		}
+	}
+
+	got, err := s.ListLive(ctx, nil)
+	if err != nil {
+		t.Fatalf("ListLive: %v", err)
+	}
+	var order []string
+	for _, tk := range got {
+		order = append(order, string(tk.State))
+	}
+	want := []string{"inbox", "todo", "review", "doing", "blocked"}
+	if strings.Join(order, ",") != strings.Join(want, ",") {
+		t.Errorf("ListLive state order = %v, want %v", order, want)
 	}
 }
 

@@ -17,6 +17,7 @@ const (
 	StateInbox   State = "inbox"
 	StateTodo    State = "todo"
 	StateDoing   State = "doing"
+	StateReview  State = "review" // finished on our side, waiting on someone else's eyes
 	StateBlocked State = "blocked"
 	StateDone    State = "done"
 	StateSomeday State = "someday"
@@ -25,10 +26,19 @@ const (
 // Valid reports whether s is one of the seeded workflow states.
 func (s State) Valid() bool {
 	switch s {
-	case StateInbox, StateTodo, StateDoing, StateBlocked, StateDone, StateSomeday:
+	case StateInbox, StateTodo, StateDoing, StateReview, StateBlocked, StateDone, StateSomeday:
 		return true
 	}
 	return false
+}
+
+// Label is the state's name as the UI shows it: the stored name, except
+// where a bare word would read oddly as a heading.
+func (s State) Label() string {
+	if s == StateReview {
+		return "in review"
+	}
+	return string(s)
 }
 
 // ErrEmptyTitle is returned when a captured title is blank.

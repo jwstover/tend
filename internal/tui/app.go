@@ -1333,6 +1333,8 @@ func (a app) stateForKey(msg tea.KeyPressMsg) (task.State, bool) {
 		return task.StateTodo, true
 	case key.Matches(msg, a.keys.SetDoing):
 		return task.StateDoing, true
+	case key.Matches(msg, a.keys.SetReview):
+		return task.StateReview, true
 	case key.Matches(msg, a.keys.SetBlocked):
 		return task.StateBlocked, true
 	case key.Matches(msg, a.keys.SetDone):
@@ -1352,6 +1354,7 @@ func (a app) statePanel() string {
 	}{
 		{a.keys.SetTodo, a.styles.State[task.StateTodo]},
 		{a.keys.SetDoing, a.styles.State[task.StateDoing]},
+		{a.keys.SetReview, a.styles.State[task.StateReview]},
 		{a.keys.SetBlocked, a.styles.State[task.StateBlocked]},
 		{a.keys.SetDone, a.styles.State[task.StateDone]},
 		{a.keys.SetSomeday, a.styles.State[task.StateSomeday]},
@@ -2347,7 +2350,7 @@ func (a app) footer() string {
 	}
 	if a.mode == modeTriage {
 		hints = [][2]string{
-			{"t/d/b", "set state"}, {"x", "done"}, {"s", "someday"},
+			{"t/d/v/b", "set state"}, {"x", "done"}, {"s", "someday"},
 			{"e", "edit"}, {"⏎", "skip"}, {"esc", "back"},
 		}
 		if len(a.triageQueue) == 0 {

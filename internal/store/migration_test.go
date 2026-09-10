@@ -259,6 +259,94 @@ func TestTaskEventsRebuildKeepsHistoryAndTriggers(t *testing.T) {
 // schemaBeforeWorkflows is the last migration before the workflow tables.
 const schemaBeforeWorkflows = 8
 
+// schemaBeforeReview is the last migration before the review state row.
+const schemaBeforeReview = 13
+
+// stateOrders reads the states table as name -> sort_order.
+func stateOrders(t *testing.T, db *sql.DB) map[string]int64 {
+	t.Helper()
+	rows, err := db.Query(`SELECT name, sort_order FROM states`)
+	if err != nil {
+		t.Fatalf("reading states: %v", err)
+	}
+	defer rows.Close()
+	out := map[string]int64{}
+	for rows.Next() {
+		var name string
+		var order int64
+		if err := rows.Scan(&name, &order); err != nil {
+			t.Fatalf("scanning states: %v", err)
+		}
+		out[name] = order
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterating states: %v", err)
+	}
+	return out
+}
+
+// Migration 00014 seeds the review state (tend task #199) and renumbers
+// the states after it so review sorts between todo and doing. Down has to
+// park any review tasks somewhere first or the FK on tasks.state refuses
+// the delete, so both directions are driven here.
+func TestReviewStateMigrationRoundTrips(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "tend.db")
+
+	db := openAt(t, path, schemaBeforeReview)
+	if _, err := db.Exec(`INSERT INTO tasks (title, state) VALUES ('in flight', 'doing')`); err != nil {
+		t.Fatalf("seeding a task: %v", err)
+	}
+	provider := providerFor(t, db)
+
+	// Up: review exists, is live, and sits right before doing.
+	if _, err := provider.UpTo(ctx, schemaBeforeReview+1); err != nil {
+		t.Fatalf("migrating up to 00014: %v", err)
+	}
+	orders := stateOrders(t, db)
+	want := map[string]int64{"inbox": 0, "todo": 1, "review": 2, "doing": 3, "blocked": 4, "done": 5, "someday": 6}
+	for name, order := range want {
+		if orders[name] != order {
+			t.Errorf("after up, %s sort_order = %d, want %d", name, orders[name], order)
+		}
+	}
+	var terminal, hidden int
+	if err := db.QueryRowContext(ctx, `SELECT is_terminal, hidden_by_default FROM states WHERE name = 'review'`).Scan(&terminal, &hidden); err != nil {
+		t.Fatalf("after up, review row: %v", err)
+	}
+	if terminal != 0 || hidden != 0 {
+		t.Errorf("review is_terminal=%d hidden_by_default=%d, want 0/0 so it shows by default", terminal, hidden)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE tasks SET state = 'review' WHERE title = 'in flight'`); err != nil {
+		t.Fatalf("moving the task to review: %v", err)
+	}
+
+	// Down: the row goes, its tasks land in doing, and the numbering is
+	// back to the 00001 seed.
+	if _, err := provider.DownTo(ctx, schemaBeforeReview); err != nil {
+		t.Fatalf("migrating back down to 00013: %v", err)
+	}
+	orders = stateOrders(t, db)
+	if _, still := orders["review"]; still {
+		t.Error("after down, the review state row still exists")
+	}
+	for name, order := range map[string]int64{"inbox": 0, "todo": 1, "doing": 2, "blocked": 3, "done": 4, "someday": 5} {
+		if orders[name] != order {
+			t.Errorf("after down, %s sort_order = %d, want %d", name, orders[name], order)
+		}
+	}
+	var state string
+	if err := db.QueryRowContext(ctx, `SELECT state FROM tasks WHERE title = 'in flight'`).Scan(&state); err != nil {
+		t.Fatalf("after down, reading the task: %v", err)
+	}
+	if state != "doing" {
+		t.Errorf("after down, the review task is in %q, want doing", state)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("closing: %v", err)
+	}
+}
+
 // providerFor builds a goose provider over an already-open handle, for
 // tests that need to roll a schema down as well as up.
 func providerFor(t *testing.T, db *sql.DB) *goose.Provider {
