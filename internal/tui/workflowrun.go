@@ -17,8 +17,8 @@ import (
 // Running a workflow on a task: the `w` key. The run is driven headlessly
 // by the runner (internal/runner, `tend workflow run`) in its own tmux
 // session; the TUI only creates the run and starts that process, then
-// gets the terminal straight back. Watching the run is a separate task
-// (#183); the runner's own output is in its tmux session and runner.log.
+// gets the terminal straight back. Watching the run is `v` (runview.go);
+// the runner's own output is in its tmux session and runner.log.
 //
 // The flow is three messages long, each produced by a Cmd so the store is
 // never touched from Update:

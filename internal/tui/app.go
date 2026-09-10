@@ -93,6 +93,19 @@ type Store interface {
 	CreateRun(ctx context.Context, workflowID, taskID int64, cwd string) (workflow.Run, error)
 	SetRunTmuxSession(ctx context.Context, id int64, name string) error
 	FailRun(ctx context.Context, id int64, reason string) error
+
+	// Watching and steering runs (runview.go, the detail pane's WORKFLOWS
+	// section, pollRuns). Reads only, plus the three writes the CLI would
+	// make: SetRunState for pause/cancel and FinishStepRun for a gate.
+	GetWorkflow(ctx context.Context, id int64) (workflow.Workflow, error)
+	GetStep(ctx context.Context, id int64) (workflow.Step, error)
+	OutgoingEdges(ctx context.Context, stepID int64) ([]workflow.Edge, error)
+	ListActiveRuns(ctx context.Context) ([]workflow.Run, error)
+	ListRunsForTask(ctx context.Context, taskID int64) ([]workflow.Run, error)
+	SetRunState(ctx context.Context, id int64, st workflow.RunState) error
+	GetStepRun(ctx context.Context, id int64) (workflow.StepRun, error)
+	ListStepRunsForRun(ctx context.Context, runID int64) ([]workflow.StepRun, error)
+	FinishStepRun(ctx context.Context, id int64, outcome, deliverable string) error
 }
 
 // Run starts the TUI and blocks until it exits. dbPath is shown on the
@@ -128,15 +141,23 @@ func Run(ctx context.Context, s Store, dbPath string) error {
 // outside that loop is the only way polling — and the status correction it
 // does — keeps happening during the one span it matters most: while you're
 // mid-conversation with a session and can't see any other task's state.
+//
+// The same tick also watches workflow runs (pollRuns): the snapshot of the
+// active runs it compares against lives here, on the goroutine, so no
+// second timer or message is needed to notice a run moving.
 func runSessionPoller(ctx context.Context, store Store, send func(tea.Msg)) {
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
+	var runs map[int64]runSnapshot
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if pollSessions(ctx, store, pollInterval) {
+			sessionsChanged := pollSessions(ctx, store, pollInterval)
+			var runsChanged bool
+			runs, runsChanged = pollRuns(ctx, store, runs)
+			if sessionsChanged || runsChanged {
 				send(sessionsPolledMsg{changed: true})
 			}
 		}
@@ -150,6 +171,7 @@ const (
 	modeTriage
 	modeStandup
 	modeWorkflows
+	modeRun // watching one workflow run (runview.go)
 )
 
 // pane identifies which column owns the keyboard. It replaces an earlier
@@ -222,6 +244,7 @@ type (
 		children []task.Task
 		log      []task.LogEntry
 		sessions []task.Session
+		runs     []runSummary // the task's workflow runs, for WORKFLOWS
 	}
 	standupLoadedMsg struct {
 		notes  []task.LogEntry
@@ -342,6 +365,32 @@ type (
 		run         workflow.Run
 		tmuxSession string
 	}
+
+	// Run view messages (runview.go). runsForPickerMsg carries a task's
+	// runs for the `v` picker; runViewLoadedMsg is everything the view
+	// shows except the log, which runLogLoadedMsg brings in pieces -- a
+	// read from offset `from` to `to`, so a tail appends and a stale read
+	// is recognized and dropped.
+	runsForPickerMsg struct {
+		t    task.Task
+		runs []runSummary
+	}
+	runViewLoadedMsg struct {
+		run          workflow.Run
+		workflow     string
+		stepRuns     []workflow.StepRun
+		stepNames    map[int64]string
+		stepKinds    map[int64]workflow.StepKind
+		stepOutcomes map[int64][]string
+		runnerGone   bool
+	}
+	runLogLoadedMsg struct {
+		stepRunID int64
+		path      string
+		from, to  int64
+		rendered  []string
+		raw       []string
+	}
 	// recapsDrainedMsg carries the backgrounded sessions this instance
 	// successfully claimed the owed recap for (see drainRecapsCmd) —
 	// already claimed in the store, so Update's job is only to fire the
@@ -353,9 +402,10 @@ type (
 	recapDoneMsg struct{ inner tea.Msg }
 
 	// sessionsPolledMsg reports whether pollSessions wrote a status change
-	// for at least one session this tick. changed being false is the
-	// common case (nothing to see, or a hook already won the race) and
-	// deliberately triggers no reload — unlike refreshMsg, a background
+	// for at least one session this tick, or pollRuns saw a workflow run
+	// move (state, current step, or its log growing). changed being false
+	// is the common case (nothing to see, or a hook already won the race)
+	// and deliberately triggers no reload — unlike refreshMsg, a background
 	// poll finding nothing new isn't worth a flash or a re-fetch. Sent by
 	// runSessionPoller's goroutine via Program.Send, not produced by a
 	// tea.Cmd — it originates outside the event loop entirely, which is
@@ -471,6 +521,17 @@ type app struct {
 	wfRunPickerSel       int
 	wfRunPending         *workflowRunRequest
 
+	// Run view (runview.go): the run being watched, and the `v` picker
+	// over a task's runs. runsCache is the detail pane's WORKFLOWS source,
+	// loaded alongside children/log/sessions.
+	rv            runView
+	runsCache     map[int64][]runSummary
+	runPickerOpen bool
+	runPickerTask task.Task
+	runPickerRuns []runSummary
+	runPickerSel  int
+	cancelPending bool // first `c` pressed in the run view; a second confirms
+
 	showDetail bool
 	focus      pane // which column owns j/k and the scroll keys
 	detail     viewport.Model
@@ -551,6 +612,7 @@ func newApp(ctx context.Context, s Store, dbPath string) app {
 		childCache:      make(map[int64][]task.Task),
 		logCache:        make(map[int64][]task.LogEntry),
 		sessionsCache:   make(map[int64][]task.Session),
+		runsCache:       make(map[int64][]runSummary),
 		startCwd:        wd,
 		detail:          viewport.New(),
 		prompt:          textinput.New(),
@@ -619,6 +681,7 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.childCache[msg.parentID] = msg.children
 		a.logCache[msg.parentID] = msg.log
 		a.sessionsCache[msg.parentID] = msg.sessions
+		a.runsCache[msg.parentID] = msg.runs
 		var cmd tea.Cmd
 		if a.mode == modeList {
 			sel, hadSel := a.selectedNode()
@@ -662,8 +725,25 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.openWorkflowCwdPrompt(msg)
 
 	case workflowRunStartedMsg:
-		a.status = flash{kind: flashAdd, text: fmt.Sprintf("started %s on #%d as run %d (%s)",
+		a.status = flash{kind: flashAdd, text: fmt.Sprintf("started %s on #%d as run %d (%s) — v to watch",
 			msg.req.w.Name, msg.req.t.ID, msg.run.ID, msg.tmuxSession)}
+		return a, nil
+
+	case runsForPickerMsg:
+		return a, a.openRunPicker(msg)
+
+	case runViewLoadedMsg:
+		// Stale if the user has left the view, or moved on to another run,
+		// since the load was issued.
+		if a.mode != modeRun || msg.run.ID != a.rv.runID {
+			return a, nil
+		}
+		return a, a.applyRunView(msg)
+
+	case runLogLoadedMsg:
+		if a.mode == modeRun {
+			a.applyRunLog(msg)
+		}
 		return a, nil
 
 	case sessionFinishedMsg:
@@ -742,9 +822,14 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case sessionsPolledMsg:
 		// Standup and workflows render no session markers, so there's
 		// nothing there worth reloading for — mirrors refreshMsg's same
-		// branches.
+		// branches. The run view reloads itself (and tails its log) from
+		// the same tick; the list reload it would otherwise get is what
+		// syncDetail does when the view is left.
 		if !msg.changed || a.mode == modeStandup || a.mode == modeWorkflows {
 			return a, nil
+		}
+		if a.mode == modeRun {
+			return a, a.loadRunView(a.rv.runID)
 		}
 		return a, a.loadTasks(a.mode)
 
@@ -816,6 +901,9 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if a.mode == modeWorkflows {
 			return a, tea.Batch(a.loadWorkflows(a.selectedWorkflowID()), a.drainRecapsCmd())
 		}
+		if a.mode == modeRun {
+			return a, tea.Batch(a.loadRunView(a.rv.runID), a.drainRecapsCmd())
+		}
 		return a, tea.Batch(a.loadTasks(a.mode), a.loadProjects(), a.drainRecapsCmd())
 
 	case statusMsg:
@@ -883,6 +971,11 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return a.handleWorkflowRunPickerKey(msg)
 	}
 
+	// And the run picker.
+	if a.runPickerOpen {
+		return a.handleRunPickerKey(msg)
+	}
+
 	// An open palette swallows all keys.
 	if a.paletteOpen {
 		return a.handlePaletteKey(msg)
@@ -944,6 +1037,12 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// `dd` chord within them.
 	if a.mode == modeWorkflows {
 		return a.handleWorkflowsKey(msg)
+	}
+
+	// And the run view, whose `c` is a cancel chord rather than a state
+	// change and whose j/k drive its own panes.
+	if a.mode == modeRun {
+		return a.handleRunViewKey(msg)
 	}
 
 	// A pending `c` chord consumes the next key: a state key applies it,
@@ -1300,6 +1399,13 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, a.keys.RunWorkflow):
 		if t, ok := a.selected(); ok {
 			return a, a.loadWorkflowsForRun(t)
+		}
+		return a, nil
+
+	// List only: in triage `v` is the review-state key.
+	case key.Matches(msg, a.keys.ViewRun) && a.mode == modeList:
+		if t, ok := a.selected(); ok {
+			return a, a.loadRunsForPicker(t)
 		}
 		return a, nil
 	}
@@ -1673,7 +1779,7 @@ func (a *app) syncDetail(force bool) tea.Cmd {
 func (a *app) renderDetailFor(t task.Task) {
 	_, _, detailW, _ := a.paneWidths()
 	a.detail.SetContent(renderDetail(t, a.childCache[t.ID], a.logCache[t.ID],
-		a.sessionsCache[t.ID], a.tags[t.ID], a.renderer, a.styles, detailW))
+		a.sessionsCache[t.ID], a.runsCache[t.ID], a.tags[t.ID], a.renderer, a.styles, detailW))
 }
 
 // Projects-column geometry. The width is fixed: a project name plus its
@@ -1779,7 +1885,11 @@ func (a *app) resize() {
 	if a.quitPending {
 		bottomHeight = max(lipgloss.Height(a.quitPanel()), 1)
 	}
+	if a.cancelPending {
+		bottomHeight = max(lipgloss.Height(a.cancelPanel()), 1)
+	}
 	a.bodyHeight = max(a.height-chromeTop-bottomHeight, 1)
+	a.sizeRunViewport()
 	// A narrowing terminal can take the projects column away underneath
 	// the cursor; focus must not stay on a pane nobody can see.
 	if a.focus == paneProjects && !a.projectsVisible() {
@@ -2015,7 +2125,12 @@ func (a app) loadChildren(parentID int64) tea.Cmd {
 		if err != nil {
 			return errMsg{err}
 		}
-		return childrenLoadedMsg{parentID: parentID, children: children, log: log, sessions: sessions}
+		runs, err := a.store.ListRunsForTask(a.ctx, parentID)
+		if err != nil {
+			return errMsg{err}
+		}
+		return childrenLoadedMsg{parentID: parentID, children: children, log: log, sessions: sessions,
+			runs: a.summarizeRuns(a.ctx, runs)}
 	}
 }
 
@@ -2108,6 +2223,10 @@ func (a app) View() tea.View {
 		at, _ := a.workflowsWidths()
 		splits = []int{at}
 		body = a.workflowsView()
+	case modeRun:
+		at, _ := a.runViewWidths()
+		splits = []int{at}
+		body = a.runViewBody()
 	default:
 		body = a.listBody()
 	}
@@ -2129,7 +2248,7 @@ func (a app) View() tea.View {
 	// body rows. A panel taller than the screen loses its top rows, like
 	// the design's splice.
 	if a.paletteOpen || a.helpOpen || a.urlPickerOpen || a.sessionPickerOpen ||
-		a.projectPickerOpen || a.wfPickerOpen || a.wfRunPickerOpen {
+		a.projectPickerOpen || a.wfPickerOpen || a.wfRunPickerOpen || a.runPickerOpen {
 		box := a.paletteView()
 		switch {
 		case a.helpOpen:
@@ -2144,6 +2263,8 @@ func (a app) View() tea.View {
 			box = a.wfPickerView()
 		case a.wfRunPickerOpen:
 			box = a.workflowRunPickerView()
+		case a.runPickerOpen:
+			box = a.runPickerView()
 		}
 		rows := strings.Split(box, "\n")
 		if maxRows := max(a.height-1, 1); len(rows) > maxRows {
@@ -2198,6 +2319,11 @@ func (a app) headerLine() string {
 		left += s.HeaderView.Render("standup")
 	case modeWorkflows:
 		left += s.HeaderView.Render("workflows")
+	case modeRun:
+		left += s.HeaderView.Render(fmt.Sprintf("run %d", a.rv.runID))
+		if a.rv.workflow != "" {
+			left += s.HeaderSep.Render("  ·  ") + s.CountLabel.Render(a.rv.workflow)
+		}
 	default:
 		left += s.HeaderView.Render("live")
 		// State is the default and needs no announcing; any other grouping
@@ -2210,8 +2336,9 @@ func (a app) headerLine() string {
 	// says this, but it hides on a narrow terminal and triage never shows
 	// it at all -- so without this you cannot tell whether you are
 	// triaging one project or everything. Standup and workflows are
-	// deliberately global, so they stay unqualified.
-	if a.mode != modeStandup && a.mode != modeWorkflows {
+	// deliberately global, so they stay unqualified; the run view names
+	// its run instead.
+	if a.mode != modeStandup && a.mode != modeWorkflows && a.mode != modeRun {
 		if p, ok := a.selectedProject(); ok {
 			left += s.HeaderSep.Render("  ·  ") + s.HeaderView.Render(p.Name)
 		}
@@ -2228,6 +2355,9 @@ func (a app) headerLine() string {
 		}
 		right = s.CountNum.Render(fmt.Sprintf("%d", len(a.workflows))) +
 			s.CountLabel.Render(" "+noun) + "  "
+	case a.mode == modeRun:
+		mark, style := runStateCell(s, a.rv.run.State)
+		right = style.Render(mark+" "+string(a.rv.run.State)) + "  "
 	case a.mode == modeTriage && len(a.triageQueue) > 0:
 		total := a.triageProcessed + len(a.triageQueue)
 		right = s.CountNum.Render(fmt.Sprintf("%d of %d", a.triageProcessed+1, total)) +
@@ -2290,6 +2420,9 @@ func (a app) bottomChrome(splits []int) string {
 	}
 	if a.quitPending {
 		return a.quitPanel()
+	}
+	if a.cancelPending {
+		return a.cancelPanel()
 	}
 	return a.ruleLine(splits, a.styles.Glyphs.TeeUp) + "\n" + a.footer()
 }
@@ -2373,6 +2506,9 @@ func (a app) footer() string {
 	}
 	if a.mode == modeWorkflows {
 		hints = a.workflowsHints()
+	}
+	if a.mode == modeRun {
+		hints = a.runViewHints()
 	}
 	return a.hintLine(hints)
 }

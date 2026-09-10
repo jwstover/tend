@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jwstover/tend/internal/task"
+	"github.com/jwstover/tend/internal/workflow"
 )
 
 func newTestStore(t *testing.T) *Store {
@@ -1247,6 +1248,88 @@ func TestSessionStatusesTakesLatestPerTask(t *testing.T) {
 	}
 	if len(statuses) != 2 {
 		t.Errorf("len(statuses) = %d, want 2 — a task with no sessions must not appear", len(statuses))
+	}
+}
+
+// A task with a live workflow run reads the run's state, mapped into the
+// session vocabulary, over whatever its sessions say: the run is the
+// better signal while it is in flight. A terminal run falls through to
+// the sessions, and a paused run yields to a session when there is one.
+func TestSessionStatusesPrefersLiveRun(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	wf, err := s.CreateWorkflow(ctx, "ship it", "")
+	if err != nil {
+		t.Fatalf("CreateWorkflow: %v", err)
+	}
+	newRun := func(t *testing.T, tk task.Task, st workflow.RunState) {
+		t.Helper()
+		run, err := s.CreateRun(ctx, wf.ID, tk.ID, "/tmp/work")
+		if err != nil {
+			t.Fatalf("CreateRun: %v", err)
+		}
+		if st != workflow.RunPending {
+			if err := s.SetRunState(ctx, run.ID, st); err != nil {
+				t.Fatalf("SetRunState(%s): %v", st, err)
+			}
+		}
+	}
+	session := func(t *testing.T, tk task.Task, ext string, st task.SessionStatus) {
+		t.Helper()
+		if _, err := s.CreateSession(ctx, tk.ID, ext, "/tmp/work", tk.Title, ""); err != nil {
+			t.Fatalf("CreateSession(%s): %v", ext, err)
+		}
+		if err := s.SetSessionStatus(ctx, ext, st); err != nil {
+			t.Fatalf("SetSessionStatus(%s): %v", ext, err)
+		}
+	}
+
+	running := mustAdd(t, s, "running run, starting session")
+	session(t, running, "run-step", task.SessionStarting)
+	newRun(t, running, workflow.RunRunning)
+
+	gate := mustAdd(t, s, "gate with no sessions")
+	newRun(t, gate, workflow.RunWaitingReview)
+
+	pending := mustAdd(t, s, "pending run")
+	newRun(t, pending, workflow.RunPending)
+
+	pausedAlone := mustAdd(t, s, "paused, no session")
+	newRun(t, pausedAlone, workflow.RunPaused)
+
+	pausedTakeover := mustAdd(t, s, "paused, session working")
+	session(t, pausedTakeover, "takeover", task.SessionWorking)
+	newRun(t, pausedTakeover, workflow.RunPaused)
+
+	ended := mustAdd(t, s, "ended run, idle session")
+	session(t, ended, "old", task.SessionIdle)
+	newRun(t, ended, workflow.RunDone)
+
+	endedOnly := mustAdd(t, s, "ended run, no session")
+	newRun(t, endedOnly, workflow.RunFailed)
+
+	statuses, err := s.SessionStatuses(ctx)
+	if err != nil {
+		t.Fatalf("SessionStatuses: %v", err)
+	}
+	want := map[int64]task.SessionStatus{
+		running.ID:        task.SessionWorking,
+		gate.ID:           task.SessionBlocked,
+		pending.ID:        task.SessionStarting,
+		pausedAlone.ID:    task.SessionIdle,
+		pausedTakeover.ID: task.SessionWorking,
+		ended.ID:          task.SessionIdle,
+	}
+	for id, w := range want {
+		if got := statuses[id]; got != w {
+			t.Errorf("task %d status = %q, want %q", id, got, w)
+		}
+	}
+	if _, ok := statuses[endedOnly.ID]; ok {
+		t.Errorf("task %d has status %q; an ended run with no sessions must not appear", endedOnly.ID, statuses[endedOnly.ID])
+	}
+	if len(statuses) != len(want) {
+		t.Errorf("len(statuses) = %d, want %d", len(statuses), len(want))
 	}
 }
 

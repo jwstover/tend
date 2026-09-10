@@ -35,7 +35,7 @@ func newBodyRenderer(width int) (*glamour.TermRenderer, error) {
 // to where t sits in the tree: a sub-task renders exactly like a top-level
 // task. width wraps the log entries to the pane.
 func renderDetail(t task.Task, children []task.Task, log []task.LogEntry, sessions []task.Session,
-	tags []string, renderer *glamour.TermRenderer, styles Styles, width int) string {
+	runs []runSummary, tags []string, renderer *glamour.TermRenderer, styles Styles, width int) string {
 	g := styles.Glyphs
 	var b strings.Builder
 
@@ -133,6 +133,23 @@ func renderDetail(t task.Task, children []task.Task, log []task.LogEntry, sessio
 		}
 		b.WriteString("  " + styles.Muted.Render("press ") + styles.FooterKey.Render("r") +
 			styles.Muted.Render(" to resume or launch another") + "\n")
+	}
+
+	// WORKFLOWS mirrors SESSIONS: one row per run, newest first, with the
+	// run's state as a glyph from the same family (runStateCell), the
+	// workflow and current step, and how it is doing. Watching one is `v`.
+	if len(runs) > 0 {
+		b.WriteString("\n" + "  " + styles.SubHeader.Render("WORKFLOWS") + "  " +
+			styles.Muted.Render(fmt.Sprintf("%d", len(runs))) + "\n")
+		for i, r := range runs {
+			mark, markStyle := runStateCell(styles, r.run.State)
+			name, meta := runSummaryLine(styles, r, now)
+			b.WriteString("  " + styles.Muted.Render(fmt.Sprintf("[%d] ", i+1)) +
+				markStyle.Render(mark) + " " + styles.Link.Render(name) + "  " +
+				styles.DetailFaint.Render(meta) + "\n")
+		}
+		b.WriteString("  " + styles.Muted.Render("press ") + styles.FooterKey.Render("v") +
+			styles.Muted.Render(" to watch a run") + "\n")
 	}
 
 	if len(log) > 0 {

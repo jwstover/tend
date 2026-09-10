@@ -432,6 +432,12 @@ func (r *Runner) execStep(ctx context.Context, run workflow.Run, tk task.Task, s
 		cancel()
 	})
 
+	// The step's session has no tmux pane of its own, so the TUI's
+	// capture-pane poller never classifies it as working; without this the
+	// row would read 'starting' for the whole life of the step. Best
+	// effort, like the 'ended' written after the process for the same
+	// reason: a hook (Stop, SessionEnd) landing later overwrites it.
+	_ = r.Store.SetSessionStatus(ctx, sr.SessionExternalID, task.SessionWorking)
 	res, runErr := r.Exec.Run(stepCtx, StepExec{Run: run, StepRun: sr, TaskID: tk.ID, Prompt: prompt, Resume: resume})
 	cancel()
 	// Best effort: the SessionEnd hook normally did this already, but a

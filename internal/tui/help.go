@@ -49,6 +49,7 @@ func helpGroups() []helpGroup {
 			{"e", "edit body in $EDITOR"},
 			{"r", "launch / resume a Claude session"},
 			{"w", "run a workflow on the task"},
+			{"v", "watch the task's workflow run"},
 		}},
 		{"PROJECTS", []helpEntry{
 			{"h / [", "focus / toggle the projects column"},
@@ -73,6 +74,13 @@ func helpGroups() []helpGroup {
 			{"J / K", "move step down / up"},
 			{"v", "validate prompt templates"},
 			{"dd", "delete workflow or step"},
+		}},
+		{"RUN VIEW", []helpEntry{
+			{"j / k / tab", "select step, scroll log, switch pane"},
+			{"l", "raw stream-json / rendered log"},
+			{"p / cc", "pause or resume / cancel the run"},
+			{"a / x", "approve / reject the waiting gate"},
+			{"t", "take over a paused step's session"},
 		}},
 	}
 }

@@ -21,6 +21,7 @@ import (
 
 	"github.com/jwstover/tend/internal/store/gen"
 	"github.com/jwstover/tend/internal/task"
+	"github.com/jwstover/tend/internal/workflow"
 )
 
 //go:generate sqlc -f ../../sqlc.yaml generate
@@ -220,15 +221,26 @@ func (s *Store) ChildCounts(ctx context.Context) (map[int64]task.ChildCount, err
 	return counts, nil
 }
 
-// SessionStatuses returns the status of each task's most-recently-active
-// agent session, keyed by task id — what the list row renders so a
-// background session's state is visible without opening the task.
+// SessionStatuses returns each task's agent status, keyed by task id —
+// what the list row renders so a background session's state is visible
+// without opening the task.
 //
-// The query returns every session oldest-first and the map keeps the
-// last write per task, which is the most recent one. That's cheaper to
-// reason about than a correlated MAX() subquery and needs no tiebreak
-// rule for two sessions sharing a timestamp, since the ordering already
-// falls back to id.
+// A task with a workflow run in a non-terminal state takes the run's
+// state, mapped into the session vocabulary (workflow.RunState.
+// SessionStatus): a headless run has no tmux pane for the poller to
+// classify and its step sessions are 'starting' for most of their life,
+// so the run row is the better signal. The one exception is a paused
+// run, which yields to the task's latest session status when there is
+// one — during a takeover the interactive session's own hooks say more
+// than "paused" does — and reads idle only when the task has no session
+// at all. A task with only ended runs falls through to its sessions.
+//
+// The session query returns every session oldest-first and the map
+// keeps the last write per task, which is the most recent one. That's
+// cheaper to reason about than a correlated MAX() subquery and needs no
+// tiebreak rule for two sessions sharing a timestamp, since the ordering
+// already falls back to id. Active runs come newest-first, so the first
+// run seen per task is the one that wins.
 func (s *Store) SessionStatuses(ctx context.Context) (map[int64]task.SessionStatus, error) {
 	rows, err := s.q.ListSessionStatuses(ctx)
 	if err != nil {
@@ -237,6 +249,28 @@ func (s *Store) SessionStatuses(ctx context.Context) (map[int64]task.SessionStat
 	statuses := make(map[int64]task.SessionStatus, len(rows))
 	for _, r := range rows {
 		statuses[r.TaskID] = task.SessionStatus(r.Status)
+	}
+
+	runs, err := s.q.ListActiveRuns(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("listing active runs: %w", err)
+	}
+	fromRun := make(map[int64]bool, len(runs))
+	for _, r := range runs {
+		if fromRun[r.TaskID] {
+			continue // an older active run; the newest already spoke
+		}
+		st, ok := workflow.RunState(r.State).SessionStatus()
+		if !ok {
+			continue
+		}
+		fromRun[r.TaskID] = true
+		if r.State == string(workflow.RunPaused) {
+			if _, hasSession := statuses[r.TaskID]; hasSession {
+				continue
+			}
+		}
+		statuses[r.TaskID] = st
 	}
 	return statuses, nil
 }

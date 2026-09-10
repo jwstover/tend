@@ -242,9 +242,12 @@ func groupByAgentFn(top []task.Task, sessions map[int64]task.SessionStatus, st S
 		}
 		b.add(string(s), t)
 	}
+	// "agent", not "session": the status behind a heading may come from a
+	// headless workflow run as much as from an interactive session (see
+	// Store.SessionStatuses), and the user reads either as their agent.
 	heading := func(s task.SessionStatus) sectionItem {
 		glyph, style := sessionStatusCell(st, s)
-		return sectionItem{label: "session " + string(s), glyph: glyph, style: style}
+		return sectionItem{label: "agent " + string(s), glyph: glyph, style: style}
 	}
 	var out []section
 	for _, s := range sessionOrder {
@@ -256,10 +259,10 @@ func groupByAgentFn(top []task.Task, sessions map[int64]task.SessionStatus, st S
 		}
 		out = appendSection(out, heading(task.SessionStatus(k)), b.take(k))
 	}
-	// Ended's glyph stands in for the no-session heading: unknown's own
+	// Ended's glyph stands in for the no-agent heading: unknown's own
 	// glyph is a blank, which would leave the heading looking misaligned.
 	return appendSection(out, sectionItem{
-		label: "no session", glyph: st.Glyphs.Session[task.SessionEnded], style: st.Muted,
+		label: "no agent", glyph: st.Glyphs.Session[task.SessionEnded], style: st.Muted,
 	}, b.take(""))
 }
 

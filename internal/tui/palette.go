@@ -87,6 +87,15 @@ func (a app) paletteCommands() []paletteCommand {
 				}
 				return a, a.loadWorkflowsForRun(t)
 			}},
+		{icon: "◉", label: "Watch workflow run on task", hint: "v", aliases: []string{"watch", "runs"},
+			act: func(a app) (tea.Model, tea.Cmd) {
+				t, ok := a.selected()
+				if !ok {
+					a.status = flash{text: "nothing selected"}
+					return a, nil
+				}
+				return a, a.loadRunsForPicker(t)
+			}},
 		{icon: "✎", label: "Capture a note", hint: "N", aliases: []string{"note"},
 			act: func(a app) (tea.Model, tea.Cmd) {
 				return a, a.modal.Open(modalLog, true, "note", 0, "")

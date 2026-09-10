@@ -20,6 +20,7 @@ type keyMap struct {
 	EditBody       key.Binding
 	Sessions       key.Binding // launch/resume a Claude Code session on the selected task
 	RunWorkflow    key.Binding // run a workflow on the selected task (workflowrun.go)
+	ViewRun        key.Binding // watch the selected task's workflow run (runview.go)
 	LogEntry       key.Binding // note attached to the selected task
 	Note           key.Binding // freestanding standup note, from anywhere
 	Yank           key.Binding // copy the standup markdown (standup view)
@@ -43,6 +44,15 @@ type keyMap struct {
 	StepDown       key.Binding // move the selected step later in the order
 	StepUp         key.Binding // move the selected step earlier in the order
 	Validate       key.Binding // check every step prompt of the selected workflow
+
+	// Run view (runview.go). j/k, tab, g/G, esc reuse the shared bindings;
+	// these are the run controls, each a write the CLI could make too.
+	CancelRun key.Binding // `cc` chord: write cancelled; the runner kills the step
+	PauseRun  key.Binding // pause a live run / resume a paused one
+	Approve   key.Binding // approve the gate the run is waiting at
+	Reject    key.Binding // reject it
+	Takeover  key.Binding // resume a paused step's session interactively
+	RawLog    key.Binding // raw stream-json instead of the rendering
 
 	// Tree expansion in the list view.
 	ExpandToggle key.Binding // ⏎/Tab flips a branch (⏎ falls back to detail on leaves)
@@ -104,6 +114,7 @@ func defaultKeyMap() keyMap {
 		EditBody:       key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "edit body")),
 		Sessions:       key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "sessions")),
 		RunWorkflow:    key.NewBinding(key.WithKeys("w"), key.WithHelp("w", "run workflow")),
+		ViewRun:        key.NewBinding(key.WithKeys("v"), key.WithHelp("v", "watch run")),
 		LogEntry:       key.NewBinding(key.WithKeys("U"), key.WithHelp("U", "note on task")),
 		Note:           key.NewBinding(key.WithKeys("N"), key.WithHelp("N", "note")),
 		Yank:           key.NewBinding(key.WithKeys("y"), key.WithHelp("y", "yank standup")),
@@ -127,6 +138,13 @@ func defaultKeyMap() keyMap {
 		StepDown: key.NewBinding(key.WithKeys("J"), key.WithHelp("J", "move down")),
 		StepUp:   key.NewBinding(key.WithKeys("K"), key.WithHelp("K", "move up")),
 		Validate: key.NewBinding(key.WithKeys("v"), key.WithHelp("v", "validate prompts")),
+
+		CancelRun: key.NewBinding(key.WithKeys("c"), key.WithHelp("cc", "cancel run")),
+		PauseRun:  key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "pause / resume")),
+		Approve:   key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "approve gate")),
+		Reject:    key.NewBinding(key.WithKeys("x"), key.WithHelp("x", "reject gate")),
+		Takeover:  key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "take over step")),
+		RawLog:    key.NewBinding(key.WithKeys("l"), key.WithHelp("l", "raw log")),
 
 		ExpandToggle: key.NewBinding(key.WithKeys("enter", "tab"), key.WithHelp("⏎", "expand")),
 		ExpandOpen:   key.NewBinding(key.WithKeys("l", "right"), key.WithHelp("l", "expand")),
