@@ -48,8 +48,20 @@ const statusTimeLayout = "2006-01-02 15:04:05.000"
 // Store wraps the sqlc-generated Queries, owns the DB handle and
 // transactions, and translates between gen rows and task domain types.
 type Store struct {
-	db *sql.DB
-	q  *gen.Queries
+	db  *sql.DB
+	q   *gen.Queries
+	dsn string // the DSN db was opened with; Watch opens its own handle on it
+}
+
+// dsnFor builds the driver DSN for a database file: WAL so readers and
+// writers in different processes don't block each other, a busy timeout
+// so a brief contended write waits instead of failing, and foreign keys
+// on so the schema's cascades actually fire.
+func dsnFor(path string) string {
+	return fmt.Sprintf(
+		"file:%s?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)",
+		url.PathEscape(path),
+	)
 }
 
 // Open creates the parent directory if needed, opens the SQLite file in
@@ -59,10 +71,7 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		return nil, fmt.Errorf("creating db directory: %w", err)
 	}
 
-	dsn := fmt.Sprintf(
-		"file:%s?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)",
-		url.PathEscape(path),
-	)
+	dsn := dsnFor(path)
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("opening db %s: %w", path, err)
@@ -73,7 +82,7 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		return nil, fmt.Errorf("migrating db %s: %w", path, err)
 	}
 
-	return &Store{db: db, q: gen.New(db)}, nil
+	return &Store{db: db, q: gen.New(db), dsn: dsn}, nil
 }
 
 // Close closes the underlying database handle.

@@ -108,27 +108,74 @@ type Store interface {
 	FinishStepRun(ctx context.Context, id int64, outcome, deliverable string) error
 }
 
+// ChangeWatcher is the slice of store.Watcher the TUI needs: a cheap "has
+// anyone else committed since I last asked?" that drives live updates.
+// Declared here rather than importing store, per the same accept-interfaces
+// convention as Store; production passes a *store.Watcher, tests a stub.
+type ChangeWatcher interface {
+	Changed(ctx context.Context) (bool, error)
+}
+
 // Run starts the TUI and blocks until it exits. dbPath is shown on the
 // loading frame and also passed to launched/resumed sessions' --mcp-config
 // (see agent.WriteMCPConfig) so `tend mcp` can open the same database.
+// watcher, when non-nil, feeds live updates: the views reload whenever
+// another process — an agent session's MCP server, `tend add` in another
+// shell, a workflow runner — commits to the database. A nil watcher runs the
+// TUI without live updates rather than refusing to start; the caller owns
+// the watcher's lifetime and closes it after Run returns.
 //
-// The session poller runs on its own goroutine (pollCtx), stopped when Run
-// returns, rather than as a tea.Cmd driven by the Program's event loop: that
+// Both pollers run on their own goroutines (pollCtx), stopped when Run
+// returns, rather than as tea.Cmds driven by the Program's event loop: that
 // loop is unavailable for the entire time any session is attached through
 // tend (tea.ExecProcess pauses it to hand the terminal to the child
 // process), which is exactly when a background session's status most needs
-// to keep moving. See runSessionPoller.
-func Run(ctx context.Context, s Store, dbPath string) error {
+// to keep moving. See runSessionPoller and runChangeWatcher.
+func Run(ctx context.Context, s Store, watcher ChangeWatcher, dbPath string) error {
 	pollCtx, stopPoll := context.WithCancel(ctx)
 	defer stopPoll()
 
 	p := tea.NewProgram(newApp(ctx, s, dbPath), tea.WithContext(ctx))
 	go runSessionPoller(pollCtx, s, p.Send)
+	if watcher != nil {
+		go runChangeWatcher(pollCtx, watcher, changePollInterval, p.Send)
+	}
 
 	if _, err := p.Run(); err != nil {
 		return fmt.Errorf("running TUI: %w", err)
 	}
 	return nil
+}
+
+// changePollInterval is how often runChangeWatcher asks the database
+// whether another connection has committed. A data_version read is a
+// single pragma on a pinned connection — no I/O beyond the shared-memory
+// WAL index — so half a second keeps an agent's edit visibly live without
+// measurable cost. Not tied to pollInterval: the session poller shells out
+// to tmux per session and is paced for that.
+const changePollInterval = 500 * time.Millisecond
+
+// runChangeWatcher ticks watcher.Changed on a fixed interval until ctx is
+// canceled and sends dbChangedMsg each time it reports a change. Like
+// runSessionPoller it is a goroutine rather than a tea.Cmd so the check
+// keeps running while a session is attached (see Run); a change noticed
+// during that span is delivered when the event loop resumes. A failing
+// read is skipped, not fatal — the next tick tries again, and the worst
+// case is the pre-watcher behavior of waiting for the user's next action.
+func runChangeWatcher(ctx context.Context, watcher ChangeWatcher, interval time.Duration, send func(tea.Msg)) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			changed, err := watcher.Changed(ctx)
+			if err == nil && changed {
+				send(dbChangedMsg{})
+			}
+		}
+	}
 }
 
 // runSessionPoller ticks pollSessions (sessions.go) on a fixed interval
@@ -411,6 +458,15 @@ type (
 	// tea.Cmd — it originates outside the event loop entirely, which is
 	// the whole reason it can still run while a session is attached.
 	sessionsPolledMsg struct{ changed bool }
+
+	// dbChangedMsg reports that another connection committed to the
+	// database — an agent session's MCP tool call, `tend add` from another
+	// shell, a workflow runner. Sent by runChangeWatcher's goroutine via
+	// Program.Send. It reloads the current view the way refreshMsg does,
+	// but with no status flash (nothing the user did just completed) and
+	// with the cursor and scroll position held: the user is reading, not
+	// acting, and the screen must not move under them.
+	dbChangedMsg struct{}
 )
 
 // pollInterval is both how often runSessionPoller re-captures each live
@@ -588,6 +644,18 @@ type app struct {
 
 	pendingRecaps int // in-flight recapSessionCmd calls; gates the quit confirmation
 
+	// Live-update bookkeeping for dbChangedMsg. liveReloadInFlight is set
+	// while a reload it issued is outstanding, so a second change arriving
+	// before the first reload lands doesn't fan out a second one on top of
+	// it. liveReloadDeferred records a change that could not be applied
+	// right away — a reload was in flight, or the user was mid-input (see
+	// inputBusy) — and is drained by the next load settling or the input
+	// closing. Together they guarantee a noticed change is never dropped:
+	// the pragma read that noticed it is consumed, so there is no second
+	// chance to see it.
+	liveReloadInFlight bool
+	liveReloadDeferred bool
+
 	loaded bool   // first tasksLoadedMsg arrived; until then, loading frame
 	dbPath string // shown on the loading frame; "" hides the line
 
@@ -635,12 +703,15 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.syncDetail(true)
 
 	case tea.KeyPressMsg:
-		return a.handleKey(msg)
+		// A key that closes a prompt, filter or modal is also the moment a
+		// live update held back for it (see dbChangedMsg) gets applied.
+		return applyDeferredReload(a.handleKey(msg))
 
 	case tasksLoadedMsg:
 		a.loaded = true
+		settle := a.liveReloadSettled()
 		if msg.mode != a.mode {
-			return a, nil
+			return a, settle
 		}
 		a.inboxCount = msg.inbox
 		a.tags = msg.tags
@@ -651,14 +722,27 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.triageProcessed++
 			}
 			a.triageQueue = mergeTriageQueue(a.triageQueue, msg.tasks)
-			return a, nil
+			return a, settle
 		}
+		// Selection follows the task, not the row index. A reload the user
+		// didn't ask for — an agent creating a sub-task above the cursor, a
+		// state change moving a row to another section — must not leave
+		// them on a different task than the one they were reading. A task
+		// that has gone (deleted, or filtered out by its new state) falls
+		// back to the same index, i.e. the row that slid into its place.
+		sel, hadSel := a.selectedNode()
 		a.tasks, a.counts, a.sessionStatus = msg.tasks, msg.counts, msg.sessions
 		// Stale-while-revalidate: rebuild from the cached children now,
 		// then re-fetch every expanded branch.
 		cmd := tea.Batch(a.rebuildList(), a.reloadExpanded())
+		if hadSel {
+			a.selectByID(sel.t.ID)
+		}
 		moveOffHeading(&a.list, 1)
-		return a, tea.Batch(cmd, a.syncDetail(true))
+		// syncDetail(true) re-renders the pane for the same task without
+		// GotoTop, so an agent appending to the body being read doesn't
+		// yank the scroll position.
+		return a, tea.Batch(cmd, a.syncDetail(true), settle)
 
 	case projectsLoadedMsg:
 		wantID, hadSelection := int64(0), false
@@ -733,12 +817,13 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.openRunPicker(msg)
 
 	case runViewLoadedMsg:
+		settle := a.liveReloadSettled()
 		// Stale if the user has left the view, or moved on to another run,
 		// since the load was issued.
 		if a.mode != modeRun || msg.run.ID != a.rv.runID {
-			return a, nil
+			return a, settle
 		}
-		return a, a.applyRunView(msg)
+		return a, tea.Batch(a.applyRunView(msg), settle)
 
 	case runLogLoadedMsg:
 		if a.mode == modeRun {
@@ -833,9 +918,23 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return a, a.loadTasks(a.mode)
 
-	case workflowsLoadedMsg:
-		if a.mode != modeWorkflows {
+	case dbChangedMsg:
+		// Coalesce: a reload already on its way may or may not have read
+		// the data this change wrote, so remember it and re-check once
+		// that load settles rather than either stacking a second fan-out
+		// or dropping it. Mid-input, hold it until the input closes — a
+		// list rebuild under a half-typed `/` filter or prompt is worse
+		// than a half-second-stale list.
+		if a.liveReloadInFlight || a.inputBusy() {
+			a.liveReloadDeferred = true
 			return a, nil
+		}
+		return a, a.liveReload()
+
+	case workflowsLoadedMsg:
+		settle := a.liveReloadSettled()
+		if a.mode != modeWorkflows {
+			return a, settle
 		}
 		a.workflows = msg.workflows
 		a.wfCursor = 0
@@ -845,7 +944,7 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		a.setSteps(msg.selected, msg.steps)
-		return a, nil
+		return a, settle
 
 	case stepsLoadedMsg:
 		// Stale if the cursor has moved on since the load was issued.
@@ -874,8 +973,9 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.saveStepPrompt(msg.stepID, msg.path)
 
 	case standupLoadedMsg:
+		settle := a.liveReloadSettled()
 		if a.mode != modeStandup {
-			return a, nil
+			return a, settle
 		}
 		a.standupNotes, a.standupEvents, a.standupLive = msg.notes, msg.events, msg.live
 		if a.standupJumpToLatest {
@@ -886,25 +986,18 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.standupScroll = min(a.standupScroll, a.standupMaxScroll())
 			a.standupCursor = min(a.standupCursor, max(len(a.standupGroups())-1, 0))
 		}
-		return a, nil
+		return a, settle
 
 	case refreshMsg:
 		a.status = msg.status
+		// A full reload supersedes any live update still waiting its turn.
+		a.liveReloadDeferred = false
 		// Every mutation passes through here, including the one that
 		// records a just-backgrounded session — so returning from a
 		// session is also the moment a previously-owed recap gets
 		// settled. The scan is a single indexed query that finds nothing
 		// in the common case.
-		if a.mode == modeStandup {
-			return a, tea.Batch(a.loadStandup(), a.drainRecapsCmd())
-		}
-		if a.mode == modeWorkflows {
-			return a, tea.Batch(a.loadWorkflows(a.selectedWorkflowID()), a.drainRecapsCmd())
-		}
-		if a.mode == modeRun {
-			return a, tea.Batch(a.loadRunView(a.rv.runID), a.drainRecapsCmd())
-		}
-		return a, tea.Batch(a.loadTasks(a.mode), a.loadProjects(), a.drainRecapsCmd())
+		return a, tea.Batch(a.reloadCmd(), a.drainRecapsCmd())
 
 	case statusMsg:
 		a.status = flash(msg)
@@ -913,7 +1006,9 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case errMsg:
 		a.loaded = true // an initial load failure shouldn't strand the loading frame
 		a.status = flash{text: msg.err.Error(), isErr: true}
-		return a, nil
+		// A failed load is still a settled one; don't strand a deferred
+		// live update behind it.
+		return a, a.liveReloadSettled()
 
 	case editorFinishedMsg:
 		if msg.err != nil {
@@ -2051,6 +2146,66 @@ func (a app) submitModal() (tea.Model, tea.Cmd) {
 		})
 	}
 	return a, nil
+}
+
+// reloadCmd re-fetches whatever the current mode shows: the standup
+// window, the workflows list, the run view, or the task list plus the
+// projects column (whose live counts move with the tasks). It is the
+// shared fan-out behind refreshMsg (a mutation of our own) and
+// dbChangedMsg (someone else's); the recap drain deliberately isn't part
+// of it, since owed recaps are settled on the mutation path, not on every
+// observed change.
+func (a app) reloadCmd() tea.Cmd {
+	switch a.mode {
+	case modeStandup:
+		return a.loadStandup()
+	case modeWorkflows:
+		return a.loadWorkflows(a.selectedWorkflowID())
+	case modeRun:
+		return a.loadRunView(a.rv.runID)
+	}
+	return tea.Batch(a.loadTasks(a.mode), a.loadProjects())
+}
+
+// inputBusy reports whether the user is mid-input somewhere a list rebuild
+// would trample: typing a `/` filter, in a text prompt, or in the note
+// modal. Live updates are held back for the duration (see dbChangedMsg).
+// The pickers and palette are deliberately not included: they overlay the
+// list rather than editing it, and their own state is keyed by id.
+func (a app) inputBusy() bool {
+	return a.list.SettingFilter() || a.promptKind != promptNone || a.modal.Active()
+}
+
+// liveReload issues the reload a dbChangedMsg asks for and marks it in
+// flight; liveReloadSettled is its other half.
+func (a *app) liveReload() tea.Cmd {
+	a.liveReloadInFlight = true
+	return a.reloadCmd()
+}
+
+// liveReloadSettled is called when any load lands (or fails). It clears
+// the in-flight mark and, if a change arrived while the load was out and
+// nothing is blocking, reloads once more so that change is not lost. Any
+// load counts, not just one dbChangedMsg issued: whatever fetched, the
+// data is now as fresh as a reload would have made it.
+func (a *app) liveReloadSettled() tea.Cmd {
+	a.liveReloadInFlight = false
+	if a.liveReloadDeferred && !a.inputBusy() {
+		a.liveReloadDeferred = false
+		return a.liveReload()
+	}
+	return nil
+}
+
+// applyDeferredReload wraps handleKey's result: if a key just closed the
+// input that was holding a live update back, issue that reload now.
+func applyDeferredReload(m tea.Model, cmd tea.Cmd) (tea.Model, tea.Cmd) {
+	next, ok := m.(app)
+	if !ok || !next.liveReloadDeferred || next.liveReloadInFlight || next.inputBusy() {
+		return m, cmd
+	}
+	next.liveReloadDeferred = false
+	return next, tea.Batch(cmd, next.liveReload())
 }
 
 // --- commands (all store I/O happens here, off the update loop) ---

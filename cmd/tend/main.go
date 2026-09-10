@@ -30,7 +30,15 @@ func main() {
 			return err
 		}
 		defer s.Close()
-		return tui.Run(ctx, s, dbPath)
+		// Live updates are an enhancement, not a requirement: if the
+		// watcher can't be opened the TUI still runs, refreshing only on
+		// the user's own actions as it always did.
+		var watcher tui.ChangeWatcher
+		if w, err := s.Watch(ctx); err == nil {
+			defer w.Close()
+			watcher = w
+		}
+		return tui.Run(ctx, s, watcher, dbPath)
 	}
 	if err := cli.Execute(open, runTUI, openMCP, openRunner); err != nil {
 		fmt.Fprintln(os.Stderr, "tend:", err)
