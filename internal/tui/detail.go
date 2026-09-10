@@ -15,6 +15,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/jwstover/tend/internal/task"
+	"github.com/jwstover/tend/internal/workflow"
 )
 
 // newBodyRenderer builds a glamour renderer wrapped to the detail pane
@@ -138,18 +139,25 @@ func renderDetail(t task.Task, children []task.Task, log []task.LogEntry, sessio
 	// WORKFLOWS mirrors SESSIONS: one row per run, newest first, with the
 	// run's state as a glyph from the same family (runStateCell), the
 	// workflow and current step, and how it is doing. Watching one is `v`.
+	// A run waiting at a gate wears the blocked glyph and state (its
+	// SessionStatus), and the hint says the run view is where to decide it.
 	if len(runs) > 0 {
 		b.WriteString("\n" + "  " + styles.SubHeader.Render("WORKFLOWS") + "  " +
 			styles.Muted.Render(fmt.Sprintf("%d", len(runs))) + "\n")
+		waiting := false
 		for i, r := range runs {
 			mark, markStyle := runStateCell(styles, r.run.State)
-			name, meta := runSummaryLine(styles, r, now)
+			name, meta := runSummaryLine(styles, r, now, styles.DetailFaint)
 			b.WriteString("  " + styles.Muted.Render(fmt.Sprintf("[%d] ", i+1)) +
-				markStyle.Render(mark) + " " + styles.Link.Render(name) + "  " +
-				styles.DetailFaint.Render(meta) + "\n")
+				markStyle.Render(mark) + " " + styles.Link.Render(name) + "  " + meta + "\n")
+			waiting = waiting || r.run.State == workflow.RunWaitingReview
+		}
+		hint := " to watch a run"
+		if waiting {
+			hint = " to review the waiting gate"
 		}
 		b.WriteString("  " + styles.Muted.Render("press ") + styles.FooterKey.Render("v") +
-			styles.Muted.Render(" to watch a run") + "\n")
+			styles.Muted.Render(hint) + "\n")
 	}
 
 	if len(log) > 0 {

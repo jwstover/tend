@@ -81,7 +81,8 @@ func helpGroups() []helpGroup {
 			{"j / k / tab", "select step / scroll / pane"},
 			{"l", "raw stream-json / rendered log"},
 			{"p / cc", "pause or resume / cancel the run"},
-			{"a / x", "approve / reject waiting gate"},
+			{"a / x", "approve / reject (with feedback) gate"},
+			{"o", "pick any outcome the gate routes"},
 			{"t", "take over paused step's session"},
 		}},
 	}

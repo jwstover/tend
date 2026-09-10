@@ -62,6 +62,15 @@ var ErrStepRunFinished = errors.New("step run already finished")
 // reports when it exits without calling finish_step.
 const OutcomeDone = "done"
 
+// OutcomeApprove and OutcomeReject are the conventional gate outcomes: the
+// TUI's `a` and `x` keys write them, and a reject is the one that carries
+// the reviewer's feedback as its deliverable. They are conventions, not a
+// rule -- a gate routes whatever outcomes its edges name.
+const (
+	OutcomeApprove = "approve"
+	OutcomeReject  = "reject"
+)
+
 // StepKind distinguishes a step the runner executes as a headless claude
 // session from one where it stops and waits for a human.
 type StepKind string

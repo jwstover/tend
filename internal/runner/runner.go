@@ -232,10 +232,13 @@ func (r *Runner) claim(ctx context.Context, runID int64, takeover bool) (workflo
 //
 // What last hands forward is its deliverable, or its own input when the
 // deliverable is empty -- a gate that approves passes along what it was
-// reviewing. A forward edge (the target has not run in this run) makes
-// that the target's Input. A loop-back edge (the target has run before)
-// is the reject-style case: the target keeps the Input it had and gets
-// the hand-off as Feedback instead, which is what max_iterations bounds.
+// reviewing. A forward edge (to a step later in authoring order) makes
+// that the target's Input, whether or not the target has run before: a
+// gate re-entered after a reject cycle reviews the new deliverable, not
+// the one it already rejected. A loop-back edge (to an earlier step, or
+// the step itself) is the reject-style case: the target keeps the Input
+// it had and gets the hand-off as Feedback instead. Either way
+// max_iterations bounds how often the target runs.
 func (r *Runner) nextStep(ctx context.Context, run workflow.Run, wf workflow.Workflow, last *workflow.StepRun) (*workflow.Step, string, string, error) {
 	if last == nil {
 		steps, err := r.Store.ListSteps(ctx, wf.ID)
@@ -280,11 +283,15 @@ func (r *Runner) nextStep(ctx context.Context, run workflow.Run, wf workflow.Wor
 			next.Name, ordinal(len(prior)+1), last.Outcome, *edge.MaxIterations)
 	}
 
+	from, err := r.Store.GetStep(ctx, last.StepID)
+	if err != nil {
+		return nil, "", "", err
+	}
 	carry := last.Deliverable
 	if carry == "" {
 		carry = last.Input
 	}
-	if len(prior) > 0 {
+	if len(prior) > 0 && next.SortOrder <= from.SortOrder {
 		return &next, prior[len(prior)-1].Input, carry, nil
 	}
 	return &next, carry, "", nil

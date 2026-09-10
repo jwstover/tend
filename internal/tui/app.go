@@ -568,6 +568,13 @@ type app struct {
 	wfPickerStepID int64
 	wfPickerSel    int
 
+	// Gate outcome picker overlay (runview.go): the outcomes the waiting
+	// gate routes, for a gate whose edges go beyond approve/reject.
+	gatePickerOpen      bool
+	gatePickerStepRunID int64
+	gatePickerOutcomes  []string
+	gatePickerSel       int
+
 	// Workflow-run picker overlay (workflowrun.go): choose a workflow to
 	// run on a task. wfRunPending is the validated request while its cwd
 	// prompt is open, nil otherwise.
@@ -1070,6 +1077,11 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// And the run picker.
 	if a.runPickerOpen {
 		return a.handleRunPickerKey(msg)
+	}
+
+	// And the gate outcome picker (run view).
+	if a.gatePickerOpen {
+		return a.handleGatePickerKey(msg)
 	}
 
 	// An open palette swallows all keys.
@@ -2142,7 +2154,7 @@ func (a app) submitPrompt() (tea.Model, tea.Cmd) {
 // submitModal performs the action the open modal was collecting input
 // for; the modal itself only owns presentation and text entry.
 func (a app) submitModal() (tea.Model, tea.Cmd) {
-	kind, target := a.modal.kind, a.modal.target
+	kind, target, extra := a.modal.kind, a.modal.target, a.modal.extra
 	value := a.modal.Value()
 	a.modal.Close()
 
@@ -2161,6 +2173,18 @@ func (a app) submitModal() (tea.Model, tea.Cmd) {
 			_, err := a.store.AddLogEntry(a.ctx, taskID, value)
 			return err
 		})
+	case modalGateFeedback:
+		// Empty is allowed: a reject with nothing to say is still a reject.
+		// The gate is re-checked, since the modal may have sat open while
+		// the run was cancelled or someone else decided the gate.
+		cur, why, ok := a.waitingGate()
+		if !ok {
+			return a, statusCmd(why)
+		}
+		if cur.ID != target {
+			return a, statusCmd(flash{text: "the run moved on; the gate you were deciding is gone"})
+		}
+		return a, a.finishGate(cur.ID, a.rv.stepNames[cur.StepID], extra, value)
 	}
 	return a, nil
 }
@@ -2420,7 +2444,7 @@ func (a app) View() tea.View {
 	// body rows. A panel taller than the screen loses its top rows, like
 	// the design's splice.
 	if a.paletteOpen || a.helpOpen || a.urlPickerOpen || a.sessionPickerOpen ||
-		a.projectPickerOpen || a.wfPickerOpen || a.wfRunPickerOpen || a.runPickerOpen {
+		a.projectPickerOpen || a.wfPickerOpen || a.wfRunPickerOpen || a.runPickerOpen || a.gatePickerOpen {
 		box := a.paletteView()
 		switch {
 		case a.helpOpen:
@@ -2437,6 +2461,8 @@ func (a app) View() tea.View {
 			box = a.workflowRunPickerView()
 		case a.runPickerOpen:
 			box = a.runPickerView()
+		case a.gatePickerOpen:
+			box = a.gatePickerView()
 		}
 		rows := strings.Split(box, "\n")
 		if maxRows := max(a.height-1, 1); len(rows) > maxRows {

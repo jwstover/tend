@@ -14,6 +14,10 @@ type modalKind int
 const (
 	modalNone modalKind = iota
 	modalLog
+	// modalGateFeedback collects the reviewer's feedback for a gate
+	// decision (runview.go): target is the gate's step run, extra the
+	// outcome being recorded, and the text becomes the gate's deliverable.
+	modalGateFeedback
 )
 
 // modal is a centered floating input box. It owns presentation and text

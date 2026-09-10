@@ -174,8 +174,12 @@ func runElapsed(run workflow.Run, now time.Time) time.Duration {
 }
 
 // runSummaryLine is the text after the glyph on a WORKFLOWS or picker
-// row: workflow · step, then state, elapsed, and the liveness facts.
-func runSummaryLine(s Styles, r runSummary, now time.Time) (name, meta string) {
+// row: workflow · step, then state, elapsed, and the liveness facts. meta
+// comes back styled, in metaStyle except for the two facts that must not
+// read as quiet: a gate waiting for review, which wears the blocked style
+// so it stands out in the detail pane the way the gutter marker does, and
+// a runner that is gone.
+func runSummaryLine(s Styles, r runSummary, now time.Time, metaStyle lipgloss.Style) (name, meta string) {
 	name = r.workflow
 	if name == "" {
 		name = fmt.Sprintf("run %d", r.run.ID)
@@ -183,14 +187,18 @@ func runSummaryLine(s Styles, r runSummary, now time.Time) (name, meta string) {
 	if r.step != "" {
 		name += s.Muted.Render(" · ") + r.step
 	}
-	parts := []string{string(r.run.State), fmtElapsed(runElapsed(r.run, now))}
+	state := metaStyle.Render(string(r.run.State))
+	if r.run.State == workflow.RunWaitingReview {
+		state = s.State[task.StateBlocked].Bold(true).Render(string(r.run.State))
+	}
+	parts := []string{state, metaStyle.Render(fmtElapsed(runElapsed(r.run, now)))}
 	if r.live() && !r.lastOutput.IsZero() {
-		parts = append(parts, "output "+relTime(r.lastOutput, now))
+		parts = append(parts, metaStyle.Render("output "+relTime(r.lastOutput, now)))
 	}
 	if r.runnerGone {
 		parts = append(parts, s.State[task.StateBlocked].Render("runner gone"))
 	}
-	return name, strings.Join(parts, " · ")
+	return name, strings.Join(parts, metaStyle.Render(" · "))
 }
 
 // --- run picker (`v`) -----------------------------------------------------
@@ -297,14 +305,14 @@ func (a app) runPickerView() string {
 	for i, r := range a.runPickerRuns {
 		num := fmt.Sprintf("%d ", i+1)
 		mark, markStyle := runStateCell(s, r.run.State)
-		name, meta := runSummaryLine(s, r, now)
+		name, meta := runSummaryLine(s, r, now, s.Muted)
 		var content string
 		if i == sel {
 			content = s.SelBar.Render(g.SelBar+" ") + s.Accent.Render(num) + markStyle.Render(mark) + " " +
-				s.Title.Render(name) + "  " + s.Muted.Render(meta)
+				s.Title.Render(name) + "  " + meta
 		} else {
 			content = "  " + s.Muted.Render(num) + markStyle.Render(mark) + " " +
-				s.Dimmed.Render(name) + "  " + s.Muted.Render(meta)
+				s.Dimmed.Render(name) + "  " + meta
 		}
 		lines = append(lines, row(content))
 	}
@@ -462,6 +470,10 @@ func (a *app) loadSelectedLog() tea.Cmd {
 		a.renderRunLog()
 	}
 	if sr.LogPath == "" {
+		// No log means the pane is built from the row itself (a gate's
+		// decision and feedback), which moves without any file changing,
+		// so it is rebuilt on every load rather than only on a new path.
+		a.renderRunLog()
 		return nil
 	}
 	return loadRunLog(sr.ID, sr.LogPath, a.rv.log.offset)
@@ -578,19 +590,24 @@ func (a *app) renderRunLog() {
 }
 
 // gatePaneLines is what the log pane shows for a gate step: its reviewer
-// text, the decision it is waiting on or took, and the keys.
+// text, the decision it is waiting on or took (with the feedback that
+// went with it), and the keys that apply to the outcomes it routes.
 func (a app) gatePaneLines(sr workflow.StepRun) []string {
 	s := a.styles
 	var out []string
 	if sr.Finished() {
 		out = append(out, s.Title.Render("gate decided: ")+s.Accent.Render(sr.Outcome))
+		if strings.TrimSpace(sr.Deliverable) != "" {
+			out = append(out, "", s.SubHeader.Render("FEEDBACK"))
+			out = append(out, strings.Split(strings.TrimRight(sr.Deliverable, "\n"), "\n")...)
+		}
 	} else {
 		out = append(out, s.State[task.StateBlocked].Bold(true).Render("gate is waiting for review"))
-		if outcomes := a.rv.stepOutcomes[sr.StepID]; len(outcomes) > 0 {
+		outcomes := a.rv.stepOutcomes[sr.StepID]
+		if len(outcomes) > 0 {
 			out = append(out, s.Muted.Render("routes: "+strings.Join(outcomes, ", ")))
 		}
-		out = append(out, s.FooterKey.Render("a")+s.Muted.Render(" approve   ")+
-			s.FooterKey.Render("x")+s.Muted.Render(" reject"))
+		out = append(out, gateKeyHints(s, outcomes))
 	}
 	if strings.TrimSpace(sr.Input) != "" {
 		out = append(out, "", s.SubHeader.Render("INPUT"))
@@ -601,6 +618,26 @@ func (a app) gatePaneLines(sr workflow.StepRun) []string {
 		out = append(out, strings.Split(strings.TrimRight(sr.PromptRendered, "\n"), "\n")...)
 	}
 	return out
+}
+
+// gateKeyHints is the key line under a waiting gate: `a` and `x` when the
+// gate routes approve and reject (or has no edges, when either ends the
+// run), and `o` for the picker whenever it routes anything else.
+func gateKeyHints(s Styles, outcomes []string) string {
+	direct := func(o string) bool { return len(outcomes) == 0 || slices.Contains(outcomes, o) }
+	var parts []string
+	if direct(workflow.OutcomeApprove) {
+		parts = append(parts, s.FooterKey.Render("a")+s.Muted.Render(" approve"))
+	}
+	if direct(workflow.OutcomeReject) {
+		parts = append(parts, s.FooterKey.Render("x")+s.Muted.Render(" reject with feedback"))
+	}
+	if slices.ContainsFunc(outcomes, func(o string) bool {
+		return o != workflow.OutcomeApprove && o != workflow.OutcomeReject
+	}) {
+		parts = append(parts, s.FooterKey.Render("o")+s.Muted.Render(" pick outcome"))
+	}
+	return strings.Join(parts, "   ")
 }
 
 // --- keys -----------------------------------------------------------------
@@ -657,9 +694,11 @@ func (a app) handleRunViewKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, a.keys.PauseRun):
 		return a, a.pauseOrResumeRun()
 	case key.Matches(msg, a.keys.Approve):
-		return a, a.decideGate("approve")
+		return a, a.decideGate(workflow.OutcomeApprove)
 	case key.Matches(msg, a.keys.Reject):
-		return a, a.decideGate("reject")
+		return a, a.decideGate(workflow.OutcomeReject)
+	case key.Matches(msg, a.keys.Outcome):
+		return a, a.pickGateOutcome()
 	case key.Matches(msg, a.keys.Takeover):
 		return a, a.takeoverStep()
 	}
@@ -769,30 +808,190 @@ func (a app) pauseOrResumeRun() tea.Cmd {
 	return statusCmd(flash{text: fmt.Sprintf("run %d has already %s", run.ID, run.State)})
 }
 
-// decideGate records outcome on the current step run when it is a gate
-// waiting for review, the same one-shot FinishStepRun the finish_step
-// tool makes; the runner routes on it. A gate whose edges do not include
-// the outcome is refused with the ones they do, so a decision never
-// silently ends the run for want of an edge.
-func (a app) decideGate(outcome string) tea.Cmd {
+// waitingGate is the gate step run the run is parked at, or the reason it
+// is not: the current step is not a gate, it has already been decided, or
+// the run is not waiting for review (paused, say, with the gate still
+// current). Every gate control starts here.
+func (a app) waitingGate() (workflow.StepRun, flash, bool) {
 	cur, ok := a.rv.current()
 	if !ok || a.rv.stepKinds[cur.StepID] != workflow.StepGate {
-		return statusCmd(flash{text: "the current step is not a gate"})
+		return workflow.StepRun{}, flash{text: "the current step is not a gate"}, false
 	}
 	if cur.Finished() {
-		return statusCmd(flash{text: fmt.Sprintf("gate already decided: %s", cur.Outcome)})
+		return workflow.StepRun{}, flash{text: fmt.Sprintf("gate already decided: %s", cur.Outcome)}, false
 	}
 	if a.rv.run.State != workflow.RunWaitingReview {
-		return statusCmd(flash{text: fmt.Sprintf("run %d is %s, not waiting for review", a.rv.runID, a.rv.run.State)})
+		return workflow.StepRun{}, flash{text: fmt.Sprintf("run %d is %s, not waiting for review", a.rv.runID, a.rv.run.State)}, false
 	}
-	if outcomes := a.rv.stepOutcomes[cur.StepID]; len(outcomes) > 0 && !slices.Contains(outcomes, outcome) {
-		return statusCmd(flash{isErr: true, text: fmt.Sprintf("gate %s routes %s, not %s",
+	return cur, flash{}, true
+}
+
+// decideGate is `a` and `x`: it settles the waiting gate on outcome when
+// the gate's edges route it. A gate that routes other outcomes instead
+// opens the outcome picker over the ones it does, so a decision never
+// silently ends the run for want of an edge. A gate with no edges at all
+// accepts anything -- ending the run is what its author asked for.
+func (a *app) decideGate(outcome string) tea.Cmd {
+	cur, why, ok := a.waitingGate()
+	if !ok {
+		return statusCmd(why)
+	}
+	outcomes := a.rv.stepOutcomes[cur.StepID]
+	if len(outcomes) > 0 && !slices.Contains(outcomes, outcome) {
+		a.openGatePicker(cur, outcomes)
+		return statusCmd(flash{text: fmt.Sprintf("%s routes %s, not %s — pick one",
 			a.rv.stepNames[cur.StepID], strings.Join(outcomes, ", "), outcome)})
 	}
+	return a.applyGateOutcome(cur, outcome)
+}
+
+// applyGateOutcome records outcome on the gate's step run. A reject asks
+// for feedback first (modalGateFeedback): the text becomes the gate's
+// deliverable, which the runner hands to the step the reject edge loops
+// back to as its {{.Feedback}}. Any other outcome is recorded at once
+// with no deliverable, so the gate passes its input through.
+func (a *app) applyGateOutcome(cur workflow.StepRun, outcome string) tea.Cmd {
 	name := a.rv.stepNames[cur.StepID]
-	return a.mutate(flash{kind: flashDone, text: fmt.Sprintf("%s: %s", name, outcome)}, func() error {
-		return a.store.FinishStepRun(a.ctx, cur.ID, outcome, "")
+	if outcome == workflow.OutcomeReject {
+		return a.modal.Open(modalGateFeedback, true, fmt.Sprintf("reject %s — feedback for the next step", name), cur.ID, outcome)
+	}
+	return a.finishGate(cur.ID, name, outcome, "")
+}
+
+// finishGate is the write every gate decision ends in: the same one-shot
+// FinishStepRun the finish_step tool makes. The runner polls the row and
+// routes on the outcome.
+func (a app) finishGate(stepRunID int64, name, outcome, feedback string) tea.Cmd {
+	text := fmt.Sprintf("%s: %s", name, outcome)
+	if feedback != "" {
+		text += " with feedback"
+	}
+	return a.mutate(flash{kind: flashDone, text: text}, func() error {
+		return a.store.FinishStepRun(a.ctx, stepRunID, outcome, feedback)
 	})
+}
+
+// pickGateOutcome is `o`: the picker over every outcome the waiting gate
+// routes, for gates whose edges go beyond approve/reject (or for anyone
+// who would rather see the choices than remember the keys).
+func (a *app) pickGateOutcome() tea.Cmd {
+	cur, why, ok := a.waitingGate()
+	if !ok {
+		return statusCmd(why)
+	}
+	outcomes := a.rv.stepOutcomes[cur.StepID]
+	if len(outcomes) == 0 {
+		return statusCmd(flash{text: fmt.Sprintf("%s has no edges; a (approve) or x (reject) ends the run",
+			a.rv.stepNames[cur.StepID])})
+	}
+	a.openGatePicker(cur, outcomes)
+	return nil
+}
+
+// --- gate outcome picker --------------------------------------------------
+
+// openGatePicker arms the picker over outcomes for the gate step run cur.
+func (a *app) openGatePicker(cur workflow.StepRun, outcomes []string) {
+	a.gatePickerOpen, a.gatePickerStepRunID, a.gatePickerSel = true, cur.ID, 0
+	a.gatePickerOutcomes = slices.Clone(outcomes)
+}
+
+func (a *app) closeGatePicker() {
+	a.gatePickerOpen, a.gatePickerStepRunID, a.gatePickerSel = false, 0, 0
+	a.gatePickerOutcomes = nil
+}
+
+// handleGatePickerKey owns the keyboard while the picker is open, in the
+// other pickers' mould: arrows or ctrl-n/ctrl-p move, a digit picks
+// directly, Enter picks the highlight, esc dismisses. A pick lands on the
+// gate the picker was opened for; if the run has moved on meanwhile
+// (someone else decided it), the pick is dropped rather than misapplied.
+func (a app) handleGatePickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	outcomes := a.gatePickerOutcomes
+	pick := func(idx int) (tea.Model, tea.Cmd) {
+		stepRunID := a.gatePickerStepRunID
+		a.closeGatePicker()
+		if idx < 0 || idx >= len(outcomes) {
+			return a, nil
+		}
+		cur, why, ok := a.waitingGate()
+		if !ok {
+			return a, statusCmd(why)
+		}
+		if cur.ID != stepRunID {
+			return a, statusCmd(flash{text: "the run moved on; the gate you were deciding is gone"})
+		}
+		return a, a.applyGateOutcome(cur, outcomes[idx])
+	}
+	switch msg.String() {
+	case "esc":
+		a.closeGatePicker()
+		return a, nil
+	case "enter":
+		return pick(a.gatePickerSel)
+	case "up", "ctrl+p", "k":
+		if a.gatePickerSel > 0 {
+			a.gatePickerSel--
+		}
+		return a, nil
+	case "down", "ctrl+n", "j":
+		if a.gatePickerSel < len(outcomes)-1 {
+			a.gatePickerSel++
+		}
+		return a, nil
+	}
+	if len(msg.Text) == 1 && msg.Text[0] >= '1' && msg.Text[0] <= '9' {
+		if idx := int(msg.Text[0] - '1'); idx < len(outcomes) {
+			return pick(idx)
+		}
+	}
+	return a, nil
+}
+
+// gatePickerView renders the chooser: the gate named in the title, then
+// its outcomes numbered in edge order. reject is marked as the one that
+// asks for feedback.
+func (a app) gatePickerView() string {
+	s, g := a.styles, a.styles.Glyphs
+	w := max(a.width, 20)
+	cb := s.CardBorder
+	hbar := strings.Repeat(g.RuleH, w-4)
+
+	row := func(content string) string {
+		gap := max(w-5-lipgloss.Width(content), 0)
+		return "  " + cb.Render(g.RuleV) + " " + content +
+			strings.Repeat(" ", gap) + cb.Render(g.RuleV)
+	}
+
+	name := "gate"
+	for _, sr := range a.rv.stepRuns {
+		if sr.ID == a.gatePickerStepRunID {
+			name = truncTail(a.rv.stepNames[sr.StepID], max(w-30, 10), g.Ellipsis)
+		}
+	}
+	lines := []string{"  " + cb.Render(g.BoxTL+hbar+g.BoxTR)}
+	lines = append(lines, row(s.State[task.StateBlocked].Bold(true).Render(g.Session[task.SessionBlocked]+" ")+
+		s.Title.Render("decide ")+s.Dimmed.Render(name)+
+		s.Muted.Render("  ⏎ or type a number")))
+	lines = append(lines, "  "+cb.Render(g.TeeRight+hbar+g.TeeLeft))
+
+	sel := min(a.gatePickerSel, len(a.gatePickerOutcomes)-1)
+	for i, o := range a.gatePickerOutcomes {
+		num := fmt.Sprintf("%d ", i+1)
+		label := o
+		if o == workflow.OutcomeReject {
+			label += s.Muted.Render("  asks for feedback")
+		}
+		var content string
+		if i == sel {
+			content = s.SelBar.Render(g.SelBar+" ") + s.Accent.Render(num) + s.Title.Render(label)
+		} else {
+			content = "  " + s.Muted.Render(num) + s.Dimmed.Render(label)
+		}
+		lines = append(lines, row(content))
+	}
+	lines = append(lines, "  "+cb.Render(g.BoxBL+hbar+g.BoxBR))
+	return strings.Join(lines, "\n")
 }
 
 // takeoverStep hands the current step's session to the user: the run
@@ -1011,7 +1210,7 @@ func (a app) runViewHints() [][2]string {
 	case workflow.RunPaused:
 		hints = append(hints, [2]string{"p", "resume"}, [2]string{"t", "take over step"})
 	case workflow.RunWaitingReview:
-		hints = append(hints, [2]string{"a/x", "approve / reject"}, [2]string{"p", "pause"})
+		hints = append(hints, [2]string{"a/x/o", "approve / reject / pick"}, [2]string{"p", "pause"})
 	case workflow.RunRunning:
 		hints = append(hints, [2]string{"p", "pause"})
 	}

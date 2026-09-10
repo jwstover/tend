@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -425,6 +426,83 @@ func TestRunWaitsAtGate(t *testing.T) {
 	srs = f.stepRuns(run.ID)
 	if len(srs) != 3 || srs[2].StepID != f.steps["ship"].ID || srs[2].Input != "PR #7" {
 		t.Errorf("step runs = %+v, want ship after the gate with the gate's input passed through", srs)
+	}
+}
+
+// The acceptance case from tend task #181: implement, gate, ship. A
+// reject recorded on the gate with feedback loops back to implement with
+// that feedback in its prompt (and on its row); the gate then waits again,
+// and an approve proceeds to ship with implement's deliverable as input.
+func TestRunGateRejectLoopsBackWithFeedbackThenApproves(t *testing.T) {
+	f := newFixture(t)
+	f.step("implement", workflow.StepAgent)
+	gate := f.step("gate", workflow.StepGate)
+	f.step("ship", workflow.StepAgent)
+	f.edge("implement", "done", "gate", nil)
+	f.edge("gate", "approve", "ship", nil)
+	f.edge("gate", "reject", "implement", nil)
+	f.exec.handle = func(_ context.Context, req StepExec) (agent.HeadlessResult, error) {
+		if req.StepRun.StepID == f.steps["implement"].ID {
+			return success(fmt.Sprintf("PR #7 (attempt %d)", req.StepRun.Iteration)), nil
+		}
+		return success("shipped"), nil
+	}
+	run := f.run()
+
+	done := make(chan error, 1)
+	go func() { done <- f.runner().Run(f.ctx, run.ID, false) }()
+
+	waitFor(t, "run waiting at the gate", func() bool {
+		return f.getRun(run.ID).State == workflow.RunWaitingReview
+	})
+	srs := f.stepRuns(run.ID)
+	if len(srs) != 2 || srs[1].StepID != gate.ID {
+		t.Fatalf("step runs at the gate = %+v, want implement then the gate", srs)
+	}
+	// The reviewer rejects, the way the TUI's `x` does: feedback as the
+	// gate's deliverable.
+	if err := f.s.FinishStepRun(f.ctx, srs[1].ID, "reject", "needs tests"); err != nil {
+		t.Fatalf("FinishStepRun(reject): %v", err)
+	}
+
+	waitFor(t, "run back at the gate after the loop", func() bool {
+		return f.getRun(run.ID).State == workflow.RunWaitingReview && len(f.stepRuns(run.ID)) == 4
+	})
+	srs = f.stepRuns(run.ID)
+	second := srs[2]
+	if second.StepID != f.steps["implement"].ID || second.Iteration != 2 || second.Feedback != "needs tests" || second.Input != "" {
+		t.Errorf("second implement = %+v, want iteration 2 with the gate's feedback and its original input", second)
+	}
+	reqs := f.exec.requests()
+	if want := "feedback=[needs tests]; iter=2"; len(reqs) != 2 || !strings.Contains(reqs[1].Prompt, want) {
+		t.Errorf("second implement prompt = %q, want %s", reqs[len(reqs)-1].Prompt, want)
+	}
+	if srs[3].StepID != gate.ID || srs[3].Finished() || srs[3].Input != "PR #7 (attempt 2)" {
+		t.Errorf("second gate = %+v, want it waiting on the second implement's deliverable", srs[3])
+	}
+
+	if err := f.s.FinishStepRun(f.ctx, srs[3].ID, "approve", ""); err != nil {
+		t.Fatalf("FinishStepRun(approve): %v", err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run: %v\n%s", err, f.log)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("runner did not finish after the gate was approved\n%s", f.log)
+	}
+	if got := f.getRun(run.ID); got.State != workflow.RunDone {
+		t.Errorf("run = %+v, want done", got)
+	}
+	srs = f.stepRuns(run.ID)
+	if len(srs) != 5 || srs[4].StepID != f.steps["ship"].ID || srs[4].Input != "PR #7 (attempt 2)" || srs[4].Feedback != "" {
+		t.Errorf("step runs = %+v, want ship last with the approved deliverable passed through", srs)
+	}
+	for _, want := range []string{`gate "gate" is waiting for review`, `gate "gate" decided: reject`, `gate "gate" decided: approve`} {
+		if !strings.Contains(f.log.String(), want) {
+			t.Errorf("runner log missing %q:\n%s", want, f.log)
+		}
 	}
 }
 
