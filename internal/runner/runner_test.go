@@ -372,6 +372,114 @@ func TestRunLoopsBackWithFeedbackUntilMaxIterations(t *testing.T) {
 	}
 }
 
+// max_iterations 1 means the target may run once in the whole run: a
+// loop-back edge bounded to 1 refuses the very first return trip, and
+// the count is of the step's prior runs however they were reached (the
+// first implement ran by position, not over the reject edge).
+func TestRunMaxIterationsOfOneRefusesTheFirstLoopBack(t *testing.T) {
+	f := newFixture(t)
+	f.step("implement", workflow.StepAgent)
+	f.step("review", workflow.StepAgent)
+	f.edge("implement", "done", "review", nil)
+	one := int64(1)
+	f.edge("review", "reject", "implement", &one)
+	f.exec.handle = func(_ context.Context, req StepExec) (agent.HeadlessResult, error) {
+		if req.StepRun.StepID == f.steps["review"].ID {
+			if err := f.s.FinishStepRun(f.ctx, req.StepRun.ID, "reject", "no"); err != nil {
+				t.Errorf("FinishStepRun: %v", err)
+			}
+		}
+		return success("ok"), nil
+	}
+	run := f.run()
+
+	err := f.runner().Run(f.ctx, run.ID, false)
+	if !errors.Is(err, ErrRunFailed) {
+		t.Fatalf("Run = %v, want ErrRunFailed\n%s", err, f.log)
+	}
+	got := f.getRun(run.ID)
+	if got.State != workflow.RunFailed ||
+		!strings.Contains(got.Error, `step "implement" would run for the 2nd time via "reject"; the edge allows 1`) {
+		t.Errorf("run = %+v, want failed with the max-iterations message naming the 2nd run", got)
+	}
+	if srs := f.stepRuns(run.ID); len(srs) != 2 {
+		t.Errorf("step runs = %d, want exactly implement and review (no second implement)", len(srs))
+	}
+}
+
+// A bounded edge to the step itself is a retry loop: the step runs up to
+// the bound, each pass seeing the previous hand-off as Feedback, and the
+// run fails when the bound would be exceeded.
+func TestRunSelfLoopStopsAtMaxIterations(t *testing.T) {
+	f := newFixture(t)
+	f.step("implement", workflow.StepAgent)
+	two := int64(2)
+	f.edge("implement", "retry", "implement", &two)
+	f.exec.handle = func(_ context.Context, req StepExec) (agent.HeadlessResult, error) {
+		if err := f.s.FinishStepRun(f.ctx, req.StepRun.ID, "retry", fmt.Sprintf("attempt %d", req.StepRun.Iteration)); err != nil {
+			t.Errorf("FinishStepRun: %v", err)
+		}
+		return success("retrying"), nil
+	}
+	run := f.run()
+
+	err := f.runner().Run(f.ctx, run.ID, false)
+	if !errors.Is(err, ErrRunFailed) {
+		t.Fatalf("Run = %v, want ErrRunFailed\n%s", err, f.log)
+	}
+	got := f.getRun(run.ID)
+	if !strings.Contains(got.Error, `would run for the 3rd time via "retry"; the edge allows 2`) {
+		t.Errorf("run error = %q, want the 3rd-time message", got.Error)
+	}
+	srs := f.stepRuns(run.ID)
+	if len(srs) != 2 || srs[0].Iteration != 1 || srs[1].Iteration != 2 {
+		t.Fatalf("step runs = %+v, want two iterations of implement", srs)
+	}
+	if srs[1].Feedback != "attempt 1" || srs[1].Input != "" {
+		t.Errorf("second pass = feedback %q input %q, want the first pass's hand-off as feedback and the original input", srs[1].Feedback, srs[1].Input)
+	}
+}
+
+// An unbounded loop-back edge is never the runner's business to stop: the
+// loop runs until the routing step reports a different outcome.
+func TestRunUnboundedLoopRunsUntilTheOutcomeChanges(t *testing.T) {
+	f := newFixture(t)
+	f.step("implement", workflow.StepAgent)
+	f.step("review", workflow.StepAgent)
+	f.edge("implement", "done", "review", nil)
+	f.edge("review", "reject", "implement", nil)
+	f.edge("review", "approve", "implement", nil) // approve is routed, but never taken here
+	reviews := 0
+	f.exec.handle = func(_ context.Context, req StepExec) (agent.HeadlessResult, error) {
+		if req.StepRun.StepID == f.steps["review"].ID {
+			reviews++
+			outcome := "reject"
+			if reviews == 4 {
+				outcome = "ship" // no edge: ends the run
+			}
+			if err := f.s.FinishStepRun(f.ctx, req.StepRun.ID, outcome, ""); err != nil {
+				t.Errorf("FinishStepRun: %v", err)
+			}
+		}
+		return success("ok"), nil
+	}
+	run := f.run()
+
+	if err := f.runner().Run(f.ctx, run.ID, false); err != nil {
+		t.Fatalf("Run: %v\n%s", err, f.log)
+	}
+	if got := f.getRun(run.ID); got.State != workflow.RunDone {
+		t.Errorf("run = %+v, want done", got)
+	}
+	srs := f.stepRuns(run.ID)
+	if len(srs) != 8 {
+		t.Fatalf("step runs = %d, want 4 implement + 4 review", len(srs))
+	}
+	if last := srs[6]; last.StepID != f.steps["implement"].ID || last.Iteration != 4 {
+		t.Errorf("7th step run = %+v, want implement iteration 4", last)
+	}
+}
+
 // A gate parks the run in waiting_review until a decision lands on its
 // step run, then routes on it; an approve with no feedback passes the
 // gate's input through to the next step.
