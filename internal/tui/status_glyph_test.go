@@ -283,7 +283,11 @@ func TestHeadingGlyphAlignsWithRowStateDots(t *testing.T) {
 	styles := DefaultStyles()
 	d := taskDelegate{styles: styles}
 
-	heading := ansi.Strip(d.renderHeading(sectionItem{state: task.StateTodo, count: 1}, 100))
+	sections := groupTasks(groupByState, []task.Task{{ID: 1, Title: "a task", State: task.StateTodo}}, nil, styles)
+	if len(sections) != 1 {
+		t.Fatalf("got %d sections, want 1", len(sections))
+	}
+	heading := ansi.Strip(d.renderHeading(sections[0].sectionItem, 100))
 	row := ansi.Strip(d.renderRow(listItem{t: task.Task{ID: 1, Title: "a task", State: task.StateTodo}}, false, 100))
 
 	glyph := styles.Glyphs.State[task.StateTodo]

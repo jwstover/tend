@@ -56,21 +56,47 @@ type rowItem interface {
 	rowTask() task.Task
 }
 
-// sectionItem is a non-selectable heading row that labels the state group
-// below it. An empty FilterValue keeps headings out of `/` filter results.
+// sectionItem is a non-selectable heading row that labels the group below
+// it: the heading's text plus the glyph and color it wears, resolved when
+// the grouping ran (see groupTasks) so the renderer needn't know which
+// grouping produced it. An empty FilterValue keeps headings out of `/`
+// filter results.
 type sectionItem struct {
-	state task.State
+	label string
+	glyph string
+	style lipgloss.Style
 	count int
 }
 
 func (i sectionItem) FilterValue() string { return "" }
 
-// spacerItem is a blank breathing-room row between state groups.
+// spacerItem is a blank breathing-room row between groups.
 type spacerItem struct{}
 
 func (spacerItem) FilterValue() string { return "" }
 
-// stateOrder is the display order of section groups: active work first,
+// groupBy selects how the list view buckets top-level tasks into
+// sections. State is the default; the `g` chord switches between them.
+type groupBy int
+
+const (
+	groupByState    groupBy = iota // workflow state, in stateOrder
+	groupByPriority                // A..D, then unprioritized
+	groupByAgent                   // latest Claude session status per task
+)
+
+// String is the grouping's name as the header, panel and flashes show it.
+func (g groupBy) String() string {
+	switch g {
+	case groupByPriority:
+		return "priority"
+	case groupByAgent:
+		return "agent"
+	}
+	return "state"
+}
+
+// stateOrder is the display order of state sections: active work first,
 // then the queue, then everything waiting.
 var stateOrder = []task.State{
 	task.StateDoing,
@@ -81,41 +107,187 @@ var stateOrder = []task.State{
 	task.StateDone,
 }
 
-// toGroupedItems lays top-level tasks out under one section heading per
-// state, in stateOrder, preserving the store's ordering within each group.
-// Expanded branches slide their (cached) children in below the parent,
-// recursively; collapsed children surface only as the N/M count.
-func toGroupedItems(tasks []task.Task, counts map[int64]task.ChildCount,
-	expanded map[int64]bool, children map[int64][]task.Task, tags map[int64][]string) []list.Item {
-	groups := make(map[task.State][]task.Task)
+// sessionOrder is the display order of agent-status sections: the ones
+// asking for the user first, then live work, then the quiet ones.
+var sessionOrder = []task.SessionStatus{
+	task.SessionBlocked,
+	task.SessionWorking,
+	task.SessionIdle,
+	task.SessionStarting,
+	task.SessionEnded,
+}
+
+// section is one group of the list: its heading and the top-level tasks
+// under it, in the store's order. Empty sections are never emitted.
+type section struct {
+	sectionItem
+	tasks []task.Task
+}
+
+// groupTasks buckets top-level tasks into ordered sections for grouping g.
+// sessions is the latest session status per task; only groupByAgent reads
+// it, and nil simply means every task is "no session". Sub-tasks are
+// skipped here — they ride under their parent via appendTaskRows.
+func groupTasks(g groupBy, tasks []task.Task, sessions map[int64]task.SessionStatus, st Styles) []section {
+	var top []task.Task
 	for _, t := range tasks {
-		if t.ParentID != nil {
-			continue
+		if t.ParentID == nil {
+			top = append(top, t)
 		}
-		groups[t.State] = append(groups[t.State], t)
 	}
-	items := make([]list.Item, 0, len(tasks)+2*len(stateOrder))
+	switch g {
+	case groupByPriority:
+		return groupByPriorityFn(top, st)
+	case groupByAgent:
+		return groupByAgentFn(top, sessions, st)
+	}
+	return groupByStateFn(top, st)
+}
+
+// bucket collects tasks under string keys in first-seen order, so a
+// grouping can lay out its known keys and then sweep up any stragglers.
+type bucket struct {
+	order []string
+	by    map[string][]task.Task
+}
+
+func (b *bucket) add(key string, t task.Task) {
+	if b.by == nil {
+		b.by = make(map[string][]task.Task)
+	}
+	if _, seen := b.by[key]; !seen {
+		b.order = append(b.order, key)
+	}
+	b.by[key] = append(b.by[key], t)
+}
+
+// take removes and returns the tasks under key; nil when there are none.
+func (b *bucket) take(key string) []task.Task {
+	ts := b.by[key]
+	delete(b.by, key)
+	return ts
+}
+
+// rest returns whatever take never claimed, in first-seen key order.
+func (b *bucket) rest() []string {
+	var keys []string
+	for _, k := range b.order {
+		if _, left := b.by[k]; left {
+			keys = append(keys, k)
+		}
+	}
+	return keys
+}
+
+func groupByStateFn(top []task.Task, st Styles) []section {
+	var b bucket
+	for _, t := range top {
+		b.add(string(t.State), t)
+	}
+	heading := func(s task.State) sectionItem {
+		// The done section celebrates with complete-green; every other
+		// heading wears its state color.
+		style := st.State[s]
+		if s == task.StateDone {
+			style = st.CheckDone
+		}
+		glyph, ok := st.Glyphs.State[s]
+		if !ok {
+			glyph = st.Glyphs.State[task.StateInbox]
+		}
+		return sectionItem{label: strings.ToLower(string(s)), glyph: glyph, style: style}
+	}
+	var out []section
 	for _, s := range stateOrder {
-		group := groups[s]
-		if len(group) == 0 {
+		out = appendSection(out, heading(s), b.take(string(s)))
+	}
+	// States missing from stateOrder still get their own heading rather
+	// than being silently dropped.
+	for _, k := range b.rest() {
+		out = appendSection(out, heading(task.State(k)), b.take(k))
+	}
+	return out
+}
+
+func groupByPriorityFn(top []task.Task, st Styles) []section {
+	var b bucket
+	for _, t := range top {
+		b.add(task.PriorityLetter(t.Priority), t)
+	}
+	var out []section
+	for p := task.PriorityHighest; p <= task.PriorityLowest; p++ {
+		letter := task.PriorityLetter(&p)
+		out = appendSection(out, sectionItem{
+			label: "priority " + letter, glyph: st.Glyphs.Flag, style: st.Priority[p],
+		}, b.take(letter))
+	}
+	// PriorityLetter renders nil and out-of-range values alike as "", so
+	// one sweep catches both.
+	out = appendSection(out, sectionItem{
+		label: "no priority", glyph: st.Glyphs.Flag, style: st.Muted,
+	}, b.take(""))
+	return out
+}
+
+func groupByAgentFn(top []task.Task, sessions map[int64]task.SessionStatus, st Styles) []section {
+	var b bucket
+	for _, t := range top {
+		s, ok := sessions[t.ID]
+		if !ok || s == task.SessionUnknown {
+			// Never observed and never launched read the same on a list
+			// row (no marker), so they group the same way too.
+			s = ""
+		}
+		b.add(string(s), t)
+	}
+	heading := func(s task.SessionStatus) sectionItem {
+		glyph, style := sessionStatusCell(st, s)
+		return sectionItem{label: "session " + string(s), glyph: glyph, style: style}
+	}
+	var out []section
+	for _, s := range sessionOrder {
+		out = appendSection(out, heading(s), b.take(string(s)))
+	}
+	for _, k := range b.rest() {
+		if k == "" {
 			continue
 		}
+		out = appendSection(out, heading(task.SessionStatus(k)), b.take(k))
+	}
+	// Ended's glyph stands in for the no-session heading: unknown's own
+	// glyph is a blank, which would leave the heading looking misaligned.
+	return appendSection(out, sectionItem{
+		label: "no session", glyph: st.Glyphs.Session[task.SessionEnded], style: st.Muted,
+	}, b.take(""))
+}
+
+// appendSection adds a section for tasks under heading, unless empty.
+func appendSection(out []section, heading sectionItem, tasks []task.Task) []section {
+	if len(tasks) == 0 {
+		return out
+	}
+	heading.count = len(tasks)
+	return append(out, section{sectionItem: heading, tasks: tasks})
+}
+
+// toGroupedItems lays the sections out as list items: a heading per
+// section, its tasks beneath it in the store's order, and a spacer
+// between sections. Expanded branches slide their (cached) children in
+// below the parent, recursively; collapsed children surface only as the
+// N/M count.
+func toGroupedItems(sections []section, counts map[int64]task.ChildCount,
+	expanded map[int64]bool, children map[int64][]task.Task, tags map[int64][]string) []list.Item {
+	n := 0
+	for _, s := range sections {
+		n += len(s.tasks) + 2
+	}
+	items := make([]list.Item, 0, n)
+	for _, s := range sections {
 		if len(items) > 0 {
 			items = append(items, spacerItem{})
 		}
-		items = append(items, sectionItem{state: s, count: len(group)})
-		for _, t := range group {
-			items = appendTaskRows(items, t, counts, expanded, children, tags)
-		}
-		delete(groups, s)
-	}
-	// States missing from stateOrder still get rendered rather than
-	// silently dropped.
-	for _, t := range tasks {
-		if t.ParentID != nil {
-			continue
-		}
-		if _, leftover := groups[t.State]; leftover {
+		items = append(items, s.sectionItem)
+		for _, t := range s.tasks {
 			items = appendTaskRows(items, t, counts, expanded, children, tags)
 		}
 	}
@@ -271,20 +443,13 @@ func (d taskDelegate) Render(w io.Writer, m list.Model, index int, item list.Ite
 // same column as the state dots below it.
 func (d taskDelegate) renderHeading(sec sectionItem, width int) string {
 	g := d.styles.Glyphs
-	label := strings.ToLower(string(sec.state))
 	count := fmt.Sprintf("%d", sec.count)
-	used := 3 + runeWidth(g.State[sec.state]) + 1 + len(label) + 2 + 1 + len(count)
+	used := 3 + runeWidth(sec.glyph) + 1 + runeWidth(sec.label) + 2 + 1 + len(count)
 	fill := max(width-used, 0)
-	// The done section celebrates with complete-green; every other heading
-	// wears its state color.
-	headStyle := d.styles.State[sec.state]
-	if sec.state == task.StateDone {
-		headStyle = d.styles.CheckDone
-	}
 	var b strings.Builder
 	b.WriteString("   ")
-	b.WriteString(headStyle.Render(g.State[sec.state] + " "))
-	b.WriteString(headStyle.Bold(true).Render(label))
+	b.WriteString(sec.style.Render(sec.glyph + " "))
+	b.WriteString(sec.style.Bold(true).Render(sec.label))
 	b.WriteString("  ")
 	b.WriteString(d.styles.GroupRule.Render(strings.Repeat(g.RuleH, fill)))
 	b.WriteString(" ")

@@ -522,8 +522,14 @@ type app struct {
 
 	showCompleted bool // C toggles whether completed (done) and someday tasks are loaded
 
+	// groupBy is how the list sections its tasks; the `g` chord switches it.
+	// Session-scoped like showCompleted: the two are independent, so the
+	// completed/someday tasks C loads slot into whichever grouping is on.
+	groupBy groupBy
+
 	statePending    bool // `c` pressed; next key picks the new state
 	priorityPending bool // `p` pressed; next key picks the new priority
+	groupPending    bool // `g` pressed; next key picks the grouping (or `g` again for top)
 	deletePending   bool // first `d` pressed; a second `d` confirms the delete
 	quitPending     bool // `q` pressed while a recap was still running; a second press confirms
 
@@ -993,6 +999,24 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return a, nil
 	}
 
+	// A pending `g` chord consumes the next key: a grouping key regroups
+	// the list, a second `g` jumps to the top (the vim `gg` the list's own
+	// binding used to provide before `g` became a chord), anything else
+	// cancels.
+	if a.groupPending {
+		a.groupPending = false
+		a.resize()
+		if g, ok := a.groupForKey(msg); ok {
+			return a.setGroupBy(g)
+		}
+		if key.Matches(msg, a.keys.GoTop) {
+			a.list.Select(0)
+			moveOffHeading(&a.list, 1)
+			return a, a.syncDetail(false)
+		}
+		return a, nil
+	}
+
 	// A pending `d` chord consumes the next key: a second `d` deletes the
 	// selection, anything else cancels.
 	if a.deletePending {
@@ -1205,6 +1229,11 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		// re-flatten the cached slice; tasksLoadedMsg rebuilds the list.
 		return a, a.loadTasks(a.mode)
 
+	case key.Matches(msg, a.keys.GroupBy) && a.mode == modeList:
+		a.groupPending = true
+		a.resize()
+		return a, nil
+
 	case key.Matches(msg, a.keys.QuickAdd):
 		return a, a.openPrompt(promptAdd, "add: ", 0)
 
@@ -1410,6 +1439,60 @@ func (a app) priorityPanel() string {
 	return renderKeyPanel(a.styles, a.width, "priority", entries)
 }
 
+// groupForKey maps a grouping-chord key to its grouping.
+func (a app) groupForKey(msg tea.KeyPressMsg) (groupBy, bool) {
+	switch {
+	case key.Matches(msg, a.keys.GroupByState):
+		return groupByState, true
+	case key.Matches(msg, a.keys.GroupByPriority):
+		return groupByPriority, true
+	case key.Matches(msg, a.keys.GroupByAgent):
+		return groupByAgent, true
+	}
+	return groupByState, false
+}
+
+// groupPanel renders the which-key panel for the pending `g` chord. The
+// title names the grouping currently on, so the panel doubles as the
+// answer to "how is this list sorted right now?".
+func (a app) groupPanel() string {
+	bindings := []struct {
+		b     key.Binding
+		style lipgloss.Style
+	}{
+		{a.keys.GroupByState, a.styles.State[task.StateDoing]},
+		{a.keys.GroupByPriority, a.styles.Priority[1]},
+		{a.keys.GroupByAgent, a.styles.Session[task.SessionWorking]},
+		{a.keys.GoTop, a.styles.PanelKey},
+		{a.keys.Cancel, a.styles.Dimmed},
+	}
+	entries := make([]panelEntry, 0, len(bindings))
+	for _, e := range bindings {
+		h := e.b.Help()
+		entries = append(entries, panelEntry{key: h.Key, desc: h.Desc, keyStyle: e.style})
+	}
+	return renderKeyPanel(a.styles, a.width, "group by · "+a.groupBy.String(), entries)
+}
+
+// setGroupBy regroups the list in place — the loaded tasks are the same
+// population, only the headings change — keeping the cursor on the task
+// it was on, which may now sit somewhere else entirely.
+func (a app) setGroupBy(g groupBy) (tea.Model, tea.Cmd) {
+	if a.mode != modeList {
+		a.status = flash{text: "grouping is list-view only"}
+		return a, nil
+	}
+	a.groupBy = g
+	a.status = flash{text: "grouped by " + g.String()}
+	sel, hadSel := a.selectedNode()
+	cmd := a.rebuildList()
+	if hadSel {
+		a.selectByID(sel.t.ID)
+	}
+	moveOffHeading(&a.list, 1)
+	return a, tea.Batch(cmd, a.syncDetail(false))
+}
+
 // deletePanel renders the which-key panel for the pending `d` chord: a
 // second `d` deletes, anything else cancels.
 func (a app) deletePanel() string {
@@ -1550,7 +1633,8 @@ func (a *app) rebuildList() tea.Cmd {
 	// rendering, whereas a session marker is purely visual, so the
 	// renderer is the one thing that needs it.
 	a.list.SetDelegate(taskDelegate{styles: a.styles, sessions: a.sessionStatus, tags: a.tags})
-	cmds := []tea.Cmd{a.list.SetItems(toGroupedItems(a.tasks, a.counts, a.expanded, a.childCache, a.tags))}
+	sections := groupTasks(a.groupBy, a.tasks, a.sessionStatus, a.styles)
+	cmds := []tea.Cmd{a.list.SetItems(toGroupedItems(sections, a.counts, a.expanded, a.childCache, a.tags))}
 	for id := range a.expanded {
 		if _, ok := a.childCache[id]; !ok {
 			cmds = append(cmds, a.loadChildren(id))
@@ -1709,6 +1793,9 @@ func (a *app) resize() {
 	}
 	if a.priorityPending {
 		bottomHeight = max(lipgloss.Height(a.priorityPanel()), 1)
+	}
+	if a.groupPending {
+		bottomHeight = max(lipgloss.Height(a.groupPanel()), 1)
 	}
 	if a.deletePending {
 		bottomHeight = max(lipgloss.Height(a.deletePanel()), 1)
@@ -2137,6 +2224,11 @@ func (a app) headerLine() string {
 		left += s.HeaderView.Render("workflows")
 	default:
 		left += s.HeaderView.Render("live")
+		// State is the default and needs no announcing; any other grouping
+		// is named so a regrouped list never reads as mysteriously reordered.
+		if a.groupBy != groupByState {
+			left += s.HeaderSep.Render("  ·  ") + s.CountLabel.Render("by "+a.groupBy.String())
+		}
 	}
 	// Name the project the view is scoped to. The projects column usually
 	// says this, but it hides on a narrow terminal and triage never shows
@@ -2213,6 +2305,9 @@ func (a app) bottomChrome(splits []int) string {
 	}
 	if a.priorityPending {
 		return a.priorityPanel()
+	}
+	if a.groupPending {
+		return a.groupPanel()
 	}
 	if a.deletePending {
 		return a.deletePanel()
