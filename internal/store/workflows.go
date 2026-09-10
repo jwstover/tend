@@ -489,6 +489,25 @@ func (s *Store) SetRunState(ctx context.Context, id int64, st workflow.RunState)
 	return nil
 }
 
+// FailRun ends a run as failed and records why (workflow.Run.Error) in
+// the same statement, so the reason is on the row before anything can
+// observe the state. Like SetRunState it refuses a run that has already
+// ended (workflow.ErrRunEnded).
+func (s *Store) FailRun(ctx context.Context, id int64, reason string) error {
+	ended := sql.NullString{String: time.Now().UTC().Format(sqliteTimeLayout), Valid: true}
+	n, err := s.q.FailRun(ctx, gen.FailRunParams{Error: reason, EndedAt: ended, ID: id})
+	if err != nil {
+		return fmt.Errorf("failing run %d: %w", id, err)
+	}
+	if n == 0 {
+		if _, err := s.GetRun(ctx, id); err != nil {
+			return err
+		}
+		return fmt.Errorf("run %d: %w", id, workflow.ErrRunEnded)
+	}
+	return nil
+}
+
 // ClaimRun atomically takes a pending or paused run to running, reporting
 // whether this caller is the one that got it. Two runners started against
 // the same run see exactly one true -- the guard against a run being
@@ -733,7 +752,7 @@ func runToDomain(row gen.WorkflowRun) (workflow.Run, error) {
 	return workflow.Run{
 		ID: row.ID, WorkflowID: row.WorkflowID, TaskID: row.TaskID, Cwd: row.Cwd,
 		State: workflow.RunState(row.State), CurrentStepRunID: nullInt64(row.CurrentStepRunID),
-		TmuxSession: row.TmuxSession, StartedAt: started, EndedAt: ended,
+		TmuxSession: row.TmuxSession, Error: row.Error, StartedAt: started, EndedAt: ended,
 	}, nil
 }
 

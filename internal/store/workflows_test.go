@@ -371,6 +371,38 @@ func TestRunLifecycle(t *testing.T) {
 	}
 }
 
+// FailRun is SetRunState(failed) with the reason on the row, and terminal
+// stays final for it too.
+func TestFailRunRecordsReasonOnce(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	w := mustWorkflow(t, s, "wf")
+	run := mustRun(t, s, w.ID)
+
+	if err := s.FailRun(ctx, run.ID, "step \"review\" ran 4 times; the edge allows 3"); err != nil {
+		t.Fatalf("FailRun: %v", err)
+	}
+	got, err := s.GetRun(ctx, run.ID)
+	if err != nil {
+		t.Fatalf("GetRun: %v", err)
+	}
+	if got.State != workflow.RunFailed || got.EndedAt == nil || !strings.Contains(got.Error, "the edge allows 3") {
+		t.Errorf("failed run = %+v, want failed, ended, with the reason", got)
+	}
+	if err := s.FailRun(ctx, run.ID, "again"); !errors.Is(err, workflow.ErrRunEnded) {
+		t.Errorf("FailRun on an ended run = %v, want ErrRunEnded", err)
+	}
+	if got, _ = s.GetRun(ctx, run.ID); got.Error != "step \"review\" ran 4 times; the edge allows 3" {
+		t.Errorf("Error after a refused second FailRun = %q, want the first reason to stand", got.Error)
+	}
+	if err := s.FailRun(ctx, 9999, "x"); !errors.Is(err, workflow.ErrRunNotFound) {
+		t.Errorf("FailRun(unknown) = %v, want ErrRunNotFound", err)
+	}
+	if err := s.SetRunState(ctx, mustRun(t, s, w.ID).ID, workflow.RunRunning); err != nil {
+		t.Fatalf("SetRunState: %v", err)
+	}
+}
+
 func TestStepRunsIterateAndFinishOnce(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

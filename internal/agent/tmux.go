@@ -165,6 +165,29 @@ func WrapTmux(inner *exec.Cmd, sessionName, configPath string) *exec.Cmd {
 	return c
 }
 
+// StartDetached is WrapTmux without the attach: `new-session -d` creates
+// the named session running inner and returns at once, leaving inner
+// going in the background. This is how a workflow run's runner is hosted
+// (see RunnerSessionName): a process in its own tmux session, exactly
+// like a claude session, that the user can attach to with
+// `tmux -L tend attach -t <name>` but never has to. A session of that
+// name already existing makes tmux exit non-zero ("duplicate session"),
+// which is the natural guard against two runners for one run.
+func StartDetached(inner *exec.Cmd, sessionName, configPath string) *exec.Cmd {
+	args := serverArgs(configPath)
+	args = append(args, "new-session", "-d", "-s", sessionName)
+	if inner.Dir != "" {
+		args = append(args, "-c", inner.Dir)
+	}
+	args = append(args, "--")
+	args = append(args, inner.Args...)
+
+	c := exec.Command(tmuxBinary, args...)
+	c.Dir = inner.Dir
+	c.Env = inner.Env
+	return c
+}
+
 // AttachCmd builds the command to reattach to a tmux session that's
 // already running — the cross-instance reconnect path.
 //

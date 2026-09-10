@@ -63,6 +63,53 @@ func TestWrapTmuxWithoutDirOmitsC(t *testing.T) {
 	}
 }
 
+// StartDetached is WrapTmux plus -d and minus nothing else: the inner
+// argv rides after -- intact, and Dir/Env carry over.
+func TestStartDetached(t *testing.T) {
+	inner := exec.Command("/opt/tend", "workflow", "run", "12", "--db", "/data/tend db.sqlite")
+	inner.Env = []string{"FOO=bar"}
+	c := StartDetached(inner, "tend-wf-12", "/cfg/tmux.conf")
+
+	want := []string{
+		tmuxBinary, "-L", SocketName, "-f", "/cfg/tmux.conf",
+		"new-session", "-d", "-s", "tend-wf-12", "--",
+		"/opt/tend", "workflow", "run", "12", "--db", "/data/tend db.sqlite",
+	}
+	if !equalArgs(c.Args, want) {
+		t.Errorf("Args =\n %v\nwant\n %v", c.Args, want)
+	}
+	if c.Dir != "" || len(c.Env) != 1 || c.Env[0] != "FOO=bar" {
+		t.Errorf("Dir = %q, Env = %v; want no -c dir and the inner env", c.Dir, c.Env)
+	}
+}
+
+func TestRunnerSessionName(t *testing.T) {
+	if got := RunnerSessionName(12); got != "tend-wf-12" {
+		t.Errorf("RunnerSessionName(12) = %q, want tend-wf-12", got)
+	}
+}
+
+// RunnerCmd drives the run with this executable, not a `tend` on $PATH,
+// and names the database explicitly.
+func TestRunnerCmd(t *testing.T) {
+	c, err := RunnerCmd(12, "/data/tend.db", false)
+	if err != nil {
+		t.Fatalf("RunnerCmd: %v", err)
+	}
+	self, _ := os.Executable()
+	want := []string{self, "workflow", "run", "12", "--db", "/data/tend.db"}
+	if !equalArgs(c.Args, want) {
+		t.Errorf("Args = %v, want %v", c.Args, want)
+	}
+	c, err = RunnerCmd(12, "/data/tend.db", true)
+	if err != nil {
+		t.Fatalf("RunnerCmd(takeover): %v", err)
+	}
+	if got := c.Args[len(c.Args)-1]; got != "--takeover" {
+		t.Errorf("last arg with takeover = %q, want --takeover", got)
+	}
+}
+
 func TestAttachCmd(t *testing.T) {
 	c := AttachCmd("tend-abc-123", "/cfg/tmux.conf")
 	want := []string{

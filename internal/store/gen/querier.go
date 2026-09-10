@@ -65,6 +65,10 @@ type Querier interface {
 	DeleteStep(ctx context.Context, id int64) error
 	DeleteTask(ctx context.Context, id int64) error
 	DeleteWorkflow(ctx context.Context, id int64) error
+	// SetRunState for the failed state, recording why in the same statement
+	// so a run can never read as failed for no reason. Same terminal-is-final
+	// WHERE as SetRunState; the caller turns zero rows into ErrRunEnded.
+	FailRun(ctx context.Context, arg FailRunParams) (int64, error)
 	// One-shot handoff: only an unfinished step run takes an outcome, so a
 	// second finish_step call affects zero rows and the first outcome stands.
 	FinishStepRun(ctx context.Context, arg FinishStepRunParams) (int64, error)

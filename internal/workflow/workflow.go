@@ -169,6 +169,9 @@ type Edge struct {
 // the step run the runner is on (or paused at), nil before the first
 // step starts. TmuxSession names the runner's tmux session, "" when none
 // has been started. EndedAt is set exactly when State becomes terminal.
+// Error is why the run failed -- the runner's message, kept on the row
+// because the runner's own output dies with its tmux session -- and ""
+// unless State is RunFailed.
 type Run struct {
 	ID               int64
 	WorkflowID       int64
@@ -177,6 +180,7 @@ type Run struct {
 	State            RunState
 	CurrentStepRunID *int64
 	TmuxSession      string
+	Error            string
 	StartedAt        time.Time
 	EndedAt          *time.Time
 }

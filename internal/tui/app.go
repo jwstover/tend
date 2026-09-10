@@ -86,14 +86,13 @@ type Store interface {
 	ReorderSteps(ctx context.Context, workflowID int64, ids []int64) error
 	DeleteStep(ctx context.Context, id int64) error
 
-	// Interactive workflow runs (workflowrun.go): the one-step POC that
-	// launches a step as an ordinary session with a templated prompt.
-	OutgoingEdges(ctx context.Context, stepID int64) ([]workflow.Edge, error)
+	// Workflow runs (workflowrun.go): `w` creates the run and starts its
+	// runner in tmux (runner.Launch, which needs GetRun/SetRunTmuxSession,
+	// i.e. runner.LaunchStore); the runner drives it from there.
+	GetRun(ctx context.Context, id int64) (workflow.Run, error)
 	CreateRun(ctx context.Context, workflowID, taskID int64, cwd string) (workflow.Run, error)
-	SetRunState(ctx context.Context, id int64, st workflow.RunState) error
-	CreateStepRun(ctx context.Context, sr workflow.StepRun) (workflow.StepRun, error)
-	FinishRunAtStep(ctx context.Context, stepRunID int64, outcome, deliverable string) error
-	CreateStepRunSession(ctx context.Context, stepRunID, taskID int64, externalID, cwd, label, tmuxSession string) (task.Session, error)
+	SetRunTmuxSession(ctx context.Context, id int64, name string) error
+	FailRun(ctx context.Context, id int64, reason string) error
 }
 
 // Run starts the TUI and blocks until it exits. dbPath is shown on the
@@ -301,9 +300,6 @@ type (
 	// the session ran without tmux. backgrounded distinguishes a detach
 	// from a real exit — both are a clean return from tea.ExecProcess, so
 	// it's resolved by asking tmux whether the session is still alive.
-	// runID and stepRunID are set when the session was a workflow step
-	// (see launchWorkflowStepCmd): a real exit then ends the run and a
-	// failed launch fails it.
 	sessionFinishedMsg struct {
 		sessionRowID int64
 		taskID       int64
@@ -313,16 +309,12 @@ type (
 		tmuxSession  string
 		backgrounded bool
 		err          error
-		runID        int64
-		stepRunID    int64
 	}
 	// sessionResumedMsg reports a resumed session's terminal handoff
 	// returning; last_active_at is only bumped on a clean exit. since is
 	// the transcript's line count at the moment it was resumed (see
 	// resumeSessionCmd), passed to recapSessionCmd to scope the recap to
-	// only what happened after that point. stepRunID is the session's
-	// workflow step run, if it ran one, so a re-attached workflow session
-	// that now really exits still ends its run.
+	// only what happened after that point.
 	sessionResumedMsg struct {
 		sessionRowID int64
 		taskID       int64
@@ -331,13 +323,12 @@ type (
 		since        int
 		backgrounded bool
 		err          error
-		stepRunID    *int64
 	}
 
-	// Interactive workflow run messages (workflowrun.go), in the order
-	// the flow produces them: the workflows to pick from, the picked
-	// workflow validated and ready for a cwd, and the run + step run rows
-	// written and ready to launch.
+	// Workflow run messages (workflowrun.go), in the order the flow
+	// produces them: the workflows to pick from, the picked workflow
+	// validated and ready for a cwd, and the run written with its runner
+	// started in tmux.
 	workflowsForRunMsg struct {
 		t         task.Task
 		workflows []workflow.Workflow
@@ -346,11 +337,10 @@ type (
 		req        workflowRunRequest
 		defaultCwd string
 	}
-	workflowRunPreparedMsg struct {
-		req     workflowRunRequest
-		cwd     string
-		run     workflow.Run
-		stepRun workflow.StepRun
+	workflowRunStartedMsg struct {
+		req         workflowRunRequest
+		run         workflow.Run
+		tmuxSession string
 	}
 	// recapsDrainedMsg carries the backgrounded sessions this instance
 	// successfully claimed the owed recap for (see drainRecapsCmd) —
@@ -671,15 +661,16 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case workflowRunReadyMsg:
 		return a, a.openWorkflowCwdPrompt(msg)
 
-	case workflowRunPreparedMsg:
-		return a, a.launchWorkflowStepCmd(msg)
+	case workflowRunStartedMsg:
+		a.status = flash{kind: flashAdd, text: fmt.Sprintf("started %s on #%d as run %d (%s)",
+			msg.req.w.Name, msg.req.t.ID, msg.run.ID, msg.tmuxSession)}
+		return a, nil
 
 	case sessionFinishedMsg:
 		if msg.err != nil {
 			a.status = flash{text: "claude: " + msg.err.Error(), isErr: true}
-			// The row written at launch goes, and a workflow step that
-			// never got going leaves its run failed rather than running
-			// forever; the flash above stands through the refresh.
+			// The row written at launch goes; the flash above stands
+			// through the refresh.
 			return a, a.abandonLaunchCmd(msg, a.status)
 		}
 		// Backgrounded: claude is still running under tmux, so the recap
@@ -696,23 +687,11 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			})
 		}
 		a.pendingRecaps++
-		text := "session recorded"
-		if msg.stepRunID != 0 {
-			text = "workflow run done"
-		}
 		return a, tea.Batch(
-			a.mutate(flash{kind: flashEdit, text: text}, func() error {
+			a.mutate(flash{kind: flashEdit, text: "session recorded"}, func() error {
 				// The row itself was written at launch; returning is
 				// activity, so bump last_active_at the way a resume does.
-				if err := a.store.TouchSession(a.ctx, msg.sessionRowID); err != nil {
-					return err
-				}
-				if msg.stepRunID == 0 {
-					return nil
-				}
-				// A one-step run ends with its step. The deliverable is
-				// left empty: an interactive session hands nothing off.
-				return a.store.FinishRunAtStep(a.ctx, msg.stepRunID, workflow.OutcomeDone, "")
+				return a.store.TouchSession(a.ctx, msg.sessionRowID)
 			}),
 			a.recapSessionCmd(msg.taskID, msg.cwd, msg.externalID, nil),
 		)
@@ -733,10 +712,7 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.pendingRecaps++
 		return a, tea.Batch(
 			a.mutate(flash{kind: flashEdit, text: "session resumed"}, func() error {
-				if err := a.store.TouchSession(a.ctx, msg.sessionRowID); err != nil {
-					return err
-				}
-				return a.finishStepRunIfAny(msg.stepRunID)
+				return a.store.TouchSession(a.ctx, msg.sessionRowID)
 			}),
 			a.recapSessionCmd(msg.taskID, msg.cwd, msg.externalID, &msg.since),
 		)
@@ -753,11 +729,6 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// so a drained recap is unscoped — still far better than no
 			// recap at all.
 			cmds = append(cmds, a.recapSessionCmd(sess.TaskID, sess.Cwd, sess.ExternalID, nil))
-			// A backgrounded workflow session found dead is also the
-			// first anyone has heard of its step ending.
-			if sess.StepRunID != nil {
-				cmds = append(cmds, a.finishStepRunCmd(*sess.StepRunID))
-			}
 		}
 		return a, tea.Batch(cmds...)
 
@@ -1899,7 +1870,7 @@ func (a app) submitPrompt() (tea.Model, tea.Cmd) {
 		if value == "" || pendingRun == nil {
 			return a, nil
 		}
-		return a, a.prepareWorkflowRunCmd(*pendingRun, value)
+		return a, a.startWorkflowRunCmd(*pendingRun, value)
 	case promptNewProject:
 		if value == "" {
 			return a, nil

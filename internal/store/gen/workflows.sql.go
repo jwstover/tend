@@ -30,7 +30,7 @@ func (q *Queries) ClaimRun(ctx context.Context, id int64) (int64, error) {
 const createRun = `-- name: CreateRun :one
 INSERT INTO workflow_runs (workflow_id, task_id, cwd)
 VALUES (?, ?, ?)
-RETURNING id, workflow_id, task_id, cwd, state, current_step_run_id, tmux_session, started_at, ended_at
+RETURNING id, workflow_id, task_id, cwd, state, current_step_run_id, tmux_session, started_at, ended_at, error
 `
 
 type CreateRunParams struct {
@@ -52,6 +52,7 @@ func (q *Queries) CreateRun(ctx context.Context, arg CreateRunParams) (WorkflowR
 		&i.TmuxSession,
 		&i.StartedAt,
 		&i.EndedAt,
+		&i.Error,
 	)
 	return i, err
 }
@@ -248,6 +249,32 @@ func (q *Queries) DeleteWorkflow(ctx context.Context, id int64) error {
 	return err
 }
 
+const failRun = `-- name: FailRun :execrows
+UPDATE workflow_runs
+SET state    = 'failed',
+    error    = ?,
+    ended_at = ?
+WHERE id = ?
+  AND state NOT IN ('done', 'failed', 'cancelled')
+`
+
+type FailRunParams struct {
+	Error   string
+	EndedAt sql.NullString
+	ID      int64
+}
+
+// SetRunState for the failed state, recording why in the same statement
+// so a run can never read as failed for no reason. Same terminal-is-final
+// WHERE as SetRunState; the caller turns zero rows into ErrRunEnded.
+func (q *Queries) FailRun(ctx context.Context, arg FailRunParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, failRun, arg.Error, arg.EndedAt, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const finishStepRun = `-- name: FinishStepRun :execrows
 UPDATE workflow_step_runs
 SET outcome     = ?,
@@ -273,7 +300,7 @@ func (q *Queries) FinishStepRun(ctx context.Context, arg FinishStepRunParams) (i
 }
 
 const getRun = `-- name: GetRun :one
-SELECT id, workflow_id, task_id, cwd, state, current_step_run_id, tmux_session, started_at, ended_at
+SELECT id, workflow_id, task_id, cwd, state, current_step_run_id, tmux_session, started_at, ended_at, error
 FROM workflow_runs
 WHERE id = ?
 `
@@ -291,6 +318,7 @@ func (q *Queries) GetRun(ctx context.Context, id int64) (WorkflowRun, error) {
 		&i.TmuxSession,
 		&i.StartedAt,
 		&i.EndedAt,
+		&i.Error,
 	)
 	return i, err
 }
@@ -453,7 +481,7 @@ func (q *Queries) ListActiveRunIDsForWorkflow(ctx context.Context, workflowID in
 }
 
 const listActiveRuns = `-- name: ListActiveRuns :many
-SELECT id, workflow_id, task_id, cwd, state, current_step_run_id, tmux_session, started_at, ended_at
+SELECT id, workflow_id, task_id, cwd, state, current_step_run_id, tmux_session, started_at, ended_at, error
 FROM workflow_runs
 WHERE state NOT IN ('done', 'failed', 'cancelled')
 ORDER BY started_at DESC, id DESC
@@ -478,6 +506,7 @@ func (q *Queries) ListActiveRuns(ctx context.Context) ([]WorkflowRun, error) {
 			&i.TmuxSession,
 			&i.StartedAt,
 			&i.EndedAt,
+			&i.Error,
 		); err != nil {
 			return nil, err
 		}
@@ -566,7 +595,7 @@ func (q *Queries) ListEdgesFromStep(ctx context.Context, fromStepID int64) ([]Wo
 }
 
 const listRunsForTask = `-- name: ListRunsForTask :many
-SELECT id, workflow_id, task_id, cwd, state, current_step_run_id, tmux_session, started_at, ended_at
+SELECT id, workflow_id, task_id, cwd, state, current_step_run_id, tmux_session, started_at, ended_at, error
 FROM workflow_runs
 WHERE task_id = ?
 ORDER BY started_at DESC, id DESC
@@ -591,6 +620,7 @@ func (q *Queries) ListRunsForTask(ctx context.Context, taskID int64) ([]Workflow
 			&i.TmuxSession,
 			&i.StartedAt,
 			&i.EndedAt,
+			&i.Error,
 		); err != nil {
 			return nil, err
 		}
