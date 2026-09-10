@@ -143,12 +143,15 @@ func (a app) chooseSessionPickerRow(row int) (tea.Model, tea.Cmd) {
 // claude on it -- interactive on top of headless -- is exactly the
 // hazard tmux-backed backgrounding exists to avoid. Pausing the run
 // (`p` in the run view) is what hands the session over; the flash says
-// so. An ordinary session, or a step session of an ended or paused run,
-// resumes as before. The check is a store read, so it runs as a Cmd and
-// the resume follows inside it.
+// so. An ordinary session, or a step session of an ended run, resumes as
+// before. A step session of a paused run whose step is still unfinished
+// is a takeover (takeover.go): the resume waits for the runner to let
+// go and the takeover picker opens on return, exactly as `t` in the run
+// view does. The check is a store read, so it runs as a Cmd and the
+// resume follows inside it.
 func (a app) resumeGuardedCmd(sess task.Session) tea.Cmd {
 	if sess.StepRunID == nil {
-		return resumeSessionCmd(sess, a.dbPath)
+		return resumeSessionCmd(sess, a.dbPath, takeoverRef{})
 	}
 	stepRunID := *sess.StepRunID
 	return func() tea.Msg {
@@ -165,7 +168,13 @@ func (a app) resumeGuardedCmd(sess task.Session) tea.Cmd {
 				"session belongs to run %d, which is %s — pause the run first (v, then p) to take it over",
 				run.ID, run.State)}
 		}
-		return resumeSessionCmd(sess, a.dbPath)()
+		if run.State == workflow.RunPaused && !sr.Finished() {
+			if err := waitRunnerGone(a.ctx, run); err != nil {
+				return statusMsg{isErr: true, text: err.Error()}
+			}
+			return takeoverResume(sess, a.dbPath, takeoverRef{runID: run.ID, stepRunID: sr.ID})()
+		}
+		return resumeSessionCmd(sess, a.dbPath, takeoverRef{})()
 	}
 }
 
@@ -288,7 +297,13 @@ func (a app) abandonLaunchCmd(msg sessionFinishedMsg, status flash) tea.Cmd {
 // the sqlite DB and the tmux socket. Otherwise (never backgrounded, or
 // the server died with the host) it falls back to launching `claude
 // --resume` fresh, wrapped in tmux so this time it can be backgrounded.
-func resumeSessionCmd(sess task.Session, dbPath string) tea.Cmd {
+//
+// A session that ran a workflow step gets the step's MCP tools as well as
+// the task's (WriteMCPConfig with its step run id), so a step taken over
+// by hand can still call finish_step itself. ref, when set, marks the
+// resume as a takeover (takeover.go): it rides on the returning message
+// so the takeover picker opens instead of the recap firing.
+func resumeSessionCmd(sess task.Session, dbPath string, ref takeoverRef) tea.Cmd {
 	if err := agent.CheckInstalled(); err != nil {
 		return errCmd(err)
 	}
@@ -314,7 +329,11 @@ func resumeSessionCmd(sess task.Session, dbPath string) tea.Cmd {
 		// needed — the live one is already wired with its own.
 		c = agent.AttachCmd(name, confPath)
 	} else {
-		mcpPath, mcpCleanup, _ := agent.WriteMCPConfig(sess.TaskID, 0, dbPath)
+		var stepRunID int64
+		if sess.StepRunID != nil {
+			stepRunID = *sess.StepRunID
+		}
+		mcpPath, mcpCleanup, _ := agent.WriteMCPConfig(sess.TaskID, stepRunID, dbPath)
 		hooksPath, hooksCleanup, _ := agent.WriteHookSettings(dbPath)
 		cleanup = func() { mcpCleanup(); hooksCleanup() }
 		c, name, confPath = wrapInTmux(
@@ -333,6 +352,7 @@ func resumeSessionCmd(sess task.Session, dbPath string) tea.Cmd {
 			externalID:   sess.ExternalID,
 			since:        since,
 			backgrounded: bg,
+			takeover:     ref,
 			err:          err,
 		}
 	})

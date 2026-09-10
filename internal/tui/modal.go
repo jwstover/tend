@@ -18,6 +18,10 @@ const (
 	// decision (runview.go): target is the gate's step run, extra the
 	// outcome being recorded, and the text becomes the gate's deliverable.
 	modalGateFeedback
+	// modalTakeoverDeliverable collects the deliverable for a step finished
+	// by hand after a takeover (takeover.go): target is the step run, extra
+	// the outcome chosen, and the text is what the next step receives.
+	modalTakeoverDeliverable
 )
 
 // modal is a centered floating input box. It owns presentation and text
