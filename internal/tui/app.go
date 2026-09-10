@@ -75,8 +75,8 @@ type Store interface {
 	SetSessionIdleIfUnchanged(ctx context.Context, externalID string, prevStatusUpdatedAt time.Time) (bool, error)
 	SetSessionEndedIfUnchanged(ctx context.Context, externalID string, prevStatusUpdatedAt time.Time) (bool, error)
 
-	// Workflow authoring (workflows.go). Edges are deferred to a later
-	// task; for now a workflow is its steps in sort order.
+	// Workflow authoring (workflows.go): the workflows, their steps in sort
+	// order, and the edges that route each step's outcomes.
 	ListWorkflows(ctx context.Context) ([]workflow.Workflow, error)
 	CreateWorkflow(ctx context.Context, name, description string) (workflow.Workflow, error)
 	RenameWorkflow(ctx context.Context, id int64, name string) error
@@ -90,6 +90,9 @@ type Store interface {
 	SetStepPrompt(ctx context.Context, id int64, prompt string) error
 	ReorderSteps(ctx context.Context, workflowID int64, ids []int64) error
 	DeleteStep(ctx context.Context, id int64) error
+	ListEdges(ctx context.Context, workflowID int64) ([]workflow.Edge, error)
+	SetEdge(ctx context.Context, fromStepID int64, outcome string, toStepID int64, maxIterations *int64) (workflow.Edge, error)
+	DeleteEdge(ctx context.Context, id int64) error
 
 	// Workflow runs (workflowrun.go): `w` creates the run and starts its
 	// runner in tmux (runner.Launch, which needs GetRun/SetRunTmuxSession,
@@ -259,6 +262,8 @@ const (
 	promptRenameWorkflow
 	promptDuplicateWorkflow
 	promptNewStep
+	promptEdgeOutcome // first stage of adding/editing an edge; the draft is wfEdgeDraft
+	promptEdgeMax     // last stage: max iterations, blank for unbounded
 )
 
 // flashKind picks the glyph + semantic color a footer flash leads with;
@@ -328,12 +333,14 @@ type (
 	// which a bare refreshMsg has no id to do with.
 	workflowsLoadedMsg struct {
 		workflows []workflow.Workflow
-		selected  int64 // workflow the steps belong to; 0 = none
+		selected  int64 // workflow the steps and edges belong to; 0 = none
 		steps     []workflow.Step
+		edges     []workflow.Edge
 	}
 	stepsLoadedMsg struct {
 		workflowID int64
 		steps      []workflow.Step
+		edges      []workflow.Edge
 	}
 	workflowCreatedMsg struct {
 		w      workflow.Workflow
@@ -570,7 +577,24 @@ type app struct {
 	wfFocus        wfPane
 	wfSelectStepID int64
 
-	// Step attribute picker overlay: model or permission mode for one step.
+	// The selected workflow's edges (loaded with its steps, for the same
+	// workflow), the cursor in the selected step's EDGES sub-list, and the
+	// outcome the next load should land that cursor on (a just-written
+	// edge). wfEdgeDraft is the edge being added or edited across the
+	// outcome prompt → step picker → max-iterations prompt, nil otherwise.
+	wfEdges         []workflow.Edge
+	wfEdgeCursor    int
+	wfSelectOutcome string
+	wfEdgeDraft     *edgeDraft
+
+	// Validation problems shown under the steps once `v` has been pressed
+	// on this workflow (wfProblemsFor); recomputed on every load so they
+	// clear as they are fixed.
+	wfProblems    []workflow.Problem
+	wfProblemsFor int64
+
+	// Step attribute picker overlay: model, permission mode, or the target
+	// step of the edge being drafted.
 	wfPickerOpen   bool
 	wfPickerKind   wfPickerKind
 	wfPickerStepID int64
@@ -983,7 +1007,7 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.wfCursor = i
 			}
 		}
-		a.setSteps(msg.selected, msg.steps)
+		a.setSteps(msg.selected, msg.steps, msg.edges)
 		return a, settle
 
 	case stepsLoadedMsg:
@@ -991,7 +1015,7 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if a.mode != modeWorkflows || msg.workflowID != a.selectedWorkflowID() {
 			return a, nil
 		}
-		a.setSteps(msg.workflowID, msg.steps)
+		a.setSteps(msg.workflowID, msg.steps, msg.edges)
 		return a, nil
 
 	case workflowCreatedMsg:
@@ -1753,8 +1777,12 @@ func (a app) deletePanel() string {
 		if row, ok := a.selectedAgent(); ok && row.headless() {
 			desc = "cancel its workflow run; the runner stops the step"
 		}
+	case a.mode == modeWorkflows && a.wfFocus == wfPaneEdges:
+		label = "delete edge"
+		desc = "delete; the outcome then ends the run"
 	case a.mode == modeWorkflows && a.wfFocus == wfPaneSteps:
 		label = "delete step"
+		desc = "delete, with every edge touching it"
 	case a.mode == modeWorkflows:
 		label = "delete workflow"
 		desc = "delete, with all its steps"
@@ -2106,16 +2134,21 @@ func (a *app) closePrompt() {
 	a.promptTarget = 0
 	a.sessionLabel = ""
 	a.wfRunPending = nil
+	a.wfEdgeDraft = nil
 	a.prompt.Reset()
 	a.prompt.Blur()
 }
 
 func (a app) submitPrompt() (tea.Model, tea.Cmd) {
-	kind, target, label, pendingRun := a.promptKind, a.promptTarget, a.sessionLabel, a.wfRunPending
+	kind, target, label, pendingRun, draft := a.promptKind, a.promptTarget, a.sessionLabel, a.wfRunPending, a.wfEdgeDraft
 	value := strings.TrimSpace(a.prompt.Value())
 	a.closePrompt()
 
 	switch kind {
+	case promptEdgeOutcome:
+		return a.submitEdgeOutcome(draft, value)
+	case promptEdgeMax:
+		return a, a.submitEdgeMax(draft, value)
 	case promptAdd:
 		if value == "" {
 			return a, nil

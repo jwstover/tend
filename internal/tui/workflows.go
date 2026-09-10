@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"charm.land/bubbles/v2/key"
@@ -11,17 +12,19 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/jwstover/tend/internal/task"
 	"github.com/jwstover/tend/internal/workflow"
 )
 
 // The workflows view is where workflow definitions are authored: the
-// workflows on the left, the selected one's steps on the right, in
-// sort_order. Edges (and the graph they imply) are a later task; for now a
-// workflow reads as a linear list, which is what the POC runs.
+// workflows on the left; on the right the selected one's steps in
+// sort_order, annotated with the graph their edges imply, then the
+// selected step's EDGES sub-list and its prompt. Three panes, walked with
+// h/l: workflows → steps → edges.
 //
-// Every store call is a tea.Cmd, and the two panes are tracked with
-// wfFocus rather than the list view's pane type because neither of these
-// columns is the task list or the detail viewport.
+// Every store call is a tea.Cmd, and the panes are tracked with wfFocus
+// rather than the list view's pane type because none of these columns is
+// the task list or the detail viewport.
 
 // wfPane is which workflows-view column owns the keyboard.
 type wfPane int
@@ -29,14 +32,16 @@ type wfPane int
 const (
 	wfPaneList  wfPane = iota // the workflows
 	wfPaneSteps               // the selected workflow's steps
+	wfPaneEdges               // the selected step's edges
 )
 
-// wfPickerKind is which step attribute the picker overlay is choosing.
+// wfPickerKind is what the picker overlay is choosing.
 type wfPickerKind int
 
 const (
 	wfPickModel wfPickerKind = iota
 	wfPickPermission
+	wfPickEdgeTarget // the step an edge being drafted leads to
 )
 
 // wfPickerOption is one row of the picker: what it shows and what it
@@ -59,6 +64,20 @@ var stepPermissionOptions = []wfPickerOption{
 	{"acceptEdits", "acceptEdits"},
 	{"bypassPermissions", "bypassPermissions"},
 	{"plan", "plan"},
+}
+
+// edgeDraft is an edge on its way through the three-stage add/edit flow:
+// outcome prompt, then the target step picker, then the max-iterations
+// prompt. editID is the edge being edited (0 when adding) and oldOutcome
+// its outcome before the edit: SetEdge upserts on (from, outcome), so a
+// renamed outcome means deleting the old row rather than re-pointing it.
+type edgeDraft struct {
+	fromStepID int64
+	editID     int64
+	oldOutcome string
+	outcome    string
+	toStepID   int64
+	max        *int64
 }
 
 // startWorkflows switches into the view. Loaded data is left in place so
@@ -105,21 +124,75 @@ func (a app) selectedStep() (workflow.Step, bool) {
 	return a.wfSteps[a.wfStepCursor], true
 }
 
-// setSteps installs a freshly loaded step list and settles the cursor:
-// on wfSelectStepID if one is pending and present, otherwise clamped to
-// the list.
-func (a *app) setSteps(workflowID int64, steps []workflow.Step) {
-	a.wfSteps, a.wfStepsFor = steps, workflowID
+// selectedStepEdges returns the edges leaving the selected step, in the
+// order ListEdges gives them (by outcome): the EDGES sub-list.
+func (a app) selectedStepEdges() []workflow.Edge {
+	st, ok := a.selectedStep()
+	if !ok {
+		return nil
+	}
+	var out []workflow.Edge
+	for _, e := range a.wfEdges {
+		if e.FromStepID == st.ID {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// selectedEdge returns the edge under the edges cursor.
+func (a app) selectedEdge() (workflow.Edge, bool) {
+	edges := a.selectedStepEdges()
+	if a.wfEdgeCursor < 0 || a.wfEdgeCursor >= len(edges) {
+		return workflow.Edge{}, false
+	}
+	return edges[a.wfEdgeCursor], true
+}
+
+// stepName is a step's name by id, for labels; "?" for an id not among the
+// loaded steps.
+func (a app) stepName(id int64) string {
+	for _, st := range a.wfSteps {
+		if st.ID == id {
+			return st.Name
+		}
+	}
+	return "?"
+}
+
+// setSteps installs a freshly loaded step list and edges and settles the
+// cursors: the step cursor on wfSelectStepID if one is pending and
+// present, otherwise clamped; the edge cursor on wfSelectOutcome likewise.
+// Validation problems are recomputed when they are showing for this
+// workflow, so fixing one makes it disappear without another `v`.
+func (a *app) setSteps(workflowID int64, steps []workflow.Step, edges []workflow.Edge) {
+	a.wfSteps, a.wfEdges, a.wfStepsFor = steps, edges, workflowID
 	if want := a.wfSelectStepID; want != 0 {
 		a.wfSelectStepID = 0
 		for i, st := range steps {
 			if st.ID == want {
 				a.wfStepCursor = i
-				return
 			}
 		}
 	}
 	a.wfStepCursor = max(min(a.wfStepCursor, len(steps)-1), 0)
+
+	stepEdges := a.selectedStepEdges()
+	if want := a.wfSelectOutcome; want != "" {
+		a.wfSelectOutcome = ""
+		for i, e := range stepEdges {
+			if e.Outcome == want {
+				a.wfEdgeCursor = i
+			}
+		}
+	}
+	a.wfEdgeCursor = max(min(a.wfEdgeCursor, len(stepEdges)-1), 0)
+
+	if workflowID != 0 && a.wfProblemsFor == workflowID {
+		a.wfProblems = workflow.Validate(steps, edges)
+	} else {
+		a.wfProblems, a.wfProblemsFor = nil, 0
+	}
 }
 
 // setWorkflowCursor moves between workflows and fetches the new
@@ -129,7 +202,7 @@ func (a *app) setWorkflowCursor(row int) tea.Cmd {
 		return nil
 	}
 	a.wfCursor = row
-	a.wfStepCursor = 0
+	a.wfStepCursor, a.wfEdgeCursor = 0, 0
 	return a.loadSteps(a.workflows[row].ID)
 }
 
@@ -137,20 +210,25 @@ func (a *app) setWorkflowCursor(row int) tea.Cmd {
 
 // handleWorkflowsKey owns the keyboard in the workflows view. The `dd`
 // chord is handled here rather than in handleKey's shared branch because
-// what it deletes depends on which of these two panes is focused.
+// what it deletes depends on which of the three panes is focused.
 func (a app) handleWorkflowsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if a.deletePending {
 		a.deletePending = false
 		a.resize()
 		if key.Matches(msg, a.keys.Delete) {
-			if a.wfFocus == wfPaneSteps {
+			switch a.wfFocus {
+			case wfPaneEdges:
+				if e, ok := a.selectedEdge(); ok {
+					return a, a.deleteEdge(e)
+				}
+			case wfPaneSteps:
 				if st, ok := a.selectedStep(); ok {
 					return a, a.deleteStep(st)
 				}
-				return a, nil
-			}
-			if w, ok := a.selectedWorkflow(); ok {
-				return a, a.deleteWorkflow(w)
+			default:
+				if w, ok := a.selectedWorkflow(); ok {
+					return a, a.deleteWorkflow(w)
+				}
 			}
 		}
 		return a, nil
@@ -165,7 +243,11 @@ func (a app) handleWorkflowsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	case key.Matches(msg, a.keys.Back):
 		// esc backs out one pane at a time, like the detail pane.
-		if a.wfFocus == wfPaneSteps {
+		switch a.wfFocus {
+		case wfPaneEdges:
+			a.wfFocus = wfPaneSteps
+			return a, nil
+		case wfPaneSteps:
 			a.wfFocus = wfPaneList
 			return a, nil
 		}
@@ -179,9 +261,14 @@ func (a app) handleWorkflowsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return a, nil
 	case key.Matches(msg, a.keys.Note):
 		return a, a.modal.Open(modalLog, true, "note", 0, "")
+	case key.Matches(msg, a.keys.Validate):
+		return a, a.validateSelectedWorkflow()
 	}
 
-	if a.wfFocus == wfPaneSteps {
+	switch a.wfFocus {
+	case wfPaneEdges:
+		return a.handleEdgesKey(msg)
+	case wfPaneSteps:
 		return a.handleStepsKey(msg)
 	}
 	return a.handleWorkflowListKey(msg)
@@ -220,8 +307,6 @@ func (a app) handleWorkflowListKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			a.resize()
 		}
 		return a, nil
-	case key.Matches(msg, a.keys.Validate):
-		return a, a.validateSelectedWorkflow()
 	}
 
 	switch msg.String() {
@@ -233,20 +318,31 @@ func (a app) handleWorkflowListKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return a, nil
 }
 
-// handleStepsKey is the right pane: navigate, and edit the selected step
-// — name, prompt, model, permission mode, kind, order.
+// handleStepsKey is the middle pane: navigate, and edit the selected step
+// — name, prompt, model, permission mode, kind, order — or step into its
+// edges.
 func (a app) handleStepsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, a.keys.ExpandClose):
 		a.wfFocus = wfPaneList
 		return a, nil
+	case key.Matches(msg, a.keys.ExpandOpen), key.Matches(msg, a.keys.ExpandToggle):
+		if _, ok := a.selectedStep(); ok {
+			a.wfFocus = wfPaneEdges
+			a.wfEdgeCursor = 0
+		}
+		return a, nil
 	case key.Matches(msg, a.keys.ScrollDown):
 		if a.wfStepCursor < len(a.wfSteps)-1 {
 			a.wfStepCursor++
+			a.wfEdgeCursor = 0
 		}
 		return a, nil
 	case key.Matches(msg, a.keys.ScrollUp):
-		a.wfStepCursor = max(a.wfStepCursor-1, 0)
+		if a.wfStepCursor > 0 {
+			a.wfStepCursor--
+			a.wfEdgeCursor = 0
+		}
 		return a, nil
 
 	case key.Matches(msg, a.keys.QuickAdd):
@@ -254,8 +350,6 @@ func (a app) handleStepsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return a, a.openPrompt(promptNewStep, fmt.Sprintf("new step in %s: ", w.Name), w.ID)
 		}
 		return a, nil
-	case key.Matches(msg, a.keys.Validate):
-		return a, a.validateSelectedWorkflow()
 	}
 
 	st, ok := a.selectedStep()
@@ -292,9 +386,54 @@ func (a app) handleStepsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	switch msg.String() {
 	case "G":
-		a.wfStepCursor = len(a.wfSteps) - 1
+		a.wfStepCursor, a.wfEdgeCursor = len(a.wfSteps)-1, 0
 	case "g":
-		a.wfStepCursor = 0
+		a.wfStepCursor, a.wfEdgeCursor = 0, 0
+	}
+	return a, nil
+}
+
+// handleEdgesKey is the right-most pane: the selected step's edges.
+// Navigate, add, edit, delete.
+func (a app) handleEdgesKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	edges := a.selectedStepEdges()
+	switch {
+	case key.Matches(msg, a.keys.ExpandClose):
+		a.wfFocus = wfPaneSteps
+		return a, nil
+	case key.Matches(msg, a.keys.ScrollDown):
+		if a.wfEdgeCursor < len(edges)-1 {
+			a.wfEdgeCursor++
+		}
+		return a, nil
+	case key.Matches(msg, a.keys.ScrollUp):
+		a.wfEdgeCursor = max(a.wfEdgeCursor-1, 0)
+		return a, nil
+	case key.Matches(msg, a.keys.QuickAdd):
+		if st, ok := a.selectedStep(); ok {
+			return a, a.startEdgeDraft(st, nil)
+		}
+		return a, nil
+	case key.Matches(msg, a.keys.EditBody):
+		if st, ok := a.selectedStep(); ok {
+			if e, ok := a.selectedEdge(); ok {
+				return a, a.startEdgeDraft(st, &e)
+			}
+		}
+		return a, nil
+	case key.Matches(msg, a.keys.Delete):
+		if _, ok := a.selectedEdge(); ok {
+			a.deletePending = true
+			a.resize()
+		}
+		return a, nil
+	}
+
+	switch msg.String() {
+	case "G":
+		a.wfEdgeCursor = max(len(edges)-1, 0)
+	case "g":
+		a.wfEdgeCursor = 0
 	}
 	return a, nil
 }
@@ -325,23 +464,17 @@ func (a app) submitWorkflowPrompt(kind promptKind, target int64, value string) t
 			return workflowCreatedMsg{w: w, status: flash{kind: flashAdd, text: "duplicated as " + w.Name}}
 		}
 	case promptNewStep:
-		return func() tea.Msg {
-			st, err := a.store.AddStep(a.ctx, target, value, workflow.StepAgent)
-			if err != nil {
-				return errMsg{err}
-			}
-			return stepCreatedMsg{st: st, status: flash{kind: flashAdd, text: "step: " + st.Name}}
-		}
+		return a.addStep(target, value)
 	}
 	return nil
 }
 
 // --- commands ---
 
-// loadWorkflows fetches every workflow and the steps of the one the view
-// should land on: wantID if it still exists, otherwise whichever sits at
-// the current cursor row (so a delete lands on a neighbour, not on the
-// first row).
+// loadWorkflows fetches every workflow and the steps and edges of the one
+// the view should land on: wantID if it still exists, otherwise whichever
+// sits at the current cursor row (so a delete lands on a neighbour, not
+// on the first row).
 func (a app) loadWorkflows(wantID int64) tea.Cmd {
 	cursor := a.wfCursor
 	return func() tea.Msg {
@@ -359,23 +492,71 @@ func (a app) loadWorkflows(wantID int64) tea.Cmd {
 			sel = wfs[max(min(cursor, len(wfs)-1), 0)].ID
 		}
 		var steps []workflow.Step
+		var edges []workflow.Edge
 		if sel != 0 {
-			if steps, err = a.store.ListSteps(a.ctx, sel); err != nil {
+			if steps, edges, err = a.loadGraph(sel); err != nil {
 				return errMsg{err}
 			}
 		}
-		return workflowsLoadedMsg{workflows: wfs, selected: sel, steps: steps}
+		return workflowsLoadedMsg{workflows: wfs, selected: sel, steps: steps, edges: edges}
 	}
 }
 
-// loadSteps fetches one workflow's steps, for a cursor move.
+// loadSteps fetches one workflow's steps and edges, for a cursor move.
 func (a app) loadSteps(workflowID int64) tea.Cmd {
 	return func() tea.Msg {
-		steps, err := a.store.ListSteps(a.ctx, workflowID)
+		steps, edges, err := a.loadGraph(workflowID)
 		if err != nil {
 			return errMsg{err}
 		}
-		return stepsLoadedMsg{workflowID: workflowID, steps: steps}
+		return stepsLoadedMsg{workflowID: workflowID, steps: steps, edges: edges}
+	}
+}
+
+// loadGraph reads a workflow's steps and edges together; both loads use
+// it so the two are never from different moments.
+func (a app) loadGraph(workflowID int64) ([]workflow.Step, []workflow.Edge, error) {
+	steps, err := a.store.ListSteps(a.ctx, workflowID)
+	if err != nil {
+		return nil, nil, err
+	}
+	edges, err := a.store.ListEdges(a.ctx, workflowID)
+	if err != nil {
+		return nil, nil, err
+	}
+	return steps, edges, nil
+}
+
+// addStep appends an agent step to workflowID and, when the step before
+// it had no edges, links them with done -> new step. That is the edge a
+// linear workflow wants every time, so it is the default; a step that
+// already routes something is left alone, since its author has decided
+// where its outcomes go.
+func (a app) addStep(workflowID int64, name string) tea.Cmd {
+	return func() tea.Msg {
+		before, err := a.store.ListSteps(a.ctx, workflowID)
+		if err != nil {
+			return errMsg{err}
+		}
+		st, err := a.store.AddStep(a.ctx, workflowID, name, workflow.StepAgent)
+		if err != nil {
+			return errMsg{err}
+		}
+		status := flash{kind: flashAdd, text: "step: " + st.Name}
+		if len(before) > 0 {
+			prev := before[len(before)-1]
+			out, err := a.store.OutgoingEdges(a.ctx, prev.ID)
+			if err != nil {
+				return errMsg{err}
+			}
+			if len(out) == 0 {
+				if _, err := a.store.SetEdge(a.ctx, prev.ID, workflow.OutcomeDone, st.ID, nil); err != nil {
+					return errMsg{err}
+				}
+				status.text += fmt.Sprintf(" (%s %s -> %s)", prev.Name, workflow.OutcomeDone, st.Name)
+			}
+		}
+		return stepCreatedMsg{st: st, status: status}
 	}
 }
 
@@ -399,6 +580,15 @@ func (a app) deleteStep(st workflow.Step) tea.Cmd {
 		}
 		return refreshMsg{status: flash{kind: flashDone, text: "deleted step " + st.Name}}
 	}
+}
+
+// deleteEdge removes one edge; the cursor stays on its step.
+func (a *app) deleteEdge(e workflow.Edge) tea.Cmd {
+	a.wfSelectStepID = e.FromStepID
+	text := fmt.Sprintf("deleted edge %s on %s", a.stepName(e.FromStepID), e.Outcome)
+	return a.mutate(flash{kind: flashDone, text: text}, func() error {
+		return a.store.DeleteEdge(a.ctx, e.ID)
+	})
 }
 
 // inUseOrErr turns the store's ErrInUse into a flash that names the
@@ -471,38 +661,142 @@ func (a app) saveStepPrompt(stepID int64, path string) tea.Cmd {
 	}
 }
 
-// validateSelectedWorkflow checks every step prompt of the selected
-// workflow as a template and reports the first failure by step name.
-// ValidatePrompt is pure, so this runs in Update; it is a Cmd only so the
-// result arrives as a flash like every other outcome.
-func (a app) validateSelectedWorkflow() tea.Cmd {
+// validateSelectedWorkflow is `v`: it checks the selected workflow's graph
+// and prompts (workflow.Validate) and shows the problems under the steps,
+// where they stay -- recomputed on every reload -- until they are fixed.
+// The flash carries the first problem and a count. Validate is pure, so
+// it runs here in Update; the flash is a Cmd only so it arrives like every
+// other outcome.
+func (a *app) validateSelectedWorkflow() tea.Cmd {
 	w, ok := a.selectedWorkflow()
 	if !ok {
 		return nil
 	}
-	steps := a.wfSteps
+	steps, edges := a.wfSteps, a.wfEdges
 	if a.wfStepsFor != w.ID {
-		steps = nil
+		steps, edges = nil, nil
 	}
-	return func() tea.Msg {
-		for _, st := range steps {
-			if err := workflow.ValidatePrompt(st.PromptMD); err != nil {
-				return statusMsg{isErr: true, text: fmt.Sprintf("%s: %v", st.Name, err)}
+	a.wfProblems, a.wfProblemsFor = workflow.Validate(steps, edges), w.ID
+	if n := len(a.wfProblems); n > 0 {
+		text := a.wfProblems[0].String()
+		if n > 1 {
+			text += fmt.Sprintf(" (+%d more)", n-1)
+		}
+		return statusCmd(flash{isErr: true, text: text})
+	}
+	noun := "steps"
+	if len(steps) == 1 {
+		noun = "step"
+	}
+	return statusCmd(flash{kind: flashDone, text: fmt.Sprintf("%s: %d %s, graph and prompts valid", w.Name, len(steps), noun)})
+}
+
+// --- edge add / edit flow ---
+
+// startEdgeDraft opens the outcome prompt for a new edge leaving st, or
+// for existing (seeded with its values) when editing. The draft carries
+// the answers through the step picker to the max-iterations prompt;
+// escaping any stage drops it.
+func (a *app) startEdgeDraft(st workflow.Step, existing *workflow.Edge) tea.Cmd {
+	d := &edgeDraft{fromStepID: st.ID}
+	value := ""
+	if existing != nil {
+		d.editID, d.oldOutcome = existing.ID, existing.Outcome
+		d.outcome, d.toStepID, d.max = existing.Outcome, existing.ToStepID, existing.MaxIterations
+		value = existing.Outcome
+	}
+	cmd := a.openPromptWith(promptEdgeOutcome, fmt.Sprintf("%s on outcome: ", st.Name), value, st.ID)
+	a.wfEdgeDraft = d
+	return cmd
+}
+
+// submitEdgeOutcome is stage one done: normalize the outcome the way
+// edges are stored, then ask which step it leads to.
+func (a app) submitEdgeOutcome(draft *edgeDraft, value string) (tea.Model, tea.Cmd) {
+	if draft == nil {
+		return a, nil
+	}
+	o, err := workflow.NormalizeOutcome(value)
+	if err != nil {
+		a.status = flash{isErr: true, text: "an edge needs an outcome name"}
+		return a, nil
+	}
+	draft.outcome = o
+	a.wfEdgeDraft = draft
+	a.openEdgeTargetPicker(draft)
+	return a, nil
+}
+
+// openEdgeTargetPicker arms the picker over the workflow's steps, starting
+// on the draft's current target, or -- for a new edge -- the step after
+// its source, the linear default.
+func (a *app) openEdgeTargetPicker(draft *edgeDraft) {
+	a.wfPickerOpen, a.wfPickerKind, a.wfPickerStepID, a.wfPickerSel = true, wfPickEdgeTarget, draft.fromStepID, 0
+	want := draft.toStepID
+	if want == 0 {
+		for i, st := range a.wfSteps {
+			if st.ID == draft.fromStepID && i+1 < len(a.wfSteps) {
+				want = a.wfSteps[i+1].ID
 			}
 		}
-		noun := "prompts"
-		if len(steps) == 1 {
-			noun = "prompt"
+	}
+	for i, o := range a.wfPickerOptions() {
+		if o.value == strconv.FormatInt(want, 10) {
+			a.wfPickerSel = i
 		}
-		return statusMsg{kind: flashDone, text: fmt.Sprintf("%s: %d %s valid", w.Name, len(steps), noun)}
+	}
+}
+
+// submitEdgeMax is the last stage: parse the bound (blank = unbounded)
+// and write the edge. A renamed outcome deletes the old row first, since
+// SetEdge upserts on (from, outcome). The cursors land on the edge.
+func (a *app) submitEdgeMax(draft *edgeDraft, value string) tea.Cmd {
+	if draft == nil || draft.toStepID == 0 {
+		return nil
+	}
+	if value != "" {
+		n, err := strconv.ParseInt(value, 10, 64)
+		if err != nil || n < 1 {
+			return statusCmd(flash{isErr: true, text: fmt.Sprintf("max iterations %q: need a whole number of at least 1, or blank for unbounded", value)})
+		}
+		draft.max = &n
+	} else {
+		draft.max = nil
+	}
+	a.wfSelectStepID, a.wfSelectOutcome = draft.fromStepID, draft.outcome
+	d := *draft
+	text := fmt.Sprintf("edge: %s on %s -> %s", a.stepName(d.fromStepID), d.outcome, a.stepName(d.toStepID))
+	if d.max != nil {
+		text += fmt.Sprintf(" (max %d)", *d.max)
+	}
+	return func() tea.Msg {
+		if d.editID != 0 && d.oldOutcome != d.outcome {
+			if err := a.store.DeleteEdge(a.ctx, d.editID); err != nil {
+				return errMsg{err}
+			}
+		}
+		if _, err := a.store.SetEdge(a.ctx, d.fromStepID, d.outcome, d.toStepID, d.max); err != nil {
+			return errMsg{err}
+		}
+		return refreshMsg{status: flash{kind: flashEdit, text: text}}
 	}
 }
 
 // --- picker overlay ---
 
+// wfPickerOptions is the picker's rows for its current kind. For an edge
+// target the rows are the workflow's steps, numbered as the preview
+// numbers them, with the step id as the value.
 func (a app) wfPickerOptions() []wfPickerOption {
-	if a.wfPickerKind == wfPickPermission {
+	switch a.wfPickerKind {
+	case wfPickPermission:
 		return stepPermissionOptions
+	case wfPickEdgeTarget:
+		opts := make([]wfPickerOption, 0, len(a.wfSteps))
+		for _, st := range a.wfSteps {
+			opts = append(opts, wfPickerOption{label: st.Name, value: strconv.FormatInt(st.ID, 10)})
+		}
+		return opts
 	}
 	return stepModelOptions
 }
@@ -535,10 +829,28 @@ func (a app) handleWfPickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		a.closeWfPicker()
 		st, ok := a.selectedStep()
 		if !ok || st.ID != stepID || idx < 0 || idx >= len(opts) {
+			a.wfEdgeDraft = nil
 			return a, nil
 		}
 		o := opts[idx]
-		if kind == wfPickPermission {
+		switch kind {
+		case wfPickEdgeTarget:
+			draft := a.wfEdgeDraft
+			if draft == nil || draft.fromStepID != stepID {
+				a.wfEdgeDraft = nil
+				return a, nil
+			}
+			draft.toStepID, _ = strconv.ParseInt(o.value, 10, 64)
+			seed := ""
+			if draft.max != nil {
+				seed = strconv.FormatInt(*draft.max, 10)
+			}
+			cmd := a.openPromptWith(promptEdgeMax,
+				fmt.Sprintf("%s on %s -> %s · max iterations (blank = unbounded): ", st.Name, draft.outcome, o.label),
+				seed, stepID)
+			a.wfEdgeDraft = draft
+			return a, cmd
+		case wfPickPermission:
 			status := flash{kind: flashEdit, text: fmt.Sprintf("%s permission mode → %s", st.Name, o.label)}
 			return a, a.setStepAttr(st.ID, status, func() error {
 				return a.store.SetStepPermissionMode(a.ctx, st.ID, o.value)
@@ -553,6 +865,7 @@ func (a app) handleWfPickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
 		a.closeWfPicker()
+		a.wfEdgeDraft = nil
 		return a, nil
 	case "enter":
 		return apply(a.wfPickerSel)
@@ -588,17 +901,21 @@ func (a app) wfPickerView() string {
 			strings.Repeat(" ", gap) + cb.Render(g.RuleV)
 	}
 
-	what := "model"
-	if a.wfPickerKind == wfPickPermission {
-		what = "permission mode"
-	}
 	name := ""
 	if st, ok := a.selectedStep(); ok {
 		name = truncTail(st.Name, max(w-30, 10), g.Ellipsis)
 	}
+	var title string
+	switch {
+	case a.wfPickerKind == wfPickEdgeTarget && a.wfEdgeDraft != nil:
+		title = s.Title.Render(fmt.Sprintf("%s on %s -> ", name, a.wfEdgeDraft.outcome)) + s.Dimmed.Render("which step?")
+	case a.wfPickerKind == wfPickPermission:
+		title = s.Title.Render("permission mode for ") + s.Dimmed.Render(name)
+	default:
+		title = s.Title.Render("model for ") + s.Dimmed.Render(name)
+	}
 	lines := []string{"  " + cb.Render(g.BoxTL+hbar+g.BoxTR)}
-	lines = append(lines, row(s.Accent.Bold(true).Render(g.CaretClosed+" ")+
-		s.Title.Render(what+" for ")+s.Dimmed.Render(name)))
+	lines = append(lines, row(s.Accent.Bold(true).Render(g.CaretClosed+" ")+title))
 	lines = append(lines, "  "+cb.Render(g.TeeRight+hbar+g.TeeLeft))
 
 	opts := a.wfPickerOptions()
@@ -627,13 +944,14 @@ func (a app) workflowsWidths() (leftW, rightW int) {
 	return leftW, w - leftW - 1
 }
 
-// workflowsView renders the two panes fitted to bodyHeight rows.
+// workflowsView renders the two columns fitted to bodyHeight rows.
 func (a app) workflowsView() string {
 	h := max(a.bodyHeight, 1)
 	leftW, rightW := a.workflowsWidths()
 
+	right, focusLine := a.stepsPaneLines(rightW)
 	left := fitPane(a.workflowListLines(leftW), leftW, h, 0)
-	right := fitPane(a.stepsPaneLines(rightW), rightW, h, a.stepsScroll(h, rightW))
+	right = fitPane(right, rightW, h, paneScroll(len(right), focusLine, h))
 	divider := strings.TrimSuffix(strings.Repeat(
 		a.styles.Rule.Render(a.styles.Glyphs.RuleV)+"\n", h), "\n")
 
@@ -641,19 +959,14 @@ func (a app) workflowsView() string {
 		strings.Join(left, "\n"), divider, strings.Join(right, "\n"))
 }
 
-// stepsScroll keeps the selected step row on screen when the steps pane
-// outgrows the body; the prompt preview beneath scrolls with it.
-func (a app) stepsScroll(height, width int) int {
-	total := len(a.stepsPaneLines(width))
-	if total <= height {
+// paneScroll is the offset that keeps line focus of a total-line pane on
+// a height-row screen: none until the focused line would fall off the
+// bottom, then just enough.
+func paneScroll(total, focus, height int) int {
+	if total <= height || focus < height {
 		return 0
 	}
-	// Row i of the steps sits at line offset 2+i (blank + heading).
-	line := 2 + a.wfStepCursor
-	if line < height {
-		return 0
-	}
-	return min(line-height+1, total-height)
+	return min(focus-height+1, total-height)
 }
 
 // workflowListLines lays out the left pane: heading, then one row per
@@ -694,37 +1007,42 @@ func (a app) workflowListLines(width int) []string {
 	return lines
 }
 
-// stepsPaneLines lays out the right pane: heading naming the workflow,
-// one row per step (number, name, then kind · model · permission mode),
-// and beneath them the selected step's prompt template.
-func (a app) stepsPaneLines(width int) []string {
+// stepsPaneLines lays out the right pane and reports which line the
+// focused row is on, for scrolling: a heading naming the workflow; one
+// row per step (number, name, the graph annotations workflow.Preview
+// gives it, then kind · model · permission mode); the selected step's
+// EDGES; the validation PROBLEMS once `v` has found some; and the
+// selected step's prompt template.
+func (a app) stepsPaneLines(width int) (lines []string, focusLine int) {
 	s, g := a.styles, a.styles.Glyphs
 	focused := a.wfFocus == wfPaneSteps
 
 	w, ok := a.selectedWorkflow()
 	if !ok {
-		return []string{"", "  " + s.SubHeader.Render("STEPS")}
+		return []string{"", "  " + s.SubHeader.Render("STEPS")}, 0
 	}
-	lines := []string{"", "  " + s.SubHeader.Render("STEPS") + s.Dimmed.Render(" · "+w.Name)}
+	lines = []string{"", "  " + s.SubHeader.Render("STEPS") + s.Dimmed.Render(" · "+w.Name)}
 
-	steps := a.wfSteps
+	steps, edges := a.wfSteps, a.wfEdges
 	if a.wfStepsFor != w.ID {
-		steps = nil
+		steps, edges = nil, nil
 	}
 	if len(steps) == 0 {
 		lines = append(lines, "",
 			"  "+s.Muted.Render("no steps yet — press ")+s.FooterKey.Render("l")+
 				s.Muted.Render(" then ")+s.FooterKey.Render("n")+s.Muted.Render(" to add one"))
-		return lines
+		return lines, 0
 	}
 
-	for i, st := range steps {
+	focusLine = 2 + a.wfStepCursor
+	for i, row := range workflow.Preview(steps, edges) {
+		st := row.Step
 		selected := i == a.wfStepCursor
 		gutter, gutterStyle := "  ", s.Normal
 		if selected {
 			gutter, gutterStyle = g.SelBar+" ", s.SelBar
 		}
-		num := fmt.Sprintf("%d  ", i+1)
+		num := fmt.Sprintf("%d  ", row.Number)
 		meta := string(st.Kind)
 		if st.Model != "" {
 			meta += " · " + st.Model
@@ -735,6 +1053,11 @@ func (a app) stepsPaneLines(width int) []string {
 		if strings.TrimSpace(st.PromptMD) == "" && st.Kind == workflow.StepAgent {
 			meta += " · no prompt"
 		}
+		var notes []string
+		for _, n := range row.Annotations() {
+			notes = append(notes, "["+n+"]")
+		}
+		ann := strings.Join(notes, "  ")
 		nameStyle := s.Dimmed
 		switch {
 		case selected && focused:
@@ -742,22 +1065,99 @@ func (a app) stepsPaneLines(width int) []string {
 		case selected:
 			nameStyle = s.Title
 		}
-		nameW := max(width-runeWidth(gutter)-runeWidth(num)-runeWidth(meta)-3, 8)
+		// Budget: gutter, number, name, two spaces, annotations, a gap, meta.
+		// Meta yields first when the row is tight, then the annotations.
+		fixed := runeWidth(gutter) + runeWidth(num)
+		if fixed+8+2+runeWidth(ann)+1+runeWidth(meta) > width {
+			meta = ""
+		}
+		annW := max(min(runeWidth(ann), width-fixed-8-2-1-runeWidth(meta)), 0)
+		if ann != "" {
+			ann = truncTail(ann, annW, g.Ellipsis)
+		}
+		nameW := max(width-fixed-runeWidth(meta)-runeWidth(ann)-3, 8)
 		label := truncTail(st.Name, nameW, g.Ellipsis)
-		gap := max(width-runeWidth(gutter)-runeWidth(num)-runeWidth(label)-runeWidth(meta)-1, 1)
-		lines = append(lines, gutterStyle.Render(gutter)+s.Muted.Render(num)+nameStyle.Render(label)+
-			strings.Repeat(" ", gap)+s.Faint.Render(meta))
+		annStyle := s.Muted
+		if row.End {
+			annStyle = s.Faint
+		}
+		line := gutterStyle.Render(gutter) + s.Muted.Render(num) + nameStyle.Render(label)
+		if ann != "" {
+			line += "  " + annStyle.Render(ann)
+		}
+		gap := max(width-fixed-runeWidth(label)-runeWidth(ann)-runeWidth(meta)-3, 1)
+		if ann == "" {
+			gap += 2
+		}
+		lines = append(lines, line+strings.Repeat(" ", gap)+s.Faint.Render(meta))
 	}
 
 	st, ok := a.selectedStep()
 	if !ok {
-		return lines
+		return lines, focusLine
 	}
+
+	// EDGES: what leaves the selected step, one row per outcome.
+	lines = append(lines, "", "  "+s.SubHeader.Render("EDGES")+s.Dimmed.Render(" · "+st.Name))
+	stepEdges := a.selectedStepEdges()
+	edgesFocused := a.wfFocus == wfPaneEdges
+	if edgesFocused {
+		focusLine = len(lines)
+	}
+	if len(stepEdges) == 0 {
+		hint := s.Muted.Render("none — its one outcome, done, ends the run · ")
+		if edgesFocused {
+			hint += s.FooterKey.Render("n") + s.Muted.Render(" adds one")
+		} else {
+			hint += s.FooterKey.Render("l") + s.Muted.Render(" then ") + s.FooterKey.Render("n") + s.Muted.Render(" adds one")
+		}
+		lines = append(lines, "  "+hint)
+	}
+	for i, e := range stepEdges {
+		selected := i == a.wfEdgeCursor
+		gutter, gutterStyle := "  ", s.Normal
+		if selected {
+			gutter, gutterStyle = g.SelBar+" ", s.SelBar
+			if edgesFocused {
+				focusLine = len(lines)
+			}
+		}
+		text := fmt.Sprintf("on %s -> %s", e.Outcome, a.stepName(e.ToStepID))
+		if e.MaxIterations != nil {
+			text += fmt.Sprintf(" (max %d)", *e.MaxIterations)
+		}
+		style := s.Dimmed
+		switch {
+		case selected && edgesFocused:
+			style = s.Title.Bold(true)
+		case selected:
+			style = s.Title
+		}
+		lines = append(lines, gutterStyle.Render(gutter)+style.Render(truncTail(text, max(width-4, 8), g.Ellipsis)))
+	}
+
+	// PROBLEMS: only once `v` has been pressed on this workflow, and only
+	// while any remain.
+	if len(a.wfProblems) > 0 {
+		lines = append(lines, "", "  "+s.SubHeader.Render("PROBLEMS")+
+			s.Dimmed.Render(fmt.Sprintf(" · %d", len(a.wfProblems))))
+		mark := s.State[task.StateBlocked]
+		for _, p := range a.wfProblems {
+			for j, l := range strings.Split(ansi.Wrap(p.String(), max(width-6, 10), ""), "\n") {
+				lead := "  " + mark.Render(g.State[task.StateBlocked]) + " "
+				if j > 0 {
+					lead = "    "
+				}
+				lines = append(lines, lead+s.Dimmed.Render(l))
+			}
+		}
+	}
+
 	lines = append(lines, "", "  "+s.SubHeader.Render("PROMPT")+s.Dimmed.Render(" · "+st.Name))
 	if strings.TrimSpace(st.PromptMD) == "" {
 		lines = append(lines, "  "+s.Muted.Render("empty — press ")+s.FooterKey.Render("e")+
 			s.Muted.Render(" to write it in $EDITOR"))
-		return lines
+		return lines, focusLine
 	}
 	for _, para := range strings.Split(strings.TrimRight(st.PromptMD, "\n"), "\n") {
 		if para == "" {
@@ -768,16 +1168,22 @@ func (a app) stepsPaneLines(width int) []string {
 			lines = append(lines, "  "+s.Dimmed.Render(l))
 		}
 	}
-	return lines
+	return lines, focusLine
 }
 
 // workflowsHints is the footer for the view, per focused pane.
 func (a app) workflowsHints() [][2]string {
-	if a.wfFocus == wfPaneSteps {
+	switch a.wfFocus {
+	case wfPaneEdges:
 		return [][2]string{
-			{"j/k", "move"}, {"h", "to workflows"}, {"n", "add step"}, {"e", "edit prompt"},
+			{"j/k", "move"}, {"h/esc", "to steps"}, {"n", "add edge"}, {"e", "edit"},
+			{"dd", "delete"}, {"v", "validate"}, {"?", "help"},
+		}
+	case wfPaneSteps:
+		return [][2]string{
+			{"j/k", "move"}, {"h", "to workflows"}, {"l/⏎", "edges"}, {"n", "add step"}, {"e", "edit prompt"},
 			{"m", "model"}, {"p", "permission"}, {"t", "agent/gate"}, {"J/K", "reorder"},
-			{"dd", "delete"}, {"v", "validate"}, {"esc", "back"},
+			{"dd", "delete"}, {"v", "validate"},
 		}
 	}
 	return [][2]string{
