@@ -36,7 +36,8 @@ type keyMap struct {
 	ProjectCwd     key.Binding // set the selected project's default cwd for new sessions
 
 	// Workflows authoring view (workflows.go). `n`, `R`, `e` and `dd`
-	// reuse QuickAdd, Rename, EditBody and Delete there.
+	// reuse QuickAdd, Rename, EditBody and Delete there; in the edges
+	// pane `n`, `e` and `dd` add, edit and delete an edge.
 	Workflows      key.Binding // open the view
 	Duplicate      key.Binding // copy the selected workflow under a new name
 	StepModel      key.Binding // model picker for the selected step
@@ -44,7 +45,7 @@ type keyMap struct {
 	StepKind       key.Binding // flip the selected step between agent and gate
 	StepDown       key.Binding // move the selected step later in the order
 	StepUp         key.Binding // move the selected step earlier in the order
-	Validate       key.Binding // check every step prompt of the selected workflow
+	Validate       key.Binding // check the selected workflow's graph and prompts
 
 	// Run view (runview.go). j/k, tab, g/G, esc reuse the shared bindings;
 	// these are the run controls, each a write the CLI could make too.
@@ -143,7 +144,7 @@ func defaultKeyMap() keyMap {
 		StepKind: key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "agent / gate")),
 		StepDown: key.NewBinding(key.WithKeys("J"), key.WithHelp("J", "move down")),
 		StepUp:   key.NewBinding(key.WithKeys("K"), key.WithHelp("K", "move up")),
-		Validate: key.NewBinding(key.WithKeys("v"), key.WithHelp("v", "validate prompts")),
+		Validate: key.NewBinding(key.WithKeys("v"), key.WithHelp("v", "validate")),
 
 		CancelRun: key.NewBinding(key.WithKeys("c"), key.WithHelp("cc", "cancel run")),
 		PauseRun:  key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "pause / resume")),

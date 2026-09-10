@@ -148,10 +148,302 @@ func TestWorkflowsAuthoringRoundTrip(t *testing.T) {
 		t.Errorf("prompt preview missing the saved template:\n%s", content)
 	}
 
-	// v validates every step prompt of the selected workflow.
+	// v validates the graph and every step prompt of the selected workflow.
 	m = drive(t, m, keyPress('v'))
-	if st := m.(app).status; st.isErr || !strings.Contains(st.text, "1 prompt valid") {
-		t.Errorf("validate flash = %+v, want '1 prompt valid'", st)
+	if st := m.(app).status; st.isErr || !strings.Contains(st.text, "1 step, graph and prompts valid") {
+		t.Errorf("validate flash = %+v, want '1 step, graph and prompts valid'", st)
+	}
+}
+
+// waitForEdges polls until a workflow's edges satisfy check.
+func waitForEdges(t *testing.T, s *store.Store, workflowID int64, what string, check func([]workflow.Edge) bool) []workflow.Edge {
+	t.Helper()
+	var got []workflow.Edge
+	waitFor(t, what, func() bool {
+		var err error
+		got, err = s.ListEdges(context.Background(), workflowID)
+		return err == nil && check(got)
+	})
+	return got
+}
+
+// addStepFromTUI runs the `n` → name → ⏎ flow in the steps pane and
+// waits for the step (and any default edge) to land, then reloads.
+func addStepFromTUI(t *testing.T, m tea.Model, s *store.Store, workflowID int64, name string, wantSteps int) tea.Model {
+	t.Helper()
+	m = drive(t, m, keyPress('n'))
+	m = typeText(t, m, name)
+	m = drive(t, m, enter())
+	waitForSteps(t, s, workflowID, "step "+name, func(st []workflow.Step) bool { return len(st) == wantSteps })
+	if wantSteps > 1 {
+		waitForEdges(t, s, workflowID, "default edge into "+name, func(es []workflow.Edge) bool { return len(es) == wantSteps-1 })
+	}
+	return reloadWorkflows(t, m, workflowID)
+}
+
+// backspaces clears n characters from the open prompt.
+func backspaces(t *testing.T, m tea.Model, n int) tea.Model {
+	t.Helper()
+	for range n {
+		m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyBackspace})
+	}
+	return m
+}
+
+// TestWorkflowsEdgesEditorAuthorsReviewLoop is the task's acceptance
+// test: author implement / review / gate / ship with a bounded reject loop
+// from the TUI alone, and read the preview back.
+func TestWorkflowsEdgesEditorAuthorsReviewLoop(t *testing.T) {
+	m, s := newTestApp(t)
+	ctx := context.Background()
+	m = openWorkflows(t, m)
+	m = drive(t, m, keyPress('n'))
+	m = typeText(t, m, "ship it")
+	m = drive(t, m, enter())
+	wfs := waitForWorkflows(t, s, "workflow created", func(w []workflow.Workflow) bool { return len(w) == 1 })
+	wfID := wfs[0].ID
+	m = reloadWorkflows(t, m, wfID)
+	m = drive(t, m, keyPress('l'))
+
+	// Four steps; each one after the first links the previous step to it
+	// with done -> next, so the workflow is linear with no edge work.
+	m = addStepFromTUI(t, m, s, wfID, "implement", 1)
+	m = addStepFromTUI(t, m, s, wfID, "review", 2)
+	if st := m.(app).status; !strings.Contains(st.text, "implement done -> review") {
+		t.Errorf("flash after adding review = %+v, want it to name the default edge", st)
+	}
+	m = addStepFromTUI(t, m, s, wfID, "gate", 3)
+	m = drive(t, m, keyPress('t')) // the cursor is on the new step: make it a gate
+	waitForSteps(t, s, wfID, "gate kind", func(st []workflow.Step) bool { return st[2].Kind == workflow.StepGate })
+	m = reloadWorkflows(t, m, wfID)
+	m = addStepFromTUI(t, m, s, wfID, "ship", 4)
+	steps, _ := s.ListSteps(ctx, wfID)
+	implement, review, gate, ship := steps[0], steps[1], steps[2], steps[3]
+	for _, e := range mustEdges(t, s, wfID) {
+		if e.Outcome != "done" {
+			t.Errorf("default edge %+v, want outcome done", e)
+		}
+	}
+	// A linear workflow previews with no annotations but the end.
+	content := ansi.Strip(m.(app).View().Content)
+	for _, want := range []string{"1  implement", "2  review", "3  gate", "4  ship  [done -> end]", "EDGES · ship", "none — its one outcome, done, ends the run"} {
+		if !strings.Contains(content, want) {
+			t.Errorf("linear preview missing %q:\n%s", want, content)
+		}
+	}
+	if strings.Contains(content, "[done -> 2]") {
+		t.Errorf("the linear default edge should be implicit, not annotated:\n%s", content)
+	}
+
+	// Onto review, into its EDGES: its default edge reads done -> gate.
+	m = drive(t, m, keyPress('g'))
+	m = drive(t, m, keyPress('j'))
+	m = drive(t, m, keyPress('l'))
+	a := m.(app)
+	if a.wfFocus != wfPaneEdges {
+		t.Fatalf("l from the steps pane: focus = %v, want the edges pane", a.wfFocus)
+	}
+	if e, ok := a.selectedEdge(); !ok || e.FromStepID != review.ID || e.ToStepID != gate.ID {
+		t.Fatalf("selected edge = (%+v, %v), want review's done -> gate", e, ok)
+	}
+	if !strings.Contains(ansi.Strip(a.View().Content), "on done -> gate") {
+		t.Errorf("edges pane missing the default edge row:\n%s", ansi.Strip(a.View().Content))
+	}
+
+	// e edits it: rename the outcome to approve (the old row goes), keep
+	// the target the picker starts on (gate), leave max blank.
+	m = drive(t, m, keyPress('e'))
+	a = m.(app)
+	if a.promptKind != promptEdgeOutcome || a.prompt.Value() != "done" {
+		t.Fatalf("edit prompt = (%v, %q), want (promptEdgeOutcome, done)", a.promptKind, a.prompt.Value())
+	}
+	m = backspaces(t, m, 4)
+	m = typeText(t, m, "Approve")
+	m = drive(t, m, enter())
+	a = m.(app)
+	if !a.wfPickerOpen || a.wfPickerKind != wfPickEdgeTarget {
+		t.Fatal("outcome ⏎ did not open the target step picker")
+	}
+	content = ansi.Strip(a.View().Content)
+	for _, want := range []string{"review on approve ->", "which step?", "1 implement", "3 gate"} {
+		if !strings.Contains(content, want) {
+			t.Errorf("target picker missing %q:\n%s", want, content)
+		}
+	}
+	if got := a.wfPickerOptions()[a.wfPickerSel]; got.label != "gate" {
+		t.Errorf("picker starts on %q, want the edge's current target gate", got.label)
+	}
+	m = drive(t, m, enter())
+	a = m.(app)
+	if a.promptKind != promptEdgeMax || a.prompt.Value() != "" {
+		t.Fatalf("after the picker: prompt = (%v, %q), want an empty max-iterations prompt", a.promptKind, a.prompt.Value())
+	}
+	m = drive(t, m, enter())
+	waitForEdges(t, s, wfID, "done renamed to approve", func(es []workflow.Edge) bool {
+		for _, e := range es {
+			if e.FromStepID == review.ID {
+				return e.Outcome == "approve" && e.ToStepID == gate.ID && e.MaxIterations == nil && len(es) == 3
+			}
+		}
+		return false
+	})
+	m = reloadWorkflows(t, m, wfID)
+
+	// n adds reject -> implement (max 3), picking the step by digit.
+	m = drive(t, m, keyPress('n'))
+	m = typeText(t, m, "reject")
+	m = drive(t, m, enter())
+	if !m.(app).wfPickerOpen {
+		t.Fatal("n → outcome ⏎ did not open the target picker")
+	}
+	m = drive(t, m, keyPress('1'))
+	if m.(app).promptKind != promptEdgeMax {
+		t.Fatal("digit pick did not move on to the max-iterations prompt")
+	}
+	m = typeText(t, m, "3")
+	m = drive(t, m, enter())
+	edges := waitForEdges(t, s, wfID, "reject edge", func(es []workflow.Edge) bool { return len(es) == 4 })
+	var reject workflow.Edge
+	for _, e := range edges {
+		if e.Outcome == "reject" {
+			reject = e
+		}
+	}
+	if reject.FromStepID != review.ID || reject.ToStepID != implement.ID || reject.MaxIterations == nil || *reject.MaxIterations != 3 {
+		t.Errorf("reject edge = %+v, want review -> implement max 3", reject)
+	}
+	m = reloadWorkflows(t, m, wfID)
+	a = m.(app)
+	if e, ok := a.selectedEdge(); !ok || e.ID != reject.ID {
+		t.Errorf("edge cursor after add on %+v, want the new reject edge", e)
+	}
+
+	// The preview reads correctly, in the pane and as text.
+	want := strings.Join([]string{
+		"1. implement",
+		"2. review  [approve -> 3]  [reject -> 1 (max 3)]",
+		"3. gate",
+		"4. ship  [done -> end]",
+	}, "\n")
+	if got := workflow.PreviewText(steps, edges); got != want {
+		t.Errorf("PreviewText =\n%s\nwant\n%s", got, want)
+	}
+	content = ansi.Strip(a.View().Content)
+	for _, w := range []string{
+		"2  review  [approve -> 3]  [reject -> 1 (max 3)]",
+		"4  ship  [done -> end]",
+		"on approve -> gate", "on reject -> implement (max 3)",
+	} {
+		if !strings.Contains(content, w) {
+			t.Errorf("view missing %q:\n%s", w, content)
+		}
+	}
+	_ = ship
+
+	// v: a sound graph.
+	m = drive(t, m, keyPress('v'))
+	if st := m.(app).status; st.isErr || !strings.Contains(st.text, "4 steps, graph and prompts valid") {
+		t.Errorf("validate flash = %+v, want the all-clear", st)
+	}
+
+	// esc mid-flow abandons the draft without writing.
+	m = drive(t, m, keyPress('n'))
+	m = typeText(t, m, "retry")
+	m = drive(t, m, enter())
+	m = drive(t, m, esc())
+	a = m.(app)
+	if a.wfPickerOpen || a.wfEdgeDraft != nil || a.promptKind != promptNone {
+		t.Errorf("esc on the picker left state behind: picker=%v draft=%+v prompt=%v", a.wfPickerOpen, a.wfEdgeDraft, a.promptKind)
+	}
+	if es, _ := s.ListEdges(ctx, wfID); len(es) != 4 {
+		t.Errorf("edges after an abandoned draft = %d, want 4", len(es))
+	}
+
+	// dd deletes the selected edge.
+	m = drive(t, m, keyPress('d'))
+	if !strings.Contains(ansi.Strip(m.(app).View().Content), "delete edge") {
+		t.Error("delete panel does not say it deletes an edge")
+	}
+	drive(t, m, keyPress('d'))
+	waitForEdges(t, s, wfID, "edge deleted", func(es []workflow.Edge) bool {
+		for _, e := range es {
+			if e.ID == reject.ID {
+				return false
+			}
+		}
+		return len(es) == 3
+	})
+}
+
+func mustEdges(t *testing.T, s *store.Store, workflowID int64) []workflow.Edge {
+	t.Helper()
+	es, err := s.ListEdges(context.Background(), workflowID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return es
+}
+
+// TestWorkflowsValidateShowsProblemsUntilFixed: `v` lists the graph's
+// problems under the steps; they are recomputed on reload, so fixing one
+// removes it without another `v`.
+func TestWorkflowsValidateShowsProblemsUntilFixed(t *testing.T) {
+	m, s := newTestApp(t)
+	ctx := context.Background()
+	w, err := s.CreateWorkflow(ctx, "loose", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Straight to the store, so no default edge is written.
+	implement, _ := s.AddStep(ctx, w.ID, "implement", workflow.StepAgent)
+	review, _ := s.AddStep(ctx, w.ID, "review", workflow.StepAgent)
+	if err := s.SetStepPrompt(ctx, review.ID, "Review it and finish with approve or reject."); err != nil {
+		t.Fatal(err)
+	}
+	m = openWorkflows(t, m)
+
+	m = drive(t, m, keyPress('v'))
+	a := m.(app)
+	if !a.status.isErr || !strings.Contains(a.status.text, "implement: no edge leaves it") || !strings.Contains(a.status.text, "(+3 more)") {
+		t.Errorf("validate flash = %+v, want the first problem and a count of 3 more", a.status)
+	}
+	content := ansi.Strip(a.View().Content)
+	for _, want := range []string{"PROBLEMS · 4", "the run would end here, before review", "review: unreachable",
+		`prompt mentions "approve" but no edge routes it`, `prompt mentions "reject"`} {
+		if !strings.Contains(content, want) {
+			t.Errorf("problems section missing %q:\n%s", want, content)
+		}
+	}
+
+	// Fix the graph behind the view's back and reload: the problems shrink.
+	if _, err := s.SetEdge(ctx, implement.ID, "done", review.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	two := int64(2)
+	if _, err := s.SetEdge(ctx, review.ID, "reject", implement.ID, &two); err != nil {
+		t.Fatal(err)
+	}
+	m = reloadWorkflows(t, m, w.ID)
+	content = ansi.Strip(m.(app).View().Content)
+	if !strings.Contains(content, "PROBLEMS · 1") || !strings.Contains(content, `prompt mentions "approve"`) {
+		t.Errorf("after fixing two problems, want only the approve one left:\n%s", content)
+	}
+	if strings.Contains(content, "unreachable") {
+		t.Errorf("fixed problem still shown:\n%s", content)
+	}
+	if _, err := s.SetEdge(ctx, review.ID, "approve", review.ID, &two); err != nil {
+		t.Fatal(err)
+	}
+	m = reloadWorkflows(t, m, w.ID)
+	if content = ansi.Strip(m.(app).View().Content); strings.Contains(content, "PROBLEMS") {
+		t.Errorf("problems section still shown once everything is fixed:\n%s", content)
+	}
+
+	// Another workflow does not inherit the problems display.
+	other, _ := s.CreateWorkflow(ctx, "other", "")
+	m = reloadWorkflows(t, m, other.ID)
+	if a := m.(app); a.wfProblemsFor != 0 || len(a.wfProblems) != 0 {
+		t.Errorf("problems carried to another workflow: for=%d %v", a.wfProblemsFor, a.wfProblems)
 	}
 }
 

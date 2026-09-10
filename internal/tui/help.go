@@ -79,13 +79,14 @@ func helpGroups() []helpGroup {
 		}},
 		{"WORKFLOWS", []helpEntry{
 			{"W", "open the workflows view"},
-			{"h / l", "workflows ↔ steps pane"},
+			{"h / l", "workflows → steps → edges panes"},
 			{"n / R / D", "new / rename / duplicate"},
 			{"e", "edit step prompt in $EDITOR"},
 			{"m / p / t", "step model / permission / kind"},
 			{"J / K", "move step down / up"},
-			{"v", "validate prompt templates"},
-			{"dd", "delete workflow or step"},
+			{"n / e", "add / edit edge (edges pane)"},
+			{"v", "validate graph + prompts"},
+			{"dd", "delete workflow, step or edge"},
 		}},
 		{"RUN VIEW", []helpEntry{
 			{"j / k", "switch run / select step / scroll"},
