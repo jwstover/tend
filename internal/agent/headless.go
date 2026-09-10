@@ -57,7 +57,30 @@ import (
 // RunHeadless to run it with its stdout tee'd to a step log, or wire
 // Stdout yourself and read the stream with ParseStream.
 func HeadlessCmd(ctx context.Context, cwd, sessionID, mcpConfigPath, settingsPath string, opts LaunchOpts) *exec.Cmd {
-	args := []string{"-p", "--session-id", sessionID, "--output-format", "stream-json", "--verbose"}
+	return headlessCmd(ctx, cwd, []string{"--session-id", sessionID}, mcpConfigPath, settingsPath, opts)
+}
+
+// HeadlessResumeCmd is HeadlessCmd for a session that already exists: the
+// same print-mode invocation with `--resume <id>` in place of
+// `--session-id <id>`, so opts.Prompt lands as the next turn of that
+// session, with its context intact. This is how a workflow runner picks a
+// step back up after it (or the host) died mid-step. Verified against
+// claude 2.1.267: a `-p --resume` turn keeps the original session id (the
+// result event reports it; `--fork-session` is what would mint a new one)
+// and answers from the earlier turns.
+//
+// A session id with no transcript on disk -- a step killed before claude
+// wrote its first turn -- makes claude exit non-zero with no result
+// event; the caller falls back to starting the step over.
+func HeadlessResumeCmd(ctx context.Context, cwd, sessionID, mcpConfigPath, settingsPath string, opts LaunchOpts) *exec.Cmd {
+	return headlessCmd(ctx, cwd, []string{"--resume", sessionID}, mcpConfigPath, settingsPath, opts)
+}
+
+// headlessCmd is the shared body of HeadlessCmd and HeadlessResumeCmd:
+// sessionArgs is the one flag pair that differs.
+func headlessCmd(ctx context.Context, cwd string, sessionArgs []string, mcpConfigPath, settingsPath string, opts LaunchOpts) *exec.Cmd {
+	args := append([]string{"-p"}, sessionArgs...)
+	args = append(args, "--output-format", "stream-json", "--verbose")
 	if mcpConfigPath != "" {
 		args = append(args, "--mcp-config", mcpConfigPath)
 	}
@@ -296,16 +319,35 @@ func (b *limitedBuffer) Write(p []byte) (int, error) {
 // directory). The database stores this path on the step run
 // (workflow_step_runs.log_path); the log's content never goes in SQLite.
 func StepLogPath(runID, stepRunID int64) (string, error) {
+	dir, err := runDir(runID)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, strconv.FormatInt(stepRunID, 10)+".jsonl"), nil
+}
+
+// RunnerLogPath is where a run's runner writes its own progress log --
+// runner.log beside the step logs in the run's directory -- so what the
+// runner said survives the tmux session it said it in.
+func RunnerLogPath(runID int64) (string, error) {
+	dir, err := runDir(runID)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "runner.log"), nil
+}
+
+// runDir is ${XDG_DATA_HOME:-~/.local/share}/tend/runs/<run-id>.
+func runDir(runID int64) (string, error) {
 	dataHome := os.Getenv("XDG_DATA_HOME")
 	if dataHome == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
-			return "", fmt.Errorf("locating step log dir: %w", err)
+			return "", fmt.Errorf("locating run log dir: %w", err)
 		}
 		dataHome = filepath.Join(home, ".local", "share")
 	}
-	return filepath.Join(dataHome, "tend", "runs",
-		strconv.FormatInt(runID, 10), strconv.FormatInt(stepRunID, 10)+".jsonl"), nil
+	return filepath.Join(dataHome, "tend", "runs", strconv.FormatInt(runID, 10)), nil
 }
 
 // ErrNoResult is returned by ResultOrError when a finished headless step

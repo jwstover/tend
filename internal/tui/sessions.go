@@ -223,6 +223,22 @@ func (a app) launchSessionCmd(taskID int64, cwd, label string) tea.Cmd {
 	}
 }
 
+// abandonLaunchCmd cleans up after a launch whose handoff returned an
+// error: the session row written ahead of it goes (a session that never
+// ran is not a session, and a row for it would read as one in SESSIONS
+// and to the poller). It refreshes afterwards — the poller may have
+// already shown the row, or marked it ended, while the handoff was out —
+// carrying the error flash through so the failure stays on screen rather
+// than being replaced by a success message.
+func (a app) abandonLaunchCmd(msg sessionFinishedMsg, status flash) tea.Cmd {
+	return a.mutate(status, func() error {
+		if msg.sessionRowID == 0 {
+			return nil
+		}
+		return a.store.DeleteSession(a.ctx, msg.sessionRowID)
+	})
+}
+
 // resumeSessionCmd reopens an existing session in its stored directory.
 // It snapshots the transcript's current line count before handing off
 // the terminal — recorded on the resulting msg as `since` — so a later
@@ -285,7 +301,6 @@ func resumeSessionCmd(sess task.Session, dbPath string) tea.Cmd {
 			since:        since,
 			backgrounded: bg,
 			err:          err,
-			stepRunID:    sess.StepRunID,
 		}
 	})
 }

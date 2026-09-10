@@ -44,6 +44,24 @@ func TestHeadlessCmdMinimalArgv(t *testing.T) {
 	}
 }
 
+// A resumed step is the same invocation with --resume for --session-id,
+// so the prompt lands as the next turn of the existing session.
+func TestHeadlessResumeCmdArgv(t *testing.T) {
+	c := HeadlessResumeCmd(context.Background(), "/tmp/work", "abc-123", "/tmp/mcp.json", "",
+		LaunchOpts{Prompt: "continue", Model: "opus", PermissionMode: "acceptEdits"})
+	want := []string{
+		binary, "-p", "--resume", "abc-123", "--output-format", "stream-json", "--verbose",
+		"--mcp-config", "/tmp/mcp.json", "--model", "opus", "--permission-mode", "acceptEdits",
+		"continue",
+	}
+	if got := c.Args; !equalArgs(got, want) {
+		t.Errorf("Args = %v, want %v", got, want)
+	}
+	if c.Dir != "/tmp/work" || c.Cancel == nil || c.WaitDelay != headlessKillDelay {
+		t.Errorf("resume cmd = dir %q cancel %v wait %v; want the same process handling as HeadlessCmd", c.Dir, c.Cancel != nil, c.WaitDelay)
+	}
+}
+
 // streamFixture is a trimmed copy of a real `claude -p --output-format
 // stream-json --verbose` run (claude 2.1.267): the event types in the
 // order they arrived, with the result event's bulk removed.
@@ -293,6 +311,18 @@ func TestStepLogPath(t *testing.T) {
 	}
 	if want := filepath.Join("/home/u", ".local", "share", "tend", "runs", "7", "42.jsonl"); got != want {
 		t.Errorf("StepLogPath = %q, want %q", got, want)
+	}
+}
+
+// The runner's own log sits beside the step logs of its run.
+func TestRunnerLogPath(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", "/data")
+	got, err := RunnerLogPath(7)
+	if err != nil {
+		t.Fatalf("RunnerLogPath: %v", err)
+	}
+	if want := filepath.Join("/data", "tend", "runs", "7", "runner.log"); got != want {
+		t.Errorf("RunnerLogPath = %q, want %q", got, want)
 	}
 }
 

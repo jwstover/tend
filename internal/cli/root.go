@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/jwstover/tend/internal/mcpserver"
+	"github.com/jwstover/tend/internal/runner"
 	"github.com/jwstover/tend/internal/task"
 	"github.com/jwstover/tend/internal/version"
 )
@@ -48,11 +49,11 @@ type StoreFactory func(ctx context.Context, dbPath string) (Store, error)
 type TUIRunner func(ctx context.Context, dbPath string) error
 
 // Execute builds the command tree and runs it.
-func Execute(open StoreFactory, runTUI TUIRunner, openMCP MCPStoreFactory) error {
-	return newRootCmd(open, runTUI, openMCP).Execute()
+func Execute(open StoreFactory, runTUI TUIRunner, openMCP MCPStoreFactory, openRunner RunnerStoreFactory) error {
+	return newRootCmd(open, runTUI, openMCP, openRunner).Execute()
 }
 
-func newRootCmd(open StoreFactory, runTUI TUIRunner, openMCP MCPStoreFactory) *cobra.Command {
+func newRootCmd(open StoreFactory, runTUI TUIRunner, openMCP MCPStoreFactory, openRunner RunnerStoreFactory) *cobra.Command {
 	var dbPath string
 
 	root := &cobra.Command{
@@ -75,6 +76,9 @@ func newRootCmd(open StoreFactory, runTUI TUIRunner, openMCP MCPStoreFactory) *c
 	openMCPHere := func(ctx context.Context) (mcpserver.Store, error) {
 		return openMCP(ctx, resolveDBPath(dbPath))
 	}
+	openRunnerHere := func(ctx context.Context) (runner.Store, error) {
+		return openRunner(ctx, resolveDBPath(dbPath))
+	}
 	root.AddCommand(newAddCmd(openHere))
 	root.AddCommand(newAuthCmd())
 	root.AddCommand(newLsCmd(openHere))
@@ -83,6 +87,7 @@ func newRootCmd(open StoreFactory, runTUI TUIRunner, openMCP MCPStoreFactory) *c
 	root.AddCommand(newLogCmd(openHere))
 	root.AddCommand(newMcpCmd(openMCPHere))
 	root.AddCommand(newAgentHookCmd(openHere))
+	root.AddCommand(newWorkflowCmd(openRunnerHere, func() string { return resolveDBPath(dbPath) }))
 	root.AddCommand(&cobra.Command{
 		Use:   "version",
 		Short: "Print the tend version",

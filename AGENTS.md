@@ -120,7 +120,12 @@ tend/
 │   │   ├── hooks.go              #   Claude Code hook payload parsing + injected --settings generation
 │   │   ├── status.go             #   ClassifyPane — capture-pane text → "working", for the one status no hook reports
 │   │   ├── mcp_config.go          #   per-session --mcp-config file pointing at `tend mcp --task-id <id>`
+│   │   ├── runner.go              #   RunnerCmd (`tend workflow run <id>` via os.Executable) + RunnerSessionName (`tend-wf-<run-id>`)
 │   │   └── session_id.go           #   UUIDv4 generation for --session-id
+│   ├── runner/                   # WORKFLOW RUNNER — drives one run step to step; the process behind `tend workflow run`
+│   │   ├── runner.go               #   Runner.Run: claim, pick next step by edge, exec agent steps / wait at gates, crash resume
+│   │   ├── exec.go                 #   ClaudeExec — the production Exec seam (HeadlessCmd/HeadlessResumeCmd + RunHeadless)
+│   │   └── launch.go               #   Launch/Resume: host a runner in a detached tmux session, refuse a live or ended run
 │   ├── jira/                    # I/O EDGE — the only package that talks to the Jira REST API / keychain
 │   │   ├── jira.go               #   URL parsing, issue summary fetch (bounded timeout, degrades to the bare key)
 │   │   └── keyring.go             #   credential storage via the OS keychain
@@ -146,6 +151,7 @@ tend/
 │       ├── projects.go                 #   `tend projects` — list/add/rename/rm/archive/unarchive/cwd
 │       ├── auth.go                    #   `tend auth jira {login,status,logout}`
 │       ├── mcp.go                      #   hidden `tend mcp --task-id <id>`, spawned by a launched claude session
+│       ├── workflow.go                 #   `tend workflow resume <run-id>`; hidden `tend workflow run <run-id>` (the runner itself)
 │       └── agent_hook.go                #   hidden `tend agent-hook <event>`, spawned by Claude Code's own hooks
 ├── docs/                          # design notes for past feature work; not required reading to orient
 ├── sqlc.yaml
@@ -158,15 +164,17 @@ tend/
 ```
 cli ──┬──→ store ──→ task ──→ (nothing)
       ├──→ mcpserver ──→ (its own Store interface, satisfied by *store.Store)
+      ├──→ runner ──→ agent, workflow, task   (its own Store interface; the one package that *runs* claude/tmux commands)
       ├──→ agent   (process control: claude/tmux, hook parsing, session-id/mcp-config generation)
       └──→ jira    (REST + keychain)
 
-tui ──┴──→ store, agent, jira   (same rules — tui never touches SQL, exec, or HTTP directly outside these)
+tui ──┴──→ store, agent, jira, runner (Launch only)   (same rules — tui never touches SQL, exec, or HTTP directly outside these)
 ```
 
 - `task` (domain) knows nothing about SQLite, exec, or HTTP.
 - `store` is the only package that imports the generated SQL code or builds queries.
 - `agent` is the only package that builds `claude`/`tmux` commands or parses Claude Code hook payloads; it never runs a command itself, so it stays testable without a real terminal.
+- `runner` is where those commands get *run* outside a terminal handoff: it executes headless steps (`agent.RunHeadless`) and starts tmux sessions, behind an `Exec` seam so its transition logic is tested against a fake. It declares its own `Store` interface and depends on `agent`, `workflow` and `task`, never on `store`, `tui` or `cli`.
 - `jira` is the only package that calls the Jira REST API or touches the OS keychain.
 - `mcpserver` depends on `task` and declares its own `Store` interface (same "accept interfaces, return structs" convention as `cli`) rather than importing `store` directly.
 - `tui` and `cli` consume `store`/`agent`/`jira`/`mcpserver` through interfaces they declare, plus `task` types. They never touch SQL, exec, or HTTP directly.
@@ -279,6 +287,8 @@ Schema in `internal/store/migrations`, queries in `internal/store/queries`, gene
 | `tend log "<note>"` | Capture a standup note instantly, no TUI |
 | `tend standup` | Print a standup summary of recent activity as markdown |
 | `tend auth jira login/status/logout` | Manage Jira credentials in the system keychain |
+| `tend workflow resume <run-id>` | Start a fresh runner for a workflow run whose runner died (host reboot, tmux server killed) or was paused. Refuses a run that has ended or whose runner is still alive. |
+| `tend workflow run <run-id>` | Hidden. The runner: drives one workflow run to a terminal state and exits — hosted in tmux session `tend-wf-<run-id>` by the TUI's `w` chord (or `resume`), never run by hand. `--takeover` re-enters a run left `running` by a dead runner. |
 | `tend mcp --task-id <id>` | Hidden. Runs tend's MCP server over stdio, bound to one task — spawned by a launched `claude` session, never by the user directly. |
 | `tend agent-hook <event>` | Hidden. Records a Claude Code hook event (session status) against its session — spawned by Claude Code itself via injected `--settings`. |
 | `tend version` | Print the version |
@@ -301,7 +311,7 @@ Built on Bubble Tea v2 + Bubbles v2 + Lip Gloss v2; Glamour v2 renders the body.
 - **Triage view.** Filtered to `inbox`. Fast keys to set state, assign a project, add tags or a due date, open the body in `$EDITOR`, or send to `someday`/`done` — the batched processing pass.
 - **Standup view.** Manual notes grouped by task plus a generated activity summary (completed/blocked/started, derived from `task_events`); yank the whole thing as markdown.
 - **Workflows view.** Authoring for agent workflows (`internal/workflow`): the workflows on the left, the selected one's steps on the right in `sort_order`. Create/rename/duplicate/delete workflows; add, reorder and delete steps; set a step's model, permission mode and kind (agent/gate); edit its prompt template in `$EDITOR` and validate the templates. Edges and the graph preview are not here yet, so a workflow reads as a linear list.
-- **Running a workflow (`w`).** From the list or detail pane, `w` picks a workflow to run on the selected task, prompts for a cwd (defaulting to the task's last session directory), and launches its step as an ordinary interactive session whose first message is the step's rendered prompt template. Only one-step, agent-kind workflows run this way; anything else is refused with a flash until the runner exists. The run is recorded in `workflow_runs`/`workflow_step_runs` (state `running`, then `done` once the session really ends) and the session row points at its step run.
+- **Running a workflow (`w`).** From the list or detail pane, `w` picks a workflow to run on the selected task, checks it can run at all (it has steps, every step prompt renders, `claude` and `tmux` are on `$PATH`), prompts for a cwd (defaulting to the task's last session directory), then writes a `pending` run and starts its runner in a detached tmux session (`runner.Launch`). The chord returns to the TUI at once; the runner (§8) drives every step headlessly from there. A runner that cannot be started fails the run with the reason. A run view for watching it is not here yet; the runner's output is in its tmux session (`tmux -L tend attach -t tend-wf-<run-id>`) and `runner.log`.
 - **Editing the body.** Shells out to `$EDITOR` — there is no in-terminal markdown editor.
 
 Full key bindings live in `internal/tui/keys.go` and are discoverable in-app via `?` — not duplicated here since they're a fast-moving implementation detail, not architecture.
@@ -312,6 +322,7 @@ A task can have one or more Claude Code sessions bound to it, launched and manag
 
 - **Launch/resume.** `internal/agent.LaunchCmd`/`ResumeCmd` build the `claude` invocation; the TUI hands it to `tea.ExecProcess` for the terminal handoff. A session's `claude --session-id` is generated up front (`session_id.go`) so tend never has to discover it after the fact. `LaunchCmdWith` adds the per-step extras a workflow run needs — an initial prompt (claude's positional argument), `--model`, and `--permission-mode` — and is otherwise `LaunchCmd`.
 - **Headless steps.** `HeadlessCmd` is the `claude -p` counterpart of `LaunchCmdWith` for a workflow runner: same pinned `--session-id`, `--mcp-config` and `--settings` (hooks and MCP tools work in print mode), plus `--output-format stream-json --verbose`. `RunHeadless` runs it with stdout tee'd live to a per-step log (`StepLogPath`: `${XDG_DATA_HOME}/tend/runs/<run-id>/<step-run-id>.jsonl`, path stored on the step run) and parses the final `result` event into a `HeadlessResult` — the fallback deliverable when a step never calls `finish_step`. A `-p` run with no `--permission-mode` denies tool calls silently and still reports success; the only signal is `PermissionDenials`. Cancelling the ctx SIGTERMs the step's process group; the session stays resumable with `claude --resume`.
+- **Workflow runner.** `internal/runner` is the process behind a workflow run: `tend workflow run <run-id>`, hosted in tmux session `tend-wf-<run-id>` on the same `-L tend` socket, one process per run, gone when the run ends — never a daemon. It claims the run (`Store.ClaimRun`, a CAS, so two runners for one run see one winner; tmux's own duplicate-session refusal is the second guard), then loops: pick the next step from the previous step run's outcome via the live `workflow_edges` (no edge → run `done`; an edge's `max_iterations` exceeded → run `failed` with a message on `workflow_runs.error`), render the prompt (`Input` = previous deliverable, or the previous step's own input when its deliverable is empty; a loop-back edge to a step that already ran carries it as `Feedback` instead and keeps the original `Input`), write the step run and its session row (tmux_session `''` — the pane is the runner's, not claude's), and `RunHeadless` it with the log path stored first. On exit, an outcome written by `finish_step` stands; otherwise the stream's final text is the deliverable with outcome `done`, and no result, an error result, or any `PermissionDenials` fails the run loudly. Gate steps park the run in `waiting_review` and poll the step run for a decision. `paused`/`cancelled` written by the TUI or CLI are polled between and during steps; a pause SIGTERMs the step and leaves its session resumable. **Crash resume:** state lives in SQLite, so `tend workflow resume <run-id>` (refused while the runner's tmux session is alive) starts a runner with `--takeover` that re-enters at `current_step_run_id`: a log that already holds a `result` event settles the step without claude; otherwise the step's session is continued with `claude -p --resume <id>` (same session id, context intact — verified against claude 2.1.267); a session that cannot be continued restarts the step under a new session id on the same step run. The runner's progress goes to its pane and to `runs/<run-id>/runner.log`.
 - **Row at launch.** The `agent_sessions` row is written *before* the handoff (`Store.CreateSession`, inside `launchSessionCmd`'s Cmd), with status `starting`, so the session's own hooks land on a row from its very first turn — a fresh session reads `starting` then `idle` without a resume, and a headless runner has something to watch. The handoff returning only touches the row (`sessionFinishedMsg`); a handoff that returns an error deletes it (`Store.DeleteSession`) so a broken launch leaves no phantom session.
 - **Backgrounding.** Sessions run inside `claude` wrapped in `tmux`, on a dedicated `-L tend` socket with a generated, hands-off config (`internal/agent/tmux.go`). Detaching (`C-h` or `C-Space d`) returns to tend while `claude` keeps running; resuming a task with a live backgrounded session re-attaches instead of starting a second process. Any `tend` instance on the host can attach, since it's the same socket and the same shared SQLite file.
 - **Status.** `agent_sessions.status` is populated two ways: Claude Code hooks (`SessionStart`/`Stop`/`Notification`/`SessionEnd`), injected via a per-session `--settings` file and reported through the hidden `tend agent-hook` command; and, for the one state no hook covers (actively generating/running a tool, "working"), a poller in `internal/tui` that reads the pane's rendered text via `tmux capture-pane` and classifies it (`internal/agent/status.go`). Hook-reported status always wins a race against the poller's guess (a compare-and-swap on `status_updated_at`).
