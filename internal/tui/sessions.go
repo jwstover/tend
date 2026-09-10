@@ -193,7 +193,7 @@ func (a app) launchSessionCmd(taskID int64, cwd, label string) tea.Cmd {
 		if err != nil {
 			return errMsg{err}
 		}
-		mcpPath, mcpCleanup, _ := agent.WriteMCPConfig(taskID, a.dbPath)
+		mcpPath, mcpCleanup, _ := agent.WriteMCPConfig(taskID, 0, a.dbPath)
 		hooksPath, hooksCleanup, _ := agent.WriteHookSettings(a.dbPath)
 		c, tmuxName, confPath := wrapInTmux(agent.LaunchCmd(cwd, id, label, mcpPath, hooksPath), id)
 
@@ -281,7 +281,7 @@ func resumeSessionCmd(sess task.Session, dbPath string) tea.Cmd {
 		// needed — the live one is already wired with its own.
 		c = agent.AttachCmd(name, confPath)
 	} else {
-		mcpPath, mcpCleanup, _ := agent.WriteMCPConfig(sess.TaskID, dbPath)
+		mcpPath, mcpCleanup, _ := agent.WriteMCPConfig(sess.TaskID, 0, dbPath)
 		hooksPath, hooksCleanup, _ := agent.WriteHookSettings(dbPath)
 		cleanup = func() { mcpCleanup(); hooksCleanup() }
 		c, name, confPath = wrapInTmux(

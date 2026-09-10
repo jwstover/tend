@@ -316,7 +316,7 @@ func (r *Runner) startStep(ctx context.Context, run workflow.Run, tk task.Task, 
 
 	sr := workflow.StepRun{
 		RunID: run.ID, StepID: step.ID, PromptRendered: prompt,
-		Model: step.Model, PermissionMode: step.PermissionMode, Input: input,
+		Model: step.Model, PermissionMode: step.PermissionMode, Input: input, Feedback: feedback,
 	}
 	if step.Kind == workflow.StepGate {
 		sr, err = r.Store.CreateStepRun(ctx, sr)

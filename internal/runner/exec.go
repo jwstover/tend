@@ -25,9 +25,9 @@ func (ClaudeExec) Check() error { return agent.CheckInstalled() }
 // session, a headless one cannot be backgrounded and reconnected, so
 // there is nothing to keep them around for.
 func (e ClaudeExec) Run(ctx context.Context, req StepExec) (agent.HeadlessResult, error) {
-	// TODO(#180): pass req.StepRun.ID so `tend mcp` registers
+	// Bound to the step run as well as the task, so `tend mcp` registers
 	// get_workflow_step and finish_step for this session.
-	mcpPath, mcpCleanup, _ := agent.WriteMCPConfig(req.TaskID, e.DBPath)
+	mcpPath, mcpCleanup, _ := agent.WriteMCPConfig(req.TaskID, req.StepRun.ID, e.DBPath)
 	defer mcpCleanup()
 	hooksPath, hooksCleanup, _ := agent.WriteHookSettings(e.DBPath)
 	defer hooksCleanup()

@@ -138,7 +138,7 @@ func (q *Queries) CreateStepFull(ctx context.Context, arg CreateStepFullParams) 
 }
 
 const createStepRun = `-- name: CreateStepRun :one
-INSERT INTO workflow_step_runs (run_id, step_id, iteration, session_external_id, prompt_rendered, model, permission_mode, input)
+INSERT INTO workflow_step_runs (run_id, step_id, iteration, session_external_id, prompt_rendered, model, permission_mode, input, feedback)
 VALUES (
   ?1,
   ?2,
@@ -147,9 +147,10 @@ VALUES (
   ?4,
   ?5,
   ?6,
-  ?7
+  ?7,
+  ?8
 )
-RETURNING id, run_id, step_id, iteration, session_external_id, prompt_rendered, model, permission_mode, input, outcome, deliverable, log_path, started_at, ended_at
+RETURNING id, run_id, step_id, iteration, session_external_id, prompt_rendered, model, permission_mode, input, outcome, deliverable, log_path, started_at, ended_at, feedback
 `
 
 type CreateStepRunParams struct {
@@ -160,6 +161,7 @@ type CreateStepRunParams struct {
 	Model             string
 	PermissionMode    string
 	Input             string
+	Feedback          string
 }
 
 // iteration is derived here rather than passed in, so a runner can never
@@ -174,6 +176,7 @@ func (q *Queries) CreateStepRun(ctx context.Context, arg CreateStepRunParams) (W
 		arg.Model,
 		arg.PermissionMode,
 		arg.Input,
+		arg.Feedback,
 	)
 	var i WorkflowStepRun
 	err := row.Scan(
@@ -191,6 +194,7 @@ func (q *Queries) CreateStepRun(ctx context.Context, arg CreateStepRunParams) (W
 		&i.LogPath,
 		&i.StartedAt,
 		&i.EndedAt,
+		&i.Feedback,
 	)
 	return i, err
 }
@@ -348,7 +352,7 @@ func (q *Queries) GetStep(ctx context.Context, id int64) (WorkflowStep, error) {
 }
 
 const getStepRun = `-- name: GetStepRun :one
-SELECT id, run_id, step_id, iteration, session_external_id, prompt_rendered, model, permission_mode, input, outcome, deliverable, log_path, started_at, ended_at
+SELECT id, run_id, step_id, iteration, session_external_id, prompt_rendered, model, permission_mode, input, outcome, deliverable, log_path, started_at, ended_at, feedback
 FROM workflow_step_runs
 WHERE id = ?
 `
@@ -371,6 +375,7 @@ func (q *Queries) GetStepRun(ctx context.Context, id int64) (WorkflowStepRun, er
 		&i.LogPath,
 		&i.StartedAt,
 		&i.EndedAt,
+		&i.Feedback,
 	)
 	return i, err
 }
@@ -636,7 +641,7 @@ func (q *Queries) ListRunsForTask(ctx context.Context, taskID int64) ([]Workflow
 }
 
 const listStepRunsForRun = `-- name: ListStepRunsForRun :many
-SELECT id, run_id, step_id, iteration, session_external_id, prompt_rendered, model, permission_mode, input, outcome, deliverable, log_path, started_at, ended_at
+SELECT id, run_id, step_id, iteration, session_external_id, prompt_rendered, model, permission_mode, input, outcome, deliverable, log_path, started_at, ended_at, feedback
 FROM workflow_step_runs
 WHERE run_id = ?
 ORDER BY started_at, id
@@ -666,6 +671,7 @@ func (q *Queries) ListStepRunsForRun(ctx context.Context, runID int64) ([]Workfl
 			&i.LogPath,
 			&i.StartedAt,
 			&i.EndedAt,
+			&i.Feedback,
 		); err != nil {
 			return nil, err
 		}

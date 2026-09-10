@@ -9,6 +9,7 @@ import (
 	"context"
 
 	"github.com/jwstover/tend/internal/task"
+	"github.com/jwstover/tend/internal/workflow"
 )
 
 // Store is the slice of the persistence layer the MCP tool surface
@@ -32,5 +33,15 @@ type Store interface {
 	ListProjects(ctx context.Context) ([]task.Project, error)
 	SetPriority(ctx context.Context, id int64, p *int64) error
 	SetDue(ctx context.Context, id int64, due *string) error
+
+	// The workflow step tools (steps.go), used only when the session is
+	// bound to a step run. Edges are read live, the same as the runner
+	// does, so a step's allowed outcomes are whatever is authored now.
+	GetStepRun(ctx context.Context, id int64) (workflow.StepRun, error)
+	GetStep(ctx context.Context, id int64) (workflow.Step, error)
+	GetWorkflow(ctx context.Context, id int64) (workflow.Workflow, error)
+	OutgoingEdges(ctx context.Context, stepID int64) ([]workflow.Edge, error)
+	FinishStepRun(ctx context.Context, id int64, outcome, deliverable string) error
+
 	Close() error
 }

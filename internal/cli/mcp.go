@@ -17,11 +17,13 @@ type MCPStoreFactory func(ctx context.Context, dbPath string) (mcpserver.Store, 
 // newMcpCmd wires the hidden `tend mcp` command: one process per Claude
 // Code session, spawned by `claude` itself via --mcp-config (see
 // internal/agent.WriteMCPConfig), serving the task-scoped MCP tool
-// surface over stdio until stdin closes. Hidden because it's internal
-// plumbing a launched session's --mcp-config points at, not something a
-// user is meant to run by hand.
+// surface over stdio until stdin closes. A workflow step's session is
+// spawned with --step-run-id as well, which adds the step tools
+// (get_workflow_step, finish_step) for that one step run. Hidden because
+// it's internal plumbing a launched session's --mcp-config points at,
+// not something a user is meant to run by hand.
 func newMcpCmd(open func(ctx context.Context) (mcpserver.Store, error)) *cobra.Command {
-	var taskID int64
+	var taskID, stepRunID int64
 	cmd := &cobra.Command{
 		Use:    "mcp",
 		Short:  "Run tend's MCP server, bound to one task",
@@ -32,10 +34,11 @@ func newMcpCmd(open func(ctx context.Context) (mcpserver.Store, error)) *cobra.C
 				return err
 			}
 			defer s.Close()
-			return mcpserver.New(s, taskID).Run(cmd.Context())
+			return mcpserver.New(s, taskID, stepRunID).Run(cmd.Context())
 		},
 	}
 	cmd.Flags().Int64Var(&taskID, "task-id", 0, "task this session is bound to")
+	cmd.Flags().Int64Var(&stepRunID, "step-run-id", 0, "workflow step run this session is executing, if any")
 	_ = cmd.MarkFlagRequired("task-id")
 	return cmd
 }

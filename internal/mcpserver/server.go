@@ -11,16 +11,20 @@ import (
 
 // Server binds tend's MCP tool surface to one task — the load-bearing
 // piece that lets "update the current task" resolve without the model
-// guessing an id.
+// guessing an id — and, for a workflow step's session, to the step run
+// it is executing, so finish_step lands on the right row.
 type Server struct {
-	store  Store
-	taskID int64
+	store     Store
+	taskID    int64
+	stepRunID int64
 }
 
 // New builds a Server whose tools default to (and, for get_current_task,
-// are pinned to) taskID.
-func New(store Store, taskID int64) *Server {
-	return &Server{store: store, taskID: taskID}
+// are pinned to) taskID. stepRunID is the workflow step run the session
+// is executing; non-zero adds get_workflow_step and finish_step bound to
+// it, zero (an ordinary session) leaves the tool set as it was.
+func New(store Store, taskID, stepRunID int64) *Server {
+	return &Server{store: store, taskID: taskID, stepRunID: stepRunID}
 }
 
 // Run serves the tool surface over stdio until the client disconnects
@@ -29,6 +33,9 @@ func New(store Store, taskID int64) *Server {
 func (s *Server) Run(ctx context.Context) error {
 	srv := mcp.NewServer(&mcp.Implementation{Name: "tend", Version: version.String()}, nil)
 	registerTools(srv, s.store, s.taskID)
+	if s.stepRunID != 0 {
+		registerStepTools(srv, s.store, s.stepRunID)
+	}
 	if err := srv.Run(ctx, &mcp.StdioTransport{}); err != nil {
 		return fmt.Errorf("mcp server: %w", err)
 	}

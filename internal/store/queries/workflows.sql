@@ -230,7 +230,7 @@ WHERE id = ?;
 -- iteration is derived here rather than passed in, so a runner can never
 -- miscount: it is one more than the number of times this step has already
 -- run within this run.
-INSERT INTO workflow_step_runs (run_id, step_id, iteration, session_external_id, prompt_rendered, model, permission_mode, input)
+INSERT INTO workflow_step_runs (run_id, step_id, iteration, session_external_id, prompt_rendered, model, permission_mode, input, feedback)
 VALUES (
   sqlc.arg(run_id),
   sqlc.arg(step_id),
@@ -239,7 +239,8 @@ VALUES (
   sqlc.arg(prompt_rendered),
   sqlc.arg(model),
   sqlc.arg(permission_mode),
-  sqlc.arg(input)
+  sqlc.arg(input),
+  sqlc.arg(feedback)
 )
 RETURNING *;
 

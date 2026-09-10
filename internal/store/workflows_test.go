@@ -462,15 +462,21 @@ func TestStepRunsIterateAndFinishOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateStepRun(review): %v", err)
 	}
-	if rev.Iteration != 1 || rev.Input != "PR #12" {
-		t.Errorf("review step run = %+v, want iteration 1 with the input carried", rev)
+	if rev.Iteration != 1 || rev.Input != "PR #12" || rev.Feedback != "" {
+		t.Errorf("review step run = %+v, want iteration 1 with the input carried and no feedback", rev)
 	}
 	if err := s.FinishStepRun(ctx, rev.ID, "reject", "tests missing"); err != nil {
 		t.Fatalf("FinishStepRun(review): %v", err)
 	}
-	again, err := s.CreateStepRun(ctx, workflow.StepRun{RunID: run.ID, StepID: implement.ID})
+	again, err := s.CreateStepRun(ctx, workflow.StepRun{RunID: run.ID, StepID: implement.ID, Feedback: "tests missing"})
 	if err != nil {
 		t.Fatalf("CreateStepRun(implement again): %v", err)
+	}
+	if again.Feedback != "tests missing" {
+		t.Errorf("loop-back step run feedback = %q, want the reviewer's hand-off recorded", again.Feedback)
+	}
+	if reloaded, _ := s.GetStepRun(ctx, again.ID); reloaded.Feedback != "tests missing" {
+		t.Errorf("GetStepRun feedback = %q, want it read back from the row", reloaded.Feedback)
 	}
 	if again.Iteration != 2 {
 		t.Errorf("second implement iteration = %d, want 2", again.Iteration)

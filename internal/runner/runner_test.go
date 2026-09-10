@@ -322,6 +322,11 @@ func TestRunLoopsBackWithFeedbackUntilMaxIterations(t *testing.T) {
 	if second.StepID != f.steps["implement"].ID || second.Iteration != 2 || second.Input != "" {
 		t.Errorf("second implement = %+v, want iteration 2 with the original (empty) input", second)
 	}
+	// Feedback is on the row, not just in the prompt, so get_workflow_step
+	// can read it back.
+	if second.Feedback != "needs tests" || srs[0].Feedback != "" {
+		t.Errorf("feedback: second implement = %q (want \"needs tests\"), first = %q (want empty)", second.Feedback, srs[0].Feedback)
+	}
 	reqs := f.exec.requests()
 	if want := "input=[]; feedback=[needs tests]; iter=2"; !strings.Contains(reqs[2].Prompt, want) {
 		t.Errorf("second implement prompt = %q, want %s", reqs[2].Prompt, want)

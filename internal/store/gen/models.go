@@ -144,4 +144,5 @@ type WorkflowStepRun struct {
 	LogPath           string
 	StartedAt         string
 	EndedAt           sql.NullString
+	Feedback          string
 }
