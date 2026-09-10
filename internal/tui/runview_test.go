@@ -293,9 +293,9 @@ func TestResumeStepSessionRefusedWhileRunLive(t *testing.T) {
 
 // --- run view -------------------------------------------------------------
 
-// `v` opens the run view on a task's single run: the step list with the
-// current step, the log rendered from the step's stream-json, and `l`
-// flipping to the raw lines.
+// `v` opens the run view on a task's single run: the sidebar with that
+// run, the step list with the current step, the log rendered from the
+// step's stream-json, and `v` flipping to the raw lines.
 func TestRunViewShowsStepsAndLog(t *testing.T) {
 	stubRunnerAlive(t, true)
 	m, s := newTestApp(t)
@@ -311,8 +311,13 @@ func TestRunViewShowsStepsAndLog(t *testing.T) {
 	if a.rv.runID != l.run.ID || len(a.rv.stepRuns) != 1 || a.rv.cursor != 0 || !a.rv.follow {
 		t.Fatalf("run view = %+v, want run %d with its one step selected and followed", a.rv, l.run.ID)
 	}
+	if a.rv.focus != rvPaneSteps || len(a.rv.runs) != 1 || a.rv.runCursor != 0 {
+		t.Fatalf("focus=%v runs=%d runCursor=%d, want the steps focused and the one run in the sidebar",
+			a.rv.focus, len(a.rv.runs), a.rv.runCursor)
+	}
 	content := ansi.Strip(m.View().Content)
-	for _, want := range []string{"RUN " + strconv.FormatInt(l.run.ID, 10), "ship it", "STEPS", "implement", "running",
+	for _, want := range []string{"RUNS", "#" + strconv.FormatInt(l.run.ID, 10),
+		"RUN " + strconv.FormatInt(l.run.ID, 10), "ship it", "STEPS", "implement", "running",
 		"LOG", "Looking at the scheduler.", "⚙ Bash: go test ./...", "following"} {
 		if !strings.Contains(content, want) {
 			t.Errorf("run view missing %q:\n%s", want, content)
@@ -322,7 +327,7 @@ func TestRunViewShowsStepsAndLog(t *testing.T) {
 		t.Errorf("rendered view leaks raw JSON:\n%s", content)
 	}
 
-	m = drive(t, m, keyPress('l'))
+	m = drive(t, m, keyPress('v'))
 	content = ansi.Strip(m.View().Content)
 	if !strings.Contains(content, `"type":"assistant"`) || !strings.Contains(content, "raw") {
 		t.Errorf("raw toggle did not show the stream-json lines:\n%s", content)
@@ -338,7 +343,7 @@ func TestRunViewShowsStepsAndLog(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.Close()
-	m = drive(t, m, keyPress('l'))
+	m = drive(t, m, keyPress('v'))
 	m = drive(t, m, sessionsPolledMsg{changed: true})
 	a = m.(app)
 	if got := strings.Join(a.rv.log.rendered, "\n"); !strings.Contains(got, "Looking at the scheduler.") || !strings.HasSuffix(got, "All green.") {
@@ -655,39 +660,76 @@ func TestRunViewTakeoverNeedsPausedRun(t *testing.T) {
 	}
 }
 
-// With several runs on a task, `v` opens a picker; a digit picks one.
-func TestRunPickerOpensForSeveralRuns(t *testing.T) {
+// With several runs on a task, `v` opens the view straight onto the latest
+// with every run in the sidebar; `h` reaches the sidebar, where j/k switch
+// the watched run, and h/l walk runs → steps → log and back.
+func TestRunViewSidebarSwitchesRuns(t *testing.T) {
 	ctx := context.Background()
 	stubRunnerAlive(t, true)
 	m, s := newTestApp(t)
 	l := newLiveRun(t, s, workflow.RunRunning)
-	old, err := s.CreateRun(ctx, l.wf.ID, l.tk.ID, "/tmp/repo")
+	// Created after the live run, so it is the task's latest.
+	latest, err := s.CreateRun(ctx, l.wf.ID, l.tk.ID, "/tmp/repo")
 	if err != nil {
 		t.Fatalf("CreateRun: %v", err)
 	}
-	if err := s.SetRunState(ctx, old.ID, workflow.RunDone); err != nil {
+	if err := s.SetRunState(ctx, latest.ID, workflow.RunDone); err != nil {
 		t.Fatalf("SetRunState: %v", err)
 	}
+	m = drive(t, m, tea.WindowSizeMsg{Width: 140, Height: 40})
 	m = drive(t, m, refreshMsg{})
 
-	m = drive(t, m, keyPress('v'))
+	m = openRun(t, m)
 	a := m.(app)
-	if !a.runPickerOpen || len(a.runPickerRuns) != 2 {
-		t.Fatalf("picker open=%v runs=%d, want open over two runs", a.runPickerOpen, len(a.runPickerRuns))
+	if a.rv.runID != latest.ID || a.rv.focus != rvPaneSteps {
+		t.Fatalf("run %d focus %v after v, want the latest run %d with the steps focused", a.rv.runID, a.rv.focus, latest.ID)
+	}
+	if len(a.rv.runs) != 2 || a.rv.runCursor != 0 || a.rv.runs[0].run.ID != latest.ID || a.rv.runs[1].run.ID != l.run.ID {
+		t.Fatalf("sidebar = %+v cursor %d, want both runs newest first with the cursor on the latest", a.rv.runs, a.rv.runCursor)
 	}
 	content := ansi.Strip(m.View().Content)
-	for _, want := range []string{"workflow runs on", "running", "done"} {
+	for _, want := range []string{"RUNS", "#" + strconv.FormatInt(latest.ID, 10), "#" + strconv.FormatInt(l.run.ID, 10), "done"} {
 		if !strings.Contains(content, want) {
-			t.Errorf("run picker missing %q:\n%s", want, content)
+			t.Errorf("run view missing %q:\n%s", want, content)
 		}
 	}
-	m = drive(t, m, keyPress('2'))
-	a = m.(app)
-	if a.runPickerOpen || a.mode != modeRun {
-		t.Fatalf("picker open=%v mode=%v after picking, want the run view", a.runPickerOpen, a.mode)
+
+	// h reaches the sidebar; j switches to the older, running run.
+	m = drive(t, m, keyPress('h'))
+	if a := m.(app); a.rv.focus != rvPaneRuns {
+		t.Fatalf("focus = %v after h, want the runs sidebar", a.rv.focus)
 	}
-	if picked := a.runPickerRuns; picked != nil {
-		t.Error("picker state not cleared")
+	m = drive(t, m, keyPress('j'))
+	a = m.(app)
+	if a.rv.runID != l.run.ID || a.rv.runCursor != 1 || a.rv.focus != rvPaneRuns {
+		t.Fatalf("run %d cursor %d focus %v after j, want the older run %d selected with the sidebar kept",
+			a.rv.runID, a.rv.runCursor, a.rv.focus, l.run.ID)
+	}
+	if a.rv.run.State != workflow.RunRunning || len(a.rv.stepRuns) != 1 || !a.rv.follow {
+		t.Fatalf("run view = %+v, want the running run loaded with its step followed", a.rv)
+	}
+	if content := ansi.Strip(m.View().Content); !strings.Contains(content, "RUN "+strconv.FormatInt(l.run.ID, 10)) {
+		t.Errorf("steps pane does not name the switched-to run:\n%s", content)
+	}
+
+	// l walks right through the panes and stops at the log; h walks back.
+	for _, want := range []rvPane{rvPaneSteps, rvPaneLog, rvPaneLog} {
+		m = drive(t, m, keyPress('l'))
+		if a := m.(app); a.rv.focus != want {
+			t.Fatalf("focus = %v after l, want %v", a.rv.focus, want)
+		}
+	}
+	for _, want := range []rvPane{rvPaneSteps, rvPaneRuns, rvPaneRuns} {
+		m = drive(t, m, keyPress('h'))
+		if a := m.(app); a.rv.focus != want {
+			t.Fatalf("focus = %v after h, want %v", a.rv.focus, want)
+		}
+	}
+
+	// esc from the sidebar leaves the view.
+	m = drive(t, m, esc())
+	if m.(app).mode != modeList {
+		t.Error("esc did not leave the run view")
 	}
 }
 
@@ -701,7 +743,7 @@ func TestViewRunWithNoRunsFlashes(t *testing.T) {
 	m = drive(t, m, refreshMsg{})
 	m = drive(t, m, keyPress('v'))
 	a := m.(app)
-	if a.mode != modeList || a.runPickerOpen || !strings.Contains(a.status.text, "no workflow runs") {
-		t.Errorf("mode=%v picker=%v status=%+v, want a no-runs flash in the list", a.mode, a.runPickerOpen, a.status)
+	if a.mode != modeList || !strings.Contains(a.status.text, "no workflow runs") {
+		t.Errorf("mode=%v status=%+v, want a no-runs flash in the list", a.mode, a.status)
 	}
 }
