@@ -444,9 +444,66 @@ func TestRunViewGateDecision(t *testing.T) {
 	}
 }
 
-// A gate whose edges name other outcomes refuses approve/reject with the
-// outcomes it does route, rather than ending the run on an edge-less one.
-func TestRunViewGateRefusesUnroutedOutcome(t *testing.T) {
+// `x` on a waiting gate does not decide it outright: it opens a feedback
+// modal, and the text submitted lands as the gate's deliverable -- what the
+// runner hands the step the reject edge loops back to as {{.Feedback}}.
+// esc backs out with the gate untouched.
+func TestRunViewGateRejectAsksForFeedback(t *testing.T) {
+	ctx := context.Background()
+	stubRunnerAlive(t, true)
+	m, s := newTestApp(t)
+	l := newLiveRun(t, s, workflow.RunRunning)
+	l.atGate(t, s)
+	m = drive(t, m, tea.WindowSizeMsg{Width: 140, Height: 40})
+	m = drive(t, m, refreshMsg{})
+	m = openRun(t, m)
+
+	if content := ansi.Strip(m.View().Content); !strings.Contains(content, "x reject with feedback") {
+		t.Errorf("gate pane does not say reject asks for feedback:\n%s", content)
+	}
+
+	// esc cancels: no decision.
+	m = drive(t, m, keyPress('x'))
+	a := m.(app)
+	if !a.modal.Active() || a.modal.kind != modalGateFeedback || !strings.Contains(a.modal.title, "reject review") {
+		t.Fatalf("modal = %+v, want the gate feedback modal for the review gate", a.modal)
+	}
+	m = drive(t, m, esc())
+	if m.(app).modal.Active() {
+		t.Fatal("esc did not close the feedback modal")
+	}
+	if sr, _ := s.GetStepRun(ctx, l.stepRun.ID); sr.Finished() {
+		t.Fatal("a cancelled reject decided the gate")
+	}
+
+	// Submitting records reject with the text as the deliverable.
+	m = drive(t, m, keyPress('x'))
+	m = typeText(t, m, "needs tests")
+	m = drive(t, m, enter()) // newline, not submit
+	m = typeText(t, m, "and a changelog entry")
+	m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyEnter, Mod: tea.ModCtrl})
+	if m.(app).modal.Active() {
+		t.Fatal("modal still active after submit")
+	}
+	waitFor(t, "gate rejected with feedback", func() bool {
+		sr, err := s.GetStepRun(ctx, l.stepRun.ID)
+		return err == nil && sr.Finished() && sr.Outcome == "reject" && sr.Deliverable == "needs tests\nand a changelog entry"
+	})
+
+	// The decided gate shows what it was told.
+	m = drive(t, m, refreshMsg{})
+	content := ansi.Strip(m.View().Content)
+	for _, want := range []string{"gate decided: reject", "FEEDBACK", "needs tests"} {
+		if !strings.Contains(content, want) {
+			t.Errorf("decided gate pane missing %q:\n%s", want, content)
+		}
+	}
+}
+
+// A gate whose edges name other outcomes does not take an approve or
+// reject its edges do not route; `a` opens the picker over the outcomes it
+// does, as does `o` directly, and a pick records that outcome.
+func TestRunViewGateOffersPickerForOtherOutcomes(t *testing.T) {
 	ctx := context.Background()
 	stubRunnerAlive(t, true)
 	m, s := newTestApp(t)
@@ -462,20 +519,124 @@ func TestRunViewGateRefusesUnroutedOutcome(t *testing.T) {
 			}
 		}
 	}
-	if _, err := s.SetEdge(ctx, l.gate.ID, "ship", l.agent.ID, nil); err != nil {
-		t.Fatalf("SetEdge: %v", err)
+	for _, outcome := range []string{"ship", "hold", "reject"} {
+		if _, err := s.SetEdge(ctx, l.gate.ID, outcome, l.agent.ID, nil); err != nil {
+			t.Fatalf("SetEdge(%s): %v", outcome, err)
+		}
 	}
+	l.atGate(t, s)
+	m = drive(t, m, tea.WindowSizeMsg{Width: 140, Height: 40})
+	m = drive(t, m, refreshMsg{})
+	m = openRun(t, m)
+
+	content := ansi.Strip(m.View().Content)
+	if !strings.Contains(content, "o pick outcome") || strings.Contains(content, "a approve") {
+		t.Errorf("gate pane should offer the picker and not an unrouted approve:\n%s", content)
+	}
+
+	// An unrouted approve opens the picker rather than deciding anything.
+	// Outcomes list in the store's order (alphabetical).
+	m = drive(t, m, keyPress('a'))
+	a := m.(app)
+	if !a.gatePickerOpen || !strings.Contains(a.status.text, "routes hold, reject, ship") {
+		t.Fatalf("picker open=%v status=%+v, want the picker with a note on what the gate routes", a.gatePickerOpen, a.status)
+	}
+	content = ansi.Strip(m.View().Content)
+	for _, want := range []string{"decide review", "1 hold", "2 reject", "3 ship", "asks for feedback"} {
+		if !strings.Contains(content, want) {
+			t.Errorf("gate picker missing %q:\n%s", want, content)
+		}
+	}
+	if sr, _ := s.GetStepRun(ctx, l.stepRun.ID); sr.Finished() {
+		t.Fatal("an unrouted approve finished the gate")
+	}
+	m = drive(t, m, esc())
+	if m.(app).gatePickerOpen {
+		t.Fatal("esc did not close the picker")
+	}
+
+	// `o` opens it directly; j/k move; enter picks the highlight (hold).
+	m = drive(t, m, keyPress('o'))
+	if !m.(app).gatePickerOpen {
+		t.Fatal("o did not open the picker")
+	}
+	m = drive(t, m, keyPress('j'))
+	m = drive(t, m, keyPress('k'))
+	m = drive(t, m, enter())
+	if a := m.(app); a.gatePickerOpen || a.gatePickerOutcomes != nil {
+		t.Error("picker state not cleared after a pick")
+	}
+	waitFor(t, "gate decided as hold", func() bool {
+		sr, err := s.GetStepRun(ctx, l.stepRun.ID)
+		return err == nil && sr.Finished() && sr.Outcome == "hold" && sr.Deliverable == ""
+	})
+}
+
+// Picking reject from the picker goes through the same feedback modal as
+// `x`; a pick on a gate that was decided meanwhile is dropped.
+func TestRunViewGatePickerRejectAsksForFeedback(t *testing.T) {
+	ctx := context.Background()
+	stubRunnerAlive(t, true)
+	m, s := newTestApp(t)
+	l := newLiveRun(t, s, workflow.RunRunning)
 	l.atGate(t, s)
 	m = drive(t, m, refreshMsg{})
 	m = openRun(t, m)
 
-	m = drive(t, m, keyPress('a'))
+	m = drive(t, m, keyPress('o'))
+	m = drive(t, m, keyPress('2')) // approve, reject: 2 is reject
 	a := m.(app)
-	if !a.status.isErr || !strings.Contains(a.status.text, "routes ship") {
-		t.Errorf("status = %+v, want a refusal naming the gate's outcomes", a.status)
+	if a.gatePickerOpen || !a.modal.Active() || a.modal.kind != modalGateFeedback || a.modal.extra != "reject" {
+		t.Fatalf("picker=%v modal=%+v, want the feedback modal for reject", a.gatePickerOpen, a.modal)
 	}
-	if sr, _ := s.GetStepRun(ctx, l.stepRun.ID); sr.Finished() {
-		t.Error("an unrouted approve finished the gate")
+
+	// Someone else (the CLI) decides while the modal is open; the submit
+	// must not overwrite or error out loudly.
+	if err := s.FinishStepRun(ctx, l.stepRun.ID, "approve", ""); err != nil {
+		t.Fatalf("FinishStepRun: %v", err)
+	}
+	m = drive(t, m, refreshMsg{})
+	m = typeText(t, m, "too late")
+	m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyEnter, Mod: tea.ModCtrl})
+	a = m.(app)
+	if a.modal.Active() || !strings.Contains(a.status.text, "already decided") {
+		t.Errorf("status = %+v, want the modal closed and a note that the gate was decided", a.status)
+	}
+	if sr, _ := s.GetStepRun(ctx, l.stepRun.ID); sr.Outcome != "approve" || sr.Deliverable != "" {
+		t.Errorf("gate = %+v, want the earlier approve to stand", sr)
+	}
+}
+
+// The detail pane's WORKFLOWS row for a run waiting at a gate wears the
+// blocked glyph and points at the run view to decide it.
+func TestDetailPaneHighlightsWaitingGate(t *testing.T) {
+	stubRunnerAlive(t, true)
+	m, s := newTestApp(t)
+	l := newLiveRun(t, s, workflow.RunRunning)
+	l.atGate(t, s)
+	m = drive(t, m, tea.WindowSizeMsg{Width: 160, Height: 40})
+	m = drive(t, m, refreshMsg{})
+	m = drive(t, m, keyPress(']'))
+
+	a := m.(app)
+	content := ansi.Strip(m.View().Content)
+	var row string
+	for _, line := range strings.Split(content, "\n") {
+		if strings.Contains(line, "ship it") && strings.Contains(line, "waiting_review") {
+			row = line
+		}
+	}
+	if row == "" {
+		t.Fatalf("detail pane has no WORKFLOWS row for the waiting run:\n%s", content)
+	}
+	if glyph := a.styles.Glyphs.Session[task.SessionBlocked]; !strings.Contains(row, glyph) {
+		t.Errorf("waiting gate row %q lacks the blocked glyph %q", row, glyph)
+	}
+	if !strings.Contains(row, "review") {
+		t.Errorf("waiting gate row %q does not name the gate step", row)
+	}
+	if !strings.Contains(content, "v to review the waiting gate") {
+		t.Errorf("detail pane hint does not point at the waiting gate:\n%s", content)
 	}
 }
 

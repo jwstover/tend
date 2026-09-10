@@ -51,7 +51,8 @@ type keyMap struct {
 	CancelRun key.Binding // `cc` chord: write cancelled; the runner kills the step
 	PauseRun  key.Binding // pause a live run / resume a paused one
 	Approve   key.Binding // approve the gate the run is waiting at
-	Reject    key.Binding // reject it
+	Reject    key.Binding // reject it, with feedback for the step it loops back to
+	Outcome   key.Binding // pick any of the gate's edge outcomes
 	Takeover  key.Binding // resume a paused step's session interactively
 	RawLog    key.Binding // raw stream-json instead of the rendering
 
@@ -148,6 +149,7 @@ func defaultKeyMap() keyMap {
 		PauseRun:  key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "pause / resume")),
 		Approve:   key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "approve gate")),
 		Reject:    key.NewBinding(key.WithKeys("x"), key.WithHelp("x", "reject gate")),
+		Outcome:   key.NewBinding(key.WithKeys("o"), key.WithHelp("o", "pick gate outcome")),
 		Takeover:  key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "take over step")),
 		RawLog:    key.NewBinding(key.WithKeys("l"), key.WithHelp("l", "raw log")),
 
