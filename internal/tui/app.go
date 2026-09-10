@@ -57,9 +57,14 @@ type Store interface {
 	SetTitle(ctx context.Context, id int64, title string) error
 	SetBody(ctx context.Context, id int64, body string) error
 	DeleteTask(ctx context.Context, id int64) error
+	GetTask(ctx context.Context, id int64) (task.Task, error)
 	CreateSession(ctx context.Context, taskID int64, externalID, cwd, label, tmuxSession string) (task.Session, error)
 	DeleteSession(ctx context.Context, id int64) error
 	ListSessionsForTask(ctx context.Context, taskID int64) ([]task.Session, error)
+	// The agents view (agents.go): a project's sessions across its tasks,
+	// and the status write `dd` makes when it kills one.
+	ListSessionsForProject(ctx context.Context, projectID *int64) ([]task.TaskSession, error)
+	SetSessionStatus(ctx context.Context, externalID string, status task.SessionStatus) error
 	TouchSession(ctx context.Context, id int64) error
 	UpdateSessionLabel(ctx context.Context, externalID, label string) error
 	SetSessionNeedsRecap(ctx context.Context, externalID string, needs bool) error
@@ -218,7 +223,8 @@ const (
 	modeTriage
 	modeStandup
 	modeWorkflows
-	modeRun // watching one workflow run (runview.go)
+	modeRun    // watching one workflow run (runview.go)
+	modeAgents // a project's agent sessions (agents.go)
 )
 
 // pane identifies which column owns the keyboard. It replaces an earlier
@@ -587,6 +593,14 @@ type app struct {
 	runPickerRuns []runSummary
 	runPickerSel  int
 	cancelPending bool // first `c` pressed in the run view; a second confirms
+	// rvBack is the view `v` was pressed in, for leaving the run view to
+	// return there: the list, or the agents view.
+	rvBack viewMode
+
+	// Agents view (agents.go): the project's sessions and the pane beside
+	// them. Shares the projects column and the pane focus enum with the
+	// list view, since it is laid out the same way.
+	av agentsView
 
 	showDetail bool
 	focus      pane // which column owns j/k and the scroll keys
@@ -760,7 +774,7 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		a.syncProjectCursor(wantID, hadSelection)
 		a.resize()
-		return a, a.loadTasks(a.mode)
+		return a, a.loadScoped()
 
 	case childrenLoadedMsg:
 		a.childCache[msg.parentID] = msg.children
@@ -827,8 +841,24 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, tea.Batch(a.applyRunView(msg), settle)
 
 	case runLogLoadedMsg:
-		if a.mode == modeRun {
+		switch a.mode {
+		case modeRun:
 			a.applyRunLog(msg)
+		case modeAgents:
+			a.applyAgentLog(msg)
+		}
+		return a, nil
+
+	case agentsLoadedMsg:
+		settle := a.liveReloadSettled()
+		if a.mode != modeAgents {
+			return a, settle
+		}
+		return a, tea.Batch(a.applyAgents(msg), settle)
+
+	case agentDetailLoadedMsg:
+		if a.mode == modeAgents {
+			a.applyAgentDetail(msg)
 		}
 		return a, nil
 
@@ -910,12 +940,16 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// nothing there worth reloading for — mirrors refreshMsg's same
 		// branches. The run view reloads itself (and tails its log) from
 		// the same tick; the list reload it would otherwise get is what
-		// syncDetail does when the view is left.
+		// syncDetail does when the view is left. The agents view is all
+		// session markers, and tails its log the same way.
 		if !msg.changed || a.mode == modeStandup || a.mode == modeWorkflows {
 			return a, nil
 		}
-		if a.mode == modeRun {
+		switch a.mode {
+		case modeRun:
 			return a, a.loadRunView(a.rv.runID)
+		case modeAgents:
+			return a, a.loadAgentSessions()
 		}
 		return a, a.loadTasks(a.mode)
 
@@ -1156,6 +1190,12 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return a.handleRunViewKey(msg)
 	}
 
+	// And the agents view, which shares the projects column but owns the
+	// sessions list, the pane, and the `dd` chord as a kill.
+	if a.mode == modeAgents {
+		return a.handleAgentsKey(msg)
+	}
+
 	// A pending `c` chord consumes the next key: a state key applies it,
 	// anything else cancels.
 	if a.statePending {
@@ -1306,6 +1346,10 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, a.keys.Workflows):
 		a.startWorkflows()
 		return a, a.loadWorkflows(0)
+
+	case key.Matches(msg, a.keys.Agents):
+		a.startAgents()
+		return a, a.loadAgentSessions()
 
 	case key.Matches(msg, a.keys.Note):
 		return a, a.modal.Open(modalLog, true, "note", 0, "")
@@ -1692,11 +1736,18 @@ func (a app) setGroupBy(g groupBy) (tea.Model, tea.Cmd) {
 func (a app) deletePanel() string {
 	label, desc := "delete", "delete"
 	switch {
-	case a.focus == paneProjects && a.mode == modeList:
+	case a.focus == paneProjects && (a.mode == modeList || a.mode == modeAgents):
 		// Deleting a project never deletes work, and the panel says so:
 		// the store reassigns its tasks to Unsorted first.
 		label = "delete project"
 		desc = "delete; tasks move to Unsorted"
+	case a.mode == modeAgents:
+		// Not a delete at all: the row stays, the process goes. The panel
+		// says which process, since a headless session's is the runner's.
+		label, desc = "kill session", "kill the tmux session; the row stays as ended"
+		if row, ok := a.selectedAgent(); ok && row.headless() {
+			desc = "cancel its workflow run; the runner stops the step"
+		}
 	case a.mode == modeWorkflows && a.wfFocus == wfPaneSteps:
 		label = "delete step"
 	case a.mode == modeWorkflows:
@@ -1907,16 +1958,18 @@ const (
 	detailSplitMinWidth = 100
 )
 
-// projectsVisible reports whether the projects column is on screen. It is
-// list-mode only: triage and standup own the full width.
+// projectsVisible reports whether the projects column is on screen. It
+// belongs to the two project-scoped views, the list and the agents view;
+// triage, standup, workflows and the run view own the full width.
 func (a app) projectsVisible() bool {
-	if !a.showProjects || a.mode != modeList || a.width < projectsPaneMinWidth {
+	if !a.showProjects || (a.mode != modeList && a.mode != modeAgents) || a.width < projectsPaneMinWidth {
 		return false
 	}
 	// Never let the projects column be the thing that pushes the detail
 	// pane into replacing the task list. The list is the primary surface;
-	// a narrow terminal gives up the projects column first.
-	if a.showDetail && a.width-projectsPaneWidth-1 < detailSplitMinWidth {
+	// a narrow terminal gives up the projects column first. The agents
+	// view always has its pane, so it always makes this check.
+	if (a.showDetail || a.mode == modeAgents) && a.width-projectsPaneWidth-1 < detailSplitMinWidth {
 		return false
 	}
 	return true
@@ -2006,6 +2059,14 @@ func (a *app) resize() {
 	// the cursor; focus must not stay on a pane nobody can see.
 	if a.focus == paneProjects && !a.projectsVisible() {
 		a.focus = paneTasks
+	}
+	if a.mode == modeAgents {
+		_, _, detailW := a.agentsWidths()
+		if detailW <= 0 && a.focus == paneDetail {
+			a.focus = paneTasks
+		}
+		a.av.renderer, _ = newBodyRenderer(detailW - 2)
+		a.renderAgentPane()
 	}
 	_, listWidth, detailWidth, _ := a.paneWidths()
 	if a.showDetail {
@@ -2181,7 +2242,17 @@ func (a app) reloadCmd() tea.Cmd {
 	case modeRun:
 		return a.loadRunView(a.rv.runID)
 	}
-	return tea.Batch(a.loadTasks(a.mode), a.loadProjects())
+	return tea.Batch(a.loadScoped(), a.loadProjects())
+}
+
+// loadScoped re-fetches the project-scoped list the current mode shows:
+// the agents view's sessions, otherwise the task list. It is what a
+// projects-column move, or a projects reload, follows up with.
+func (a app) loadScoped() tea.Cmd {
+	if a.mode == modeAgents {
+		return a.loadAgentSessions()
+	}
+	return a.loadTasks(a.mode)
 }
 
 // inputBusy reports whether the user is mid-input somewhere a list rebuild
@@ -2399,6 +2470,9 @@ func (a app) View() tea.View {
 		at, _ := a.runViewWidths()
 		splits = []int{at}
 		body = a.runViewBody()
+	case modeAgents:
+		splits = a.agentsSplits()
+		body = a.agentsBody()
 	default:
 		body = a.listBody()
 	}
@@ -2496,6 +2570,8 @@ func (a app) headerLine() string {
 		if a.rv.workflow != "" {
 			left += s.HeaderSep.Render("  ·  ") + s.CountLabel.Render(a.rv.workflow)
 		}
+	case modeAgents:
+		left += s.HeaderView.Render("agents")
 	default:
 		left += s.HeaderView.Render("live")
 		// State is the default and needs no announcing; any other grouping
@@ -2530,6 +2606,12 @@ func (a app) headerLine() string {
 	case a.mode == modeRun:
 		mark, style := runStateCell(s, a.rv.run.State)
 		right = style.Render(mark+" "+string(a.rv.run.State)) + "  "
+	case a.mode == modeAgents:
+		noun := "sessions"
+		if len(a.av.rows) == 1 {
+			noun = "session"
+		}
+		right = s.CountNum.Render(fmt.Sprintf("%d", len(a.av.rows))) + s.CountLabel.Render(" "+noun) + "  "
 	case a.mode == modeTriage && len(a.triageQueue) > 0:
 		total := a.triageProcessed + len(a.triageQueue)
 		right = s.CountNum.Render(fmt.Sprintf("%d of %d", a.triageProcessed+1, total)) +
@@ -2681,6 +2763,9 @@ func (a app) footer() string {
 	}
 	if a.mode == modeRun {
 		hints = a.runViewHints()
+	}
+	if a.mode == modeAgents {
+		hints = a.agentsHints()
 	}
 	return a.hintLine(hints)
 }

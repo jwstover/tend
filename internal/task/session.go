@@ -78,3 +78,23 @@ type Session struct {
 	LastActiveAt    time.Time
 	StepRunID       *int64
 }
+
+// TaskSession is a Session together with the title and state of the task
+// it belongs to, for lists that span tasks — the agents view shows every
+// session in a project, and a row there has to say whose it is. Sessions
+// listed under one task (ListSessionsForTask) already know, so they stay
+// plain Sessions.
+type TaskSession struct {
+	Session
+	TaskTitle string
+	TaskState State
+}
+
+// Headless reports whether the session ran a workflow step under the
+// runner rather than in a terminal of its own: it has a step run and no
+// tmux session (the pane is the runner's, not claude's). Such a session
+// has no pane to attach to, and its transcript is the runner's to drive
+// while its run is live.
+func (s Session) Headless() bool {
+	return s.StepRunID != nil && s.TmuxSession == ""
+}

@@ -125,6 +125,64 @@ func (q *Queries) ListSessionStatuses(ctx context.Context) ([]ListSessionStatuse
 	return items, nil
 }
 
+const listSessionsForProject = `-- name: ListSessionsForProject :many
+SELECT s.id, s.task_id, s.external_id, s.cwd, s.label, s.started_at, s.last_active_at, s.tmux_session, s.needs_recap, s.status, s.status_updated_at, s.workflow_step_run_id, t.title AS task_title, t.state AS task_state
+FROM agent_sessions s
+JOIN tasks t ON t.id = s.task_id
+WHERE (?1 IS NULL OR t.project_id = ?1)
+ORDER BY s.last_active_at DESC, s.id DESC
+`
+
+type ListSessionsForProjectRow struct {
+	AgentSession AgentSession
+	TaskTitle    string
+	TaskState    string
+}
+
+// Every session on every task of one project (or of all projects, when
+// project_id is NULL -- the projects column's All row), most recently
+// active first: the agents view's list. agent_sessions has no project
+// column of its own, so the scope comes through the owning task; the
+// task's title and state ride along so a row can say which task the
+// session belongs to without a second read per session.
+func (q *Queries) ListSessionsForProject(ctx context.Context, projectID interface{}) ([]ListSessionsForProjectRow, error) {
+	rows, err := q.db.QueryContext(ctx, listSessionsForProject, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListSessionsForProjectRow{}
+	for rows.Next() {
+		var i ListSessionsForProjectRow
+		if err := rows.Scan(
+			&i.AgentSession.ID,
+			&i.AgentSession.TaskID,
+			&i.AgentSession.ExternalID,
+			&i.AgentSession.Cwd,
+			&i.AgentSession.Label,
+			&i.AgentSession.StartedAt,
+			&i.AgentSession.LastActiveAt,
+			&i.AgentSession.TmuxSession,
+			&i.AgentSession.NeedsRecap,
+			&i.AgentSession.Status,
+			&i.AgentSession.StatusUpdatedAt,
+			&i.AgentSession.WorkflowStepRunID,
+			&i.TaskTitle,
+			&i.TaskState,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listSessionsForTask = `-- name: ListSessionsForTask :many
 SELECT id, task_id, external_id, cwd, label, started_at, last_active_at, tmux_session, needs_recap, status, status_updated_at, workflow_step_run_id
 FROM agent_sessions

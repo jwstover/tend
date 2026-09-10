@@ -44,8 +44,9 @@ func (a app) selectedProject() (task.Project, bool) {
 }
 
 // setProjectCursor moves the projects cursor and returns the commands that
-// follow from it: the task list reloads scoped to the new selection, and a
-// real project becomes the capture target.
+// follow from it: the scoped list (tasks, or the agents view's sessions)
+// reloads for the new selection, and a real project becomes the capture
+// target.
 //
 // The All row deliberately does not touch the capture target. It is a way
 // of looking at everything, not a place to put a new task, so capture
@@ -60,12 +61,12 @@ func (a *app) setProjectCursor(row int) tea.Cmd {
 		a.projectFilter = &p.ID
 		if p.ID != a.activeProjectID {
 			a.activeProjectID = p.ID
-			return tea.Batch(a.loadTasks(a.mode), a.persistActiveProject(p.ID))
+			return tea.Batch(a.loadScoped(), a.persistActiveProject(p.ID))
 		}
 	} else {
 		a.projectFilter = nil
 	}
-	return a.loadTasks(a.mode)
+	return a.loadScoped()
 }
 
 // persistActiveProject records the capture target so `tend add` in a bare

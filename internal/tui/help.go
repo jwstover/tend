@@ -53,6 +53,15 @@ func helpGroups() []helpGroup {
 			{"w", "run a workflow on the task"},
 			{"v", "watch the task's workflow run"},
 		}},
+		{"AGENTS", []helpEntry{
+			{"A", "open the agents view"},
+			{"j / k", "select a session"},
+			{"⏎ / r", "join the selected session"},
+			{"dd", "kill it (headless: cancel run)"},
+			{"v", "watch a headless session's run"},
+			{"C", "show / hide ended sessions"},
+			{"l", "raw / rendered log (in pane)"},
+		}},
 		{"PROJECTS", []helpEntry{
 			{"h / [", "focus / toggle projects column"},
 			{"n / R", "new / rename project"},

@@ -19,6 +19,7 @@ type keyMap struct {
 	Help           key.Binding
 	EditBody       key.Binding
 	Sessions       key.Binding // launch/resume a Claude Code session on the selected task
+	Agents         key.Binding // open the agents view: every session in the project (agents.go)
 	RunWorkflow    key.Binding // run a workflow on the selected task (workflowrun.go)
 	ViewRun        key.Binding // watch the selected task's workflow run (runview.go)
 	LogEntry       key.Binding // note attached to the selected task
@@ -113,20 +114,24 @@ func defaultKeyMap() keyMap {
 		Help:           key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
 		EditBody:       key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "edit body")),
 		Sessions:       key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "sessions")),
-		RunWorkflow:    key.NewBinding(key.WithKeys("w"), key.WithHelp("w", "run workflow")),
-		ViewRun:        key.NewBinding(key.WithKeys("v"), key.WithHelp("v", "watch run")),
-		LogEntry:       key.NewBinding(key.WithKeys("U"), key.WithHelp("U", "note on task")),
-		Note:           key.NewBinding(key.WithKeys("N"), key.WithHelp("N", "note")),
-		Yank:           key.NewBinding(key.WithKeys("y"), key.WithHelp("y", "yank standup")),
-		SortToggle:     key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "sort")),
-		ToggleRecaps:   key.NewBinding(key.WithKeys("C"), key.WithHelp("C", "recaps")),
-		OpenURL:        key.NewBinding(key.WithKeys("o"), key.WithHelp("o", "open link(s)")),
-		OpenAllURLs:    key.NewBinding(key.WithKeys("O"), key.WithHelp("O", "open all links")),
-		ChangeState:    key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "change state")),
-		Delete:         key.NewBinding(key.WithKeys("d"), key.WithHelp("dd", "delete")),
-		MoveProject:    key.NewBinding(key.WithKeys("P"), key.WithHelp("P", "move to project")),
-		Archive:        key.NewBinding(key.WithKeys("A"), key.WithHelp("A", "archive")),
-		ProjectCwd:     key.NewBinding(key.WithKeys("w"), key.WithHelp("w", "default cwd")),
+		// `A` is archive only while the projects column is focused, which
+		// claims its keys first; from the task list it is free, and it is
+		// the one letter the view's name starts with.
+		Agents:       key.NewBinding(key.WithKeys("A"), key.WithHelp("A", "agents")),
+		RunWorkflow:  key.NewBinding(key.WithKeys("w"), key.WithHelp("w", "run workflow")),
+		ViewRun:      key.NewBinding(key.WithKeys("v"), key.WithHelp("v", "watch run")),
+		LogEntry:     key.NewBinding(key.WithKeys("U"), key.WithHelp("U", "note on task")),
+		Note:         key.NewBinding(key.WithKeys("N"), key.WithHelp("N", "note")),
+		Yank:         key.NewBinding(key.WithKeys("y"), key.WithHelp("y", "yank standup")),
+		SortToggle:   key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "sort")),
+		ToggleRecaps: key.NewBinding(key.WithKeys("C"), key.WithHelp("C", "recaps")),
+		OpenURL:      key.NewBinding(key.WithKeys("o"), key.WithHelp("o", "open link(s)")),
+		OpenAllURLs:  key.NewBinding(key.WithKeys("O"), key.WithHelp("O", "open all links")),
+		ChangeState:  key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "change state")),
+		Delete:       key.NewBinding(key.WithKeys("d"), key.WithHelp("dd", "delete")),
+		MoveProject:  key.NewBinding(key.WithKeys("P"), key.WithHelp("P", "move to project")),
+		Archive:      key.NewBinding(key.WithKeys("A"), key.WithHelp("A", "archive")),
+		ProjectCwd:   key.NewBinding(key.WithKeys("w"), key.WithHelp("w", "default cwd")),
 
 		Workflows:      key.NewBinding(key.WithKeys("W"), key.WithHelp("W", "workflows")),
 		Duplicate:      key.NewBinding(key.WithKeys("D"), key.WithHelp("D", "duplicate")),
