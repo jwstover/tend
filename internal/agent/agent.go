@@ -67,6 +67,13 @@ type LaunchOpts struct {
 	// PermissionMode is claude's --permission-mode; "" inherits the
 	// user's default.
 	PermissionMode string
+	// AppendSystemPrompt is claude's --append-system-prompt: text added
+	// to the default system prompt rather than replacing it. The workflow
+	// runner uses it to state the finish_step hand-off contract for a
+	// headless step (workflow.StepSystemPrompt) without touching the
+	// author's prompt_md. Honoured by HeadlessCmd/HeadlessResumeCmd; ""
+	// adds nothing.
+	AppendSystemPrompt string
 }
 
 // LaunchCmdWith is LaunchCmd plus the step-level options a workflow run
