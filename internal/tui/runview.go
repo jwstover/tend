@@ -39,8 +39,8 @@ import (
 //
 // Controls write exactly what the CLI would: SetRunState for pause and
 // cancel (the runner polls for both), FinishStepRun for a gate decision
-// (the same call finish_step makes), runner.Resume for a paused run, and
-// resumeSessionCmd for a takeover of a paused step's session. Nothing
+// (the same call finish_step makes), and runner.Resume for a paused run.
+// `t` hands the current step's session to the user (takeover.go). Nothing
 // here polls on its own timer: the session poller's tick (pollRuns in
 // sessions.go) reports run and log changes and the view reloads on it.
 
@@ -1024,34 +1024,6 @@ func (a app) gatePickerView() string {
 	return strings.Join(lines, "\n")
 }
 
-// takeoverStep hands the current step's session to the user: the run
-// must be paused first, so the runner has let go of the session, and the
-// step must be an agent step with a session row. It then resumes that
-// session exactly as `r` does, tmux-wrapped, with the terminal handed
-// over. Resuming the run afterwards (`p`) continues the same session.
-func (a app) takeoverStep() tea.Cmd {
-	run := a.rv.run
-	cur, ok := a.rv.current()
-	if !ok || cur.SessionExternalID == "" {
-		return statusCmd(flash{text: "the current step has no session to take over"})
-	}
-	if run.State != workflow.RunPaused {
-		return statusCmd(flash{text: fmt.Sprintf("pause run %d first (p), then take over its step", run.ID)})
-	}
-	return func() tea.Msg {
-		sessions, err := a.store.ListSessionsForTask(a.ctx, run.TaskID)
-		if err != nil {
-			return errMsg{err}
-		}
-		for _, sess := range sessions {
-			if sess.ExternalID == cur.SessionExternalID {
-				return resumeSessionCmd(sess, a.dbPath)()
-			}
-		}
-		return statusMsg{isErr: true, text: fmt.Sprintf("no session row for step run %d", cur.ID)}
-	}
-}
-
 // statusCmd flashes without touching the store.
 func statusCmd(f flash) tea.Cmd {
 	return func() tea.Msg { return statusMsg(f) }
@@ -1320,7 +1292,7 @@ func (a app) runViewHints() [][2]string {
 	case workflow.RunWaitingReview:
 		hints = append(hints, [2]string{"a/x/o", "approve / reject / pick"}, [2]string{"p", "pause"})
 	case workflow.RunRunning:
-		hints = append(hints, [2]string{"p", "pause"})
+		hints = append(hints, [2]string{"p", "pause"}, [2]string{"t", "take over step"})
 	}
 	if !a.rv.run.State.Terminal() {
 		hints = append(hints, [2]string{"cc", "cancel"})

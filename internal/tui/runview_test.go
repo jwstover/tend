@@ -645,21 +645,6 @@ func TestDetailPaneHighlightsWaitingGate(t *testing.T) {
 	}
 }
 
-// `t` refuses a takeover until the run is paused, since the runner still
-// owns the step's session until then.
-func TestRunViewTakeoverNeedsPausedRun(t *testing.T) {
-	stubRunnerAlive(t, true)
-	m, s := newTestApp(t)
-	newLiveRun(t, s, workflow.RunRunning)
-	m = drive(t, m, refreshMsg{})
-	m = openRun(t, m)
-
-	m = drive(t, m, keyPress('t'))
-	if a := m.(app); !strings.Contains(a.status.text, "pause run") {
-		t.Errorf("status = %+v, want a hint to pause first", a.status)
-	}
-}
-
 // With several runs on a task, `v` opens the view straight onto the latest
 // with every run in the sidebar; `h` reaches the sidebar, where j/k switch
 // the watched run, and h/l walk runs → steps → log and back.

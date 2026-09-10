@@ -54,7 +54,7 @@ type keyMap struct {
 	Approve   key.Binding // approve the gate the run is waiting at
 	Reject    key.Binding // reject it, with feedback for the step it loops back to
 	Outcome   key.Binding // pick any of the gate's edge outcomes
-	Takeover  key.Binding // resume a paused step's session interactively
+	Takeover  key.Binding // pause the run and resume the current step's session interactively (takeover.go)
 	RawLog    key.Binding // `v` (verbose): raw stream-json instead of the rendering
 
 	// Tree expansion in the list view.

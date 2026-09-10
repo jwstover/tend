@@ -114,6 +114,9 @@ type Store interface {
 	GetStepRun(ctx context.Context, id int64) (workflow.StepRun, error)
 	ListStepRunsForRun(ctx context.Context, runID int64) ([]workflow.StepRun, error)
 	FinishStepRun(ctx context.Context, id int64, outcome, deliverable string) error
+	// Takeover (takeover.go): "rerun this step" clears the step run's
+	// session through runner.RestartStep, which needs this write.
+	SetStepRunSession(ctx context.Context, id int64, externalID string) error
 }
 
 // ChangeWatcher is the slice of store.Watcher the TUI needs: a cheap "has
@@ -397,7 +400,9 @@ type (
 	// returning; last_active_at is only bumped on a clean exit. since is
 	// the transcript's line count at the moment it was resumed (see
 	// resumeSessionCmd), passed to recapSessionCmd to scope the recap to
-	// only what happened after that point.
+	// only what happened after that point. takeover is set when the
+	// resume was a takeover of a paused run's step (takeover.go): the
+	// return then opens the takeover picker rather than firing a recap.
 	sessionResumedMsg struct {
 		sessionRowID int64
 		taskID       int64
@@ -405,7 +410,17 @@ type (
 		externalID   string
 		since        int
 		backgrounded bool
+		takeover     takeoverRef
 		err          error
+	}
+	// takeoverReturnedMsg carries what the takeover picker needs once the
+	// step's run and step run have been re-read after the session returned
+	// (loadTakeoverPicker): the run must still be paused at that step.
+	takeoverReturnedMsg struct {
+		run      workflow.Run
+		stepRun  workflow.StepRun
+		stepName string
+		outcomes []string
 	}
 
 	// Workflow run messages (workflowrun.go), in the order the flow
@@ -606,6 +621,10 @@ type app struct {
 	gatePickerStepRunID int64
 	gatePickerOutcomes  []string
 	gatePickerSel       int
+
+	// Takeover picker overlay (takeover.go): what to do with a paused run
+	// once its step's session has been driven by hand and returned.
+	takeover takeoverPicker
 
 	// Workflow-run picker overlay (workflowrun.go): choose a workflow to
 	// run on a task. wfRunPending is the validated request while its cwd
@@ -860,6 +879,10 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case runsForViewMsg:
 		return a, a.openRunViewForTask(msg)
 
+	case takeoverReturnedMsg:
+		a.openTakeoverPicker(msg)
+		return a, nil
+
 	case runViewLoadedMsg:
 		settle := a.liveReloadSettled()
 		// Stale if the user has left the view, or moved on to another run,
@@ -922,6 +945,9 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		)
 
 	case sessionResumedMsg:
+		if msg.takeover.set() {
+			return a, a.takeoverReturned(msg)
+		}
 		if msg.err != nil {
 			a.status = flash{text: "claude: " + msg.err.Error(), isErr: true}
 			return a, nil
@@ -1133,6 +1159,11 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// And the gate outcome picker (run view).
 	if a.gatePickerOpen {
 		return a.handleGatePickerKey(msg)
+	}
+
+	// And the takeover picker, back from a paused step's session.
+	if a.takeover.open {
+		return a.handleTakeoverPickerKey(msg)
 	}
 
 	// An open palette swallows all keys.
@@ -2272,6 +2303,10 @@ func (a app) submitModal() (tea.Model, tea.Cmd) {
 			return a, statusCmd(flash{text: "the run moved on; the gate you were deciding is gone"})
 		}
 		return a, a.finishGate(cur.ID, a.rv.stepNames[cur.StepID], extra, value)
+	case modalTakeoverDeliverable:
+		// Empty is allowed: an empty deliverable passes the step's input
+		// along, as finish_step's own contract says.
+		return a, a.finishTakenOverStep(target, extra, value)
 	}
 	return a, nil
 }
@@ -2543,7 +2578,7 @@ func (a app) View() tea.View {
 	// body rows. A panel taller than the screen loses its top rows, like
 	// the design's splice.
 	if a.paletteOpen || a.helpOpen || a.urlPickerOpen || a.sessionPickerOpen ||
-		a.projectPickerOpen || a.wfPickerOpen || a.wfRunPickerOpen || a.gatePickerOpen {
+		a.projectPickerOpen || a.wfPickerOpen || a.wfRunPickerOpen || a.gatePickerOpen || a.takeover.open {
 		box := a.paletteView()
 		switch {
 		case a.helpOpen:
@@ -2560,6 +2595,8 @@ func (a app) View() tea.View {
 			box = a.workflowRunPickerView()
 		case a.gatePickerOpen:
 			box = a.gatePickerView()
+		case a.takeover.open:
+			box = a.takeoverPickerView()
 		}
 		rows := strings.Split(box, "\n")
 		if maxRows := max(a.height-1, 1); len(rows) > maxRows {

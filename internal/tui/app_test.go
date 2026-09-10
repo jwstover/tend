@@ -1504,7 +1504,7 @@ func TestHelpOverlayScrollsOnShortScreen(t *testing.T) {
 	if !strings.Contains(content, "↓ ") || strings.Contains(content, "↑ ") {
 		t.Errorf("at the top the footer should count rows below only:\n%s", content)
 	}
-	if strings.Contains(content, "take over paused step's session") {
+	if strings.Contains(content, "take over the step: pause, drive its session") {
 		t.Errorf("last entry visible before scrolling on a 30-row screen:\n%s", content)
 	}
 
@@ -1519,7 +1519,7 @@ func TestHelpOverlayScrollsOnShortScreen(t *testing.T) {
 		t.Errorf("helpScroll after G = %d, want %d", a.helpScroll, a.helpMaxScroll())
 	}
 	content = ansi.Strip(m.View().Content)
-	for _, want := range []string{"RUN VIEW", "take over paused step's session", "esc close", "↑ "} {
+	for _, want := range []string{"RUN VIEW", "take over the step: pause, drive its session", "esc close", "↑ "} {
 		if !strings.Contains(content, want) {
 			t.Errorf("help overlay at the bottom missing %q:\n%s", want, content)
 		}

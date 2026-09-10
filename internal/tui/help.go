@@ -95,7 +95,7 @@ func helpGroups() []helpGroup {
 			{"p / cc", "pause or resume / cancel the run"},
 			{"a / x", "approve / reject (with feedback) gate"},
 			{"o", "pick any outcome the gate routes"},
-			{"t", "take over paused step's session"},
+			{"t", "take over the step: pause, drive its session"},
 		}},
 	}
 }
