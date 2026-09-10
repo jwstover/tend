@@ -109,6 +109,24 @@ SET prompt_md  = ?,
     updated_at = datetime('now')
 WHERE id = ?;
 
+-- name: SetStepKind :exec
+UPDATE workflow_steps
+SET kind       = ?,
+    updated_at = datetime('now')
+WHERE id = ?;
+
+-- name: SetStepModel :exec
+UPDATE workflow_steps
+SET model      = ?,
+    updated_at = datetime('now')
+WHERE id = ?;
+
+-- name: SetStepPermissionMode :exec
+UPDATE workflow_steps
+SET permission_mode = ?,
+    updated_at      = datetime('now')
+WHERE id = ?;
+
 -- name: SetStepSortOrder :exec
 UPDATE workflow_steps
 SET sort_order = ?,

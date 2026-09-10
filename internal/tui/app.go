@@ -79,7 +79,9 @@ type Store interface {
 	DuplicateWorkflow(ctx context.Context, id int64, newName string) (workflow.Workflow, error)
 	ListSteps(ctx context.Context, workflowID int64) ([]workflow.Step, error)
 	AddStep(ctx context.Context, workflowID int64, name string, kind workflow.StepKind) (workflow.Step, error)
-	UpdateStep(ctx context.Context, st workflow.Step) error
+	SetStepKind(ctx context.Context, id int64, kind workflow.StepKind) error
+	SetStepModel(ctx context.Context, id int64, model string) error
+	SetStepPermissionMode(ctx context.Context, id int64, mode string) error
 	SetStepPrompt(ctx context.Context, id int64, prompt string) error
 	ReorderSteps(ctx context.Context, workflowID int64, ids []int64) error
 	DeleteStep(ctx context.Context, id int64) error

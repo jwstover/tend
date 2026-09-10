@@ -185,6 +185,9 @@ type Querier interface {
 	// ClaimSessionRecap's compare-and-clear.
 	SetSessionWorkingIfUnchanged(ctx context.Context, arg SetSessionWorkingIfUnchangedParams) (int64, error)
 	SetSetting(ctx context.Context, arg SetSettingParams) error
+	SetStepKind(ctx context.Context, arg SetStepKindParams) error
+	SetStepModel(ctx context.Context, arg SetStepModelParams) error
+	SetStepPermissionMode(ctx context.Context, arg SetStepPermissionModeParams) error
 	SetStepPrompt(ctx context.Context, arg SetStepPromptParams) error
 	SetStepRunLogPath(ctx context.Context, arg SetStepRunLogPathParams) error
 	SetStepRunSession(ctx context.Context, arg SetStepRunSessionParams) error

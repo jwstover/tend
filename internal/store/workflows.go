@@ -186,7 +186,7 @@ func (s *Store) DuplicateWorkflow(ctx context.Context, id int64, newName string)
 
 // AddStep appends a step to a workflow. It sorts after every existing
 // step; prompt, model and permission mode start empty and are set through
-// UpdateStep / SetStepPrompt.
+// the SetStep* setters (or UpdateStep, for the whole row at once).
 func (s *Store) AddStep(ctx context.Context, workflowID int64, name string, kind workflow.StepKind) (workflow.Step, error) {
 	n, err := workflow.NormalizeName(name)
 	if err != nil {
@@ -256,6 +256,39 @@ func (s *Store) UpdateStep(ctx context.Context, st workflow.Step) error {
 func (s *Store) SetStepPrompt(ctx context.Context, id int64, prompt string) error {
 	if err := s.q.SetStepPrompt(ctx, gen.SetStepPromptParams{PromptMd: prompt, ID: id}); err != nil {
 		return fmt.Errorf("setting step %d prompt: %w", id, err)
+	}
+	return nil
+}
+
+// SetStepKind, SetStepModel and SetStepPermissionMode each write one
+// attribute and leave the rest of the row alone. The TUI edits one
+// attribute per keypress, and writing only that column means a caller
+// holding a stale copy of the step can never clobber a write that landed
+// in between (UpdateStep would, since it rewrites every editable column).
+
+// SetStepKind changes a step's kind.
+func (s *Store) SetStepKind(ctx context.Context, id int64, kind workflow.StepKind) error {
+	if !kind.Valid() {
+		return fmt.Errorf("unknown step kind %q", kind)
+	}
+	if err := s.q.SetStepKind(ctx, gen.SetStepKindParams{Kind: string(kind), ID: id}); err != nil {
+		return fmt.Errorf("setting step %d kind: %w", id, err)
+	}
+	return nil
+}
+
+// SetStepModel changes a step's model; "" means inherit.
+func (s *Store) SetStepModel(ctx context.Context, id int64, model string) error {
+	if err := s.q.SetStepModel(ctx, gen.SetStepModelParams{Model: model, ID: id}); err != nil {
+		return fmt.Errorf("setting step %d model: %w", id, err)
+	}
+	return nil
+}
+
+// SetStepPermissionMode changes a step's permission mode; "" means inherit.
+func (s *Store) SetStepPermissionMode(ctx context.Context, id int64, mode string) error {
+	if err := s.q.SetStepPermissionMode(ctx, gen.SetStepPermissionModeParams{PermissionMode: mode, ID: id}); err != nil {
+		return fmt.Errorf("setting step %d permission mode: %w", id, err)
 	}
 	return nil
 }

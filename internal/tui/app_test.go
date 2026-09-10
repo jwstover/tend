@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"charm.land/bubbles/v2/cursor"
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/zalando/go-keyring"
@@ -44,8 +45,19 @@ func drive(t *testing.T, m tea.Model, msg tea.Msg) tea.Model {
 	return m
 }
 
+// collectWindow is how long collect waits for a Cmd before abandoning it.
+// Nothing in the app is expected to block this long: newTestApp turns the
+// inputs' blinking cursors static (staticCursors), which were the only
+// Cmds that ever did, so the window is the ceiling for a store read or
+// write on a loaded CI runner rather than a budget paid on every keypress.
+// A Cmd that does outlive it keeps running and its message is lost, so
+// tests never see the resulting reload — assert on the store with waitFor
+// and reload the model explicitly rather than relying on the Cmd's own
+// follow-up.
+const collectWindow = 2 * time.Second
+
 // collect runs a command tree and gathers produced messages. Commands
-// that block (e.g. cursor blink timers) are abandoned after a short wait.
+// that block past collectWindow are abandoned.
 func collect(cmd tea.Cmd) []tea.Msg {
 	if cmd == nil {
 		return nil
@@ -55,7 +67,7 @@ func collect(cmd tea.Cmd) []tea.Msg {
 	var msg tea.Msg
 	select {
 	case msg = <-ch:
-	case <-time.After(100 * time.Millisecond):
+	case <-time.After(collectWindow):
 		return nil
 	}
 	if msg == nil {
@@ -68,6 +80,10 @@ func collect(cmd tea.Cmd) []tea.Msg {
 			out = append(out, collect(c)...)
 		}
 		return out
+	case cursor.BlinkMsg:
+		// A blink re-arms itself on delivery; feeding it back would keep
+		// drive spinning. staticCursors should mean this never fires.
+		return nil
 	}
 	return []tea.Msg{msg}
 }
@@ -126,10 +142,36 @@ func newTestApp(t *testing.T) (tea.Model, *store.Store) {
 	}
 	t.Cleanup(func() { s.Close() })
 
-	var m tea.Model = newApp(ctx, s, "")
+	a := newApp(ctx, s, "")
+	staticCursors(&a)
+
+	var m tea.Model = a
 	m = drive(t, m, m.Init()())
 	m = drive(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
 	return m, s
+}
+
+// staticCursors turns off cursor blink on every text input the app owns.
+// A blinking cursor returns a ~500ms timer Cmd from each Focus and
+// keypress, and its BlinkMsg re-arms the next one, so under drive it is
+// either abandoned by collect (the old 100ms window, paid on every key)
+// or fed back forever (a longer window). With blink off, no Cmd in the
+// app blocks, so collectWindow can be generous without slowing the suite.
+// Every component with a cursor is listed here; a new one that blinks
+// shows up as drive spinning on cursor.BlinkMsg (collect also drops that
+// message as a backstop, so the symptom is a slow test, not a hang).
+func staticCursors(a *app) {
+	ps := a.prompt.Styles()
+	ps.Cursor.Blink = false
+	a.prompt.SetStyles(ps)
+
+	fs := a.list.FilterInput.Styles()
+	fs.Cursor.Blink = false
+	a.list.FilterInput.SetStyles(fs)
+
+	ms := a.modal.area.Styles()
+	ms.Cursor.Blink = false
+	a.modal.area.SetStyles(ms)
 }
 
 func TestAppRendersLiveTasks(t *testing.T) {
@@ -603,13 +645,18 @@ func TestQuickAddPrompt(t *testing.T) {
 	}
 	m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
-	live, err := s.ListLive(context.Background(), nil)
-	if err != nil {
-		t.Fatalf("ListLive: %v", err)
-	}
-	if len(live) != 1 || live[0].Title != "ship it" {
+	var live []task.Task
+	waitFor(t, "the quick-added task to save", func() bool {
+		var err error
+		live, err = s.ListLive(context.Background(), nil)
+		return err == nil && len(live) == 1
+	})
+	if live[0].Title != "ship it" {
 		t.Fatalf("ListLive = %+v, want the quick-added task", live)
 	}
+	// The mutate's own reload may have been abandoned by collect on a slow
+	// runner; refresh the model explicitly before reading the view.
+	m = drive(t, m, refreshMsg{})
 	if !strings.Contains(ansi.Strip(m.View().Content), "ship it") {
 		t.Errorf("view missing quick-added task:\n%s", ansi.Strip(m.View().Content))
 	}
