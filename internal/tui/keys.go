@@ -58,6 +58,14 @@ type keyMap struct {
 
 	ToggleCompleted key.Binding // C shows/hides the completed (done) and someday sections
 
+	// List grouping: `g` opens the chord, the second key picks the grouping.
+	// `gg` keeps its vim meaning (top of the list) as the chord's fourth key.
+	GroupBy         key.Binding
+	GroupByState    key.Binding
+	GroupByPriority key.Binding
+	GroupByAgent    key.Binding
+	GoTop           key.Binding
+
 	ChangePriority key.Binding
 
 	// State mutations: single keys in triage mode, the second key of the
@@ -130,6 +138,12 @@ func defaultKeyMap() keyMap {
 		PageDown:   key.NewBinding(key.WithKeys("pgdown", "ctrl+d"), key.WithHelp("pgdown", "page down")),
 
 		ToggleCompleted: key.NewBinding(key.WithKeys("C"), key.WithHelp("C", "completed")),
+
+		GroupBy:         key.NewBinding(key.WithKeys("g"), key.WithHelp("g", "group by")),
+		GroupByState:    key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "state")),
+		GroupByPriority: key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "priority")),
+		GroupByAgent:    key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "agent status")),
+		GoTop:           key.NewBinding(key.WithKeys("g"), key.WithHelp("g", "top of list")),
 
 		ChangePriority: key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "priority")),
 

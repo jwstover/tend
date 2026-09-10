@@ -53,6 +53,12 @@ func (a app) paletteCommands() []paletteCommand {
 				a.openProjectPicker(t)
 				return a, nil
 			}},
+		{icon: "≡", label: "Group by state", hint: "gs", aliases: []string{"group", "groupstate"},
+			act: func(a app) (tea.Model, tea.Cmd) { return a.setGroupBy(groupByState) }},
+		{icon: "⚑", label: "Group by priority", hint: "gp", aliases: []string{"grouppriority"},
+			act: func(a app) (tea.Model, tea.Cmd) { return a.setGroupBy(groupByPriority) }},
+		{icon: "◉", label: "Group by agent status", hint: "ga", aliases: []string{"groupagent"},
+			act: func(a app) (tea.Model, tea.Cmd) { return a.setGroupBy(groupByAgent) }},
 		{icon: "◎", label: "Triage the inbox", hint: "i", aliases: []string{"triage", "inbox"},
 			act: func(a app) (tea.Model, tea.Cmd) {
 				a.startTriage()

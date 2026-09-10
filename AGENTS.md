@@ -296,7 +296,7 @@ There is no `tend done` — completing, deleting, and every other state transiti
 
 Built on Bubble Tea v2 + Bubbles v2 + Lip Gloss v2; Glamour v2 renders the body.
 
-- **List view (default).** A grouped/tree view of the live view (sub-tasks nest under their parent), with vim-style navigation, search, a `:`/`Ctrl-P` command palette, and quick add. A project column scopes the list to the selected project (or shows all).
+- **List view (default).** A grouped/tree view of the live view (sub-tasks nest under their parent), with vim-style navigation, search, a `:`/`Ctrl-P` command palette, and quick add. Tasks group by state by default; the `g` chord regroups by priority or by latest agent-session status (`gg` stays "top of list"). A project column scopes the list to the selected project (or shows all).
 - **Detail pane.** The heart of the tool: glamour-rendered markdown body, a sub-task checklist, a `SESSIONS` section (this task's Claude Code sessions — launch, resume, or attach to a backgrounded one), and a `LOG` section (manual notes plus auto-generated session recaps). Scrollable and independently focusable so long histories are reachable. URL detection lets the user open a link under the cursor or all of them via the OS opener.
 - **Triage view.** Filtered to `inbox`. Fast keys to set state, assign a project, add tags or a due date, open the body in `$EDITOR`, or send to `someday`/`done` — the batched processing pass.
 - **Standup view.** Manual notes grouped by task plus a generated activity summary (completed/blocked/started, derived from `task_events`); yank the whole thing as markdown.
