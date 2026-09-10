@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/pressly/goose/v3"
@@ -394,6 +395,20 @@ func (s *Store) SetTitle(ctx context.Context, id int64, title string) error {
 func (s *Store) SetBody(ctx context.Context, id int64, body string) error {
 	if err := s.q.SetTaskBody(ctx, gen.SetTaskBodyParams{BodyMd: body, ID: id}); err != nil {
 		return fmt.Errorf("setting task %d body: %w", id, err)
+	}
+	return nil
+}
+
+// AppendBody adds text to the end of a task's markdown body as a new
+// paragraph: an empty body simply becomes text, otherwise a blank line
+// separates the existing body from it. Empty or whitespace-only text is
+// a no-op so callers can't leave stray blank lines behind.
+func (s *Store) AppendBody(ctx context.Context, id int64, text string) error {
+	if strings.TrimSpace(text) == "" {
+		return nil
+	}
+	if err := s.q.AppendTaskBody(ctx, gen.AppendTaskBodyParams{Text: text, ID: id}); err != nil {
+		return fmt.Errorf("appending to task %d body: %w", id, err)
 	}
 	return nil
 }

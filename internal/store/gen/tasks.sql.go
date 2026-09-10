@@ -11,6 +11,29 @@ import (
 	"strings"
 )
 
+const appendTaskBody = `-- name: AppendTaskBody :exec
+UPDATE tasks
+SET body_md    = CASE
+                   WHEN trim(body_md, ' ' || char(9, 10, 13)) = '' THEN ?1
+                   ELSE rtrim(body_md, ' ' || char(9, 10, 13)) || char(10, 10) || ?1
+                 END,
+    updated_at = datetime('now')
+WHERE id = ?2
+`
+
+type AppendTaskBodyParams struct {
+	Text string
+	ID   int64
+}
+
+// Appends text as a new paragraph: an empty body just becomes the text,
+// otherwise trailing whitespace is trimmed and a blank line separates the
+// old body from the new text. Done in SQL so the append is atomic.
+func (q *Queries) AppendTaskBody(ctx context.Context, arg AppendTaskBodyParams) error {
+	_, err := q.db.ExecContext(ctx, appendTaskBody, arg.Text, arg.ID)
+	return err
+}
+
 const countInboxTasks = `-- name: CountInboxTasks :one
 SELECT COUNT(*)
 FROM tasks t

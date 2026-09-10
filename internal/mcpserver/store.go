@@ -22,6 +22,7 @@ type Store interface {
 	AddTaskWithBody(ctx context.Context, title, body string) (task.Task, error)
 	AddChild(ctx context.Context, parentID int64, title string) (task.Task, error)
 	SetBody(ctx context.Context, id int64, body string) error
+	AppendBody(ctx context.Context, id int64, text string) error
 	SetState(ctx context.Context, id int64, st task.State) error
 	SetTags(ctx context.Context, taskID int64, tags []string) error
 	TagsForTask(ctx context.Context, taskID int64) ([]string, error)
