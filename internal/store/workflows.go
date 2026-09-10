@@ -536,14 +536,16 @@ func (s *Store) SetRunTmuxSession(ctx context.Context, id int64, name string) er
 // run at it as its current step, both in one transaction. The iteration
 // is derived (one more than the times this step has already run within
 // the run), so sr.Iteration is ignored; sr.RunID, StepID,
-// SessionExternalID, PromptRendered, Model, PermissionMode and Input are
-// taken as given. Outcome, Deliverable, LogPath and EndedAt start empty.
+// SessionExternalID, PromptRendered, Model, PermissionMode, Input and
+// Feedback are taken as given. Outcome, Deliverable, LogPath and EndedAt
+// start empty.
 func (s *Store) CreateStepRun(ctx context.Context, sr workflow.StepRun) (workflow.StepRun, error) {
 	var out workflow.StepRun
 	err := s.inTx(ctx, func(q *gen.Queries) error {
 		row, err := q.CreateStepRun(ctx, gen.CreateStepRunParams{
 			RunID: sr.RunID, StepID: sr.StepID, SessionExternalID: sr.SessionExternalID,
-			PromptRendered: sr.PromptRendered, Model: sr.Model, PermissionMode: sr.PermissionMode, Input: sr.Input,
+			PromptRendered: sr.PromptRendered, Model: sr.Model, PermissionMode: sr.PermissionMode,
+			Input: sr.Input, Feedback: sr.Feedback,
 		})
 		if err != nil {
 			return fmt.Errorf("creating step run of step %d in run %d: %w", sr.StepID, sr.RunID, err)
@@ -768,7 +770,7 @@ func stepRunToDomain(row gen.WorkflowStepRun) (workflow.StepRun, error) {
 	return workflow.StepRun{
 		ID: row.ID, RunID: row.RunID, StepID: row.StepID, Iteration: row.Iteration,
 		SessionExternalID: row.SessionExternalID, PromptRendered: row.PromptRendered,
-		Model: row.Model, PermissionMode: row.PermissionMode, Input: row.Input,
+		Model: row.Model, PermissionMode: row.PermissionMode, Input: row.Input, Feedback: row.Feedback,
 		Outcome: row.Outcome, Deliverable: row.Deliverable, LogPath: row.LogPath,
 		StartedAt: started, EndedAt: ended,
 	}, nil

@@ -187,8 +187,11 @@ type Run struct {
 
 // StepRun is one execution of one step within a run. The definition is
 // read live, so PromptRendered, Model and PermissionMode record what
-// actually ran. Input is the previous step's deliverable; Outcome and
-// Deliverable are what this step handed off, empty until Finished.
+// actually ran. Input is the previous step's deliverable; Feedback is the
+// hand-off of the step that routed here over a loop-back edge (a
+// reject-style outcome), "" when the step was reached going forward.
+// Outcome and Deliverable are what this step handed off, empty until
+// Finished.
 // SessionExternalID is the claude --session-id of the agent session that
 // ran the step, "" for a gate. LogPath is the step's stream-json log
 // file, "" if none was written.
@@ -202,6 +205,7 @@ type StepRun struct {
 	Model             string
 	PermissionMode    string
 	Input             string
+	Feedback          string
 	Outcome           string
 	Deliverable       string
 	LogPath           string
