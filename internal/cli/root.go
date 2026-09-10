@@ -12,7 +12,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/jwstover/tend/internal/mcpserver"
-	"github.com/jwstover/tend/internal/runner"
 	"github.com/jwstover/tend/internal/task"
 	"github.com/jwstover/tend/internal/version"
 )
@@ -49,11 +48,11 @@ type StoreFactory func(ctx context.Context, dbPath string) (Store, error)
 type TUIRunner func(ctx context.Context, dbPath string) error
 
 // Execute builds the command tree and runs it.
-func Execute(open StoreFactory, runTUI TUIRunner, openMCP MCPStoreFactory, openRunner RunnerStoreFactory) error {
-	return newRootCmd(open, runTUI, openMCP, openRunner).Execute()
+func Execute(open StoreFactory, runTUI TUIRunner, openMCP MCPStoreFactory, openWorkflow WorkflowStoreFactory) error {
+	return newRootCmd(open, runTUI, openMCP, openWorkflow).Execute()
 }
 
-func newRootCmd(open StoreFactory, runTUI TUIRunner, openMCP MCPStoreFactory, openRunner RunnerStoreFactory) *cobra.Command {
+func newRootCmd(open StoreFactory, runTUI TUIRunner, openMCP MCPStoreFactory, openWorkflow WorkflowStoreFactory) *cobra.Command {
 	var dbPath string
 
 	root := &cobra.Command{
@@ -76,8 +75,8 @@ func newRootCmd(open StoreFactory, runTUI TUIRunner, openMCP MCPStoreFactory, op
 	openMCPHere := func(ctx context.Context) (mcpserver.Store, error) {
 		return openMCP(ctx, resolveDBPath(dbPath))
 	}
-	openRunnerHere := func(ctx context.Context) (runner.Store, error) {
-		return openRunner(ctx, resolveDBPath(dbPath))
+	openWorkflowHere := func(ctx context.Context) (WorkflowStore, error) {
+		return openWorkflow(ctx, resolveDBPath(dbPath))
 	}
 	root.AddCommand(newAddCmd(openHere))
 	root.AddCommand(newAuthCmd())
@@ -87,7 +86,7 @@ func newRootCmd(open StoreFactory, runTUI TUIRunner, openMCP MCPStoreFactory, op
 	root.AddCommand(newLogCmd(openHere))
 	root.AddCommand(newMcpCmd(openMCPHere))
 	root.AddCommand(newAgentHookCmd(openHere))
-	root.AddCommand(newWorkflowCmd(openRunnerHere, func() string { return resolveDBPath(dbPath) }))
+	root.AddCommand(newWorkflowCmd(openWorkflowHere, func() string { return resolveDBPath(dbPath) }))
 	root.AddCommand(&cobra.Command{
 		Use:   "version",
 		Short: "Print the tend version",
