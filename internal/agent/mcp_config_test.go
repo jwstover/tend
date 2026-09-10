@@ -31,7 +31,7 @@ func withFakeTendOnPath(t *testing.T) string {
 func TestWriteMCPConfigWritesTendServerEntry(t *testing.T) {
 	tendPath := withFakeTendOnPath(t)
 
-	path, cleanup, err := WriteMCPConfig(42, "/data/tend.db")
+	path, cleanup, err := WriteMCPConfig(42, 0, "/data/tend.db")
 	if err != nil {
 		t.Fatalf("WriteMCPConfig: %v", err)
 	}
@@ -40,6 +40,37 @@ func TestWriteMCPConfigWritesTendServerEntry(t *testing.T) {
 	if path == "" {
 		t.Fatal("path is empty, want a config file path")
 	}
+	entry := readTendEntry(t, path)
+	if entry.Command != tendPath {
+		t.Errorf("Command = %q, want %q", entry.Command, tendPath)
+	}
+	want := []string{"mcp", "--task-id", "42", "--db", "/data/tend.db"}
+	if !equalArgs(entry.Args, want) {
+		t.Errorf("Args = %v, want %v", entry.Args, want)
+	}
+}
+
+// A workflow step's session is bound to its step run as well, so `tend
+// mcp` registers the step tools for it; an ordinary session (step run 0,
+// above) never sees the flag.
+func TestWriteMCPConfigBindsStepRun(t *testing.T) {
+	withFakeTendOnPath(t)
+
+	path, cleanup, err := WriteMCPConfig(42, 7, "/data/tend.db")
+	if err != nil {
+		t.Fatalf("WriteMCPConfig: %v", err)
+	}
+	defer cleanup()
+
+	entry := readTendEntry(t, path)
+	want := []string{"mcp", "--task-id", "42", "--step-run-id", "7", "--db", "/data/tend.db"}
+	if !equalArgs(entry.Args, want) {
+		t.Errorf("Args = %v, want %v", entry.Args, want)
+	}
+}
+
+func readTendEntry(t *testing.T, path string) mcpServerConfig {
+	t.Helper()
 	b, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("reading config file: %v", err)
@@ -52,19 +83,13 @@ func TestWriteMCPConfigWritesTendServerEntry(t *testing.T) {
 	if !ok {
 		t.Fatal(`mcpServers["tend"] missing`)
 	}
-	if entry.Command != tendPath {
-		t.Errorf("Command = %q, want %q", entry.Command, tendPath)
-	}
-	want := []string{"mcp", "--task-id", "42", "--db", "/data/tend.db"}
-	if !equalArgs(entry.Args, want) {
-		t.Errorf("Args = %v, want %v", entry.Args, want)
-	}
+	return entry
 }
 
 func TestWriteMCPConfigCleanupRemovesFile(t *testing.T) {
 	withFakeTendOnPath(t)
 
-	path, cleanup, err := WriteMCPConfig(1, "/data/tend.db")
+	path, cleanup, err := WriteMCPConfig(1, 0, "/data/tend.db")
 	if err != nil {
 		t.Fatalf("WriteMCPConfig: %v", err)
 	}
@@ -80,7 +105,7 @@ func TestWriteMCPConfigCleanupRemovesFile(t *testing.T) {
 func TestWriteMCPConfigDegradesQuietlyWithoutTendOnPath(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 
-	path, cleanup, err := WriteMCPConfig(1, "/data/tend.db")
+	path, cleanup, err := WriteMCPConfig(1, 0, "/data/tend.db")
 	if err != nil {
 		t.Fatalf("WriteMCPConfig should degrade quietly, got error: %v", err)
 	}

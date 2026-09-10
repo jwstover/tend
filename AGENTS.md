@@ -119,7 +119,7 @@ tend/
 │   │   ├── tmux.go               #   dedicated-socket tmux wrapping: wrap/attach/has-session/kill/capture-pane
 │   │   ├── hooks.go              #   Claude Code hook payload parsing + injected --settings generation
 │   │   ├── status.go             #   ClassifyPane — capture-pane text → "working", for the one status no hook reports
-│   │   ├── mcp_config.go          #   per-session --mcp-config file pointing at `tend mcp --task-id <id>`
+│   │   ├── mcp_config.go          #   per-session --mcp-config file pointing at `tend mcp --task-id <id>` (+ `--step-run-id` for a workflow step)
 │   │   ├── runner.go              #   RunnerCmd (`tend workflow run <id>` via os.Executable) + RunnerSessionName (`tend-wf-<run-id>`)
 │   │   └── session_id.go           #   UUIDv4 generation for --session-id
 │   ├── runner/                   # WORKFLOW RUNNER — drives one run step to step; the process behind `tend workflow run`
@@ -132,6 +132,7 @@ tend/
 │   ├── mcpserver/                # MCP tool surface — third consumer of Store, alongside tui and cli
 │   │   ├── server.go               #   builds the MCP server bound to one task, runs the stdio transport
 │   │   ├── tools.go                 #   tool schemas + handlers (get_current_task, create_subtask, set_task_state, ...). No log-entry tool: log entries are the user's; agents write to the task body
+│   │   ├── steps.go                 #   get_workflow_step + finish_step, registered only when bound to a workflow step run
 │   │   └── store.go                  #   mcpserver's own narrow Store interface
 │   ├── tui/                       # PRESENTATION — Bubble Tea
 │   │   ├── app.go                   #   root Model (Init/Update/View), message wiring
@@ -150,7 +151,7 @@ tend/
 │       ├── add.go / ls.go / log.go / standup.go   #   fast, scriptable one-shots
 │       ├── projects.go                 #   `tend projects` — list/add/rename/rm/archive/unarchive/cwd
 │       ├── auth.go                    #   `tend auth jira {login,status,logout}`
-│       ├── mcp.go                      #   hidden `tend mcp --task-id <id>`, spawned by a launched claude session
+│       ├── mcp.go                      #   hidden `tend mcp --task-id <id> [--step-run-id <id>]`, spawned by a launched claude session
 │       ├── workflow.go                 #   `tend workflow resume <run-id>`; hidden `tend workflow run <run-id>` (the runner itself)
 │       └── agent_hook.go                #   hidden `tend agent-hook <event>`, spawned by Claude Code's own hooks
 ├── docs/                          # design notes for past feature work; not required reading to orient
@@ -289,7 +290,7 @@ Schema in `internal/store/migrations`, queries in `internal/store/queries`, gene
 | `tend auth jira login/status/logout` | Manage Jira credentials in the system keychain |
 | `tend workflow resume <run-id>` | Start a fresh runner for a workflow run whose runner died (host reboot, tmux server killed) or was paused. Refuses a run that has ended or whose runner is still alive. |
 | `tend workflow run <run-id>` | Hidden. The runner: drives one workflow run to a terminal state and exits — hosted in tmux session `tend-wf-<run-id>` by the TUI's `w` chord (or `resume`), never run by hand. `--takeover` re-enters a run left `running` by a dead runner. |
-| `tend mcp --task-id <id>` | Hidden. Runs tend's MCP server over stdio, bound to one task — spawned by a launched `claude` session, never by the user directly. |
+| `tend mcp --task-id <id> [--step-run-id <id>]` | Hidden. Runs tend's MCP server over stdio, bound to one task — spawned by a launched `claude` session, never by the user directly. `--step-run-id` (set by the workflow runner) adds the step tools `get_workflow_step` and `finish_step` for that step run. |
 | `tend agent-hook <event>` | Hidden. Records a Claude Code hook event (session status) against its session — spawned by Claude Code itself via injected `--settings`. |
 | `tend version` | Print the version |
 
@@ -328,6 +329,7 @@ A task can have one or more Claude Code sessions bound to it, launched and manag
 - **Status.** `agent_sessions.status` is populated two ways: Claude Code hooks (`SessionStart`/`Stop`/`Notification`/`SessionEnd`), injected via a per-session `--settings` file and reported through the hidden `tend agent-hook` command; and, for the one state no hook covers (actively generating/running a tool, "working"), a poller in `internal/tui` that reads the pane's rendered text via `tmux capture-pane` and classifies it (`internal/agent/status.go`). Hook-reported status always wins a race against the poller's guess (a compare-and-swap on `status_updated_at`).
 - **Recap.** When a session's terminal handoff returns (ended, not backgrounded), tend fires a headless `claude -p --resume` follow-up asking for a short label + recap, and logs the recap as a normal `LogEntry` on the task — the fix for "I took a break and lost the thread." A session backgrounded instead of exited defers this (`needs_recap`) until some tend instance observes it's really gone.
 - **MCP.** `tend mcp --task-id <id>` is spawned by `claude` itself (via a per-session `--mcp-config` tend writes at launch, `internal/agent/mcp_config.go`) and gives that session direct read/write access to its bound task — creating sub-tasks, updating the body, changing state, logging notes — without inventing a scratch markdown file. See `internal/mcpserver` for the tool set.
+- **Step tools.** A workflow step's session is spawned with `--step-run-id` as well (`runner.ClaudeExec` passes the step run to `WriteMCPConfig`), which registers two more tools bound to that one step run: `get_workflow_step` (workflow and step names, iteration, `Input`, `Feedback`, and the allowed outcomes, read live from the step's edges — `done` alone when it has none) and `finish_step(outcome, deliverable)`, the hand-off. `finish_step` normalizes the outcome the way edges are stored, refuses one the step does not route (naming the ones it does), and is one-shot (`Store.FinishStepRun`); it does not end the session, and the runner's exit-time fallback only applies when it was never called. `Feedback` is persisted on `workflow_step_runs` (migration 00012) alongside `input` so the tool reads back exactly what the prompt was rendered with. An ordinary session never sees these tools.
 
 ## 9. Jira integration
 

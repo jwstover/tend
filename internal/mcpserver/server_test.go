@@ -6,27 +6,37 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/jwstover/tend/internal/task"
+	"github.com/jwstover/tend/internal/workflow"
 )
 
 // fakeStore is an in-memory stand-in for *store.Store, just enough of
 // mcpserver.Store's method set to exercise the tool surface without a
-// real SQLite file.
+// real SQLite file. The workflow maps back the step tools (steps_test.go).
 type fakeStore struct {
 	tasks    map[int64]task.Task
 	tags     map[int64][]string
 	projects []task.Project
 	nextID   int64
+
+	workflows map[int64]workflow.Workflow
+	steps     map[int64]workflow.Step
+	edges     []workflow.Edge
+	stepRuns  map[int64]workflow.StepRun
 }
 
 func newFakeStore(seed ...task.Task) *fakeStore {
 	s := &fakeStore{
-		tasks:    make(map[int64]task.Task),
-		tags:     make(map[int64][]string),
-		projects: []task.Project{{ID: task.DefaultProjectID, Name: "Unsorted"}},
+		tasks:     make(map[int64]task.Task),
+		tags:      make(map[int64][]string),
+		projects:  []task.Project{{ID: task.DefaultProjectID, Name: "Unsorted"}},
+		workflows: make(map[int64]workflow.Workflow),
+		steps:     make(map[int64]workflow.Step),
+		stepRuns:  make(map[int64]workflow.StepRun),
 	}
 	for _, t := range seed {
 		s.tasks[t.ID] = t
@@ -169,15 +179,79 @@ func (s *fakeStore) SetDue(_ context.Context, id int64, due *string) error {
 	return nil
 }
 
+func (s *fakeStore) GetStepRun(_ context.Context, id int64) (workflow.StepRun, error) {
+	sr, ok := s.stepRuns[id]
+	if !ok {
+		return workflow.StepRun{}, workflow.ErrStepRunNotFound
+	}
+	return sr, nil
+}
+
+func (s *fakeStore) GetStep(_ context.Context, id int64) (workflow.Step, error) {
+	st, ok := s.steps[id]
+	if !ok {
+		return workflow.Step{}, workflow.ErrStepNotFound
+	}
+	return st, nil
+}
+
+func (s *fakeStore) GetWorkflow(_ context.Context, id int64) (workflow.Workflow, error) {
+	w, ok := s.workflows[id]
+	if !ok {
+		return workflow.Workflow{}, workflow.ErrWorkflowNotFound
+	}
+	return w, nil
+}
+
+func (s *fakeStore) OutgoingEdges(_ context.Context, stepID int64) ([]workflow.Edge, error) {
+	var out []workflow.Edge
+	for _, e := range s.edges {
+		if e.FromStepID == stepID {
+			out = append(out, e)
+		}
+	}
+	return out, nil
+}
+
+// FinishStepRun mirrors the store: the outcome is normalized and the
+// hand-off is one-shot.
+func (s *fakeStore) FinishStepRun(_ context.Context, id int64, outcome, deliverable string) error {
+	o, err := workflow.NormalizeOutcome(outcome)
+	if err != nil {
+		return err
+	}
+	sr, ok := s.stepRuns[id]
+	if !ok {
+		return workflow.ErrStepRunNotFound
+	}
+	if sr.Finished() {
+		return workflow.ErrStepRunFinished
+	}
+	now := time.Now()
+	sr.Outcome, sr.Deliverable, sr.EndedAt = o, deliverable, &now
+	s.stepRuns[id] = sr
+	return nil
+}
+
 func (s *fakeStore) Close() error { return nil }
 
-// dial spins up a Server backed by store, bound to taskID, and connects
-// a client to it over an in-memory transport pair, returning a session
-// ready for CallTool.
+// dial spins up a Server backed by store, bound to taskID and to no step
+// run, and connects a client to it over an in-memory transport pair,
+// returning a session ready for CallTool.
 func dial(t *testing.T, store Store, taskID int64) *mcp.ClientSession {
+	t.Helper()
+	return dialStep(t, store, taskID, 0)
+}
+
+// dialStep is dial for a workflow step's session: a non-zero stepRunID
+// adds the step tools, exactly as Server.Run does.
+func dialStep(t *testing.T, store Store, taskID, stepRunID int64) *mcp.ClientSession {
 	t.Helper()
 	srv := mcp.NewServer(&mcp.Implementation{Name: "tend-test"}, nil)
 	registerTools(srv, store, taskID)
+	if stepRunID != 0 {
+		registerStepTools(srv, store, stepRunID)
+	}
 
 	serverTransport, clientTransport := mcp.NewInMemoryTransports()
 	ctx := context.Background()
@@ -336,9 +410,12 @@ func TestListSubtasksDefaultsToBoundTask(t *testing.T) {
 // the failure that took it down once: MCP's outputSchema describes the
 // structuredContent object, so a handler returning a bare slice yields a
 // top-level array schema. Clients validate the entire tools/list
-// response, so one such tool makes every tend tool unavailable.
+// response, so one such tool makes every tend tool unavailable. Dialled
+// with a step run so the step tools are covered too.
 func TestEveryOutputSchemaIsAnObject(t *testing.T) {
-	cs := dial(t, newFakeStore(task.Task{ID: 1, Title: "bound"}), 1)
+	store := newFakeStore(task.Task{ID: 1, Title: "bound"})
+	sr := seedStepRun(store)
+	cs := dialStep(t, store, 1, sr)
 
 	tools, err := cs.ListTools(context.Background(), nil)
 	if err != nil {
