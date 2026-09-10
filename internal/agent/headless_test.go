@@ -13,11 +13,12 @@ import (
 
 func TestHeadlessCmdArgv(t *testing.T) {
 	c := HeadlessCmd(context.Background(), "/tmp/work", "abc-123", "/tmp/mcp.json", "/tmp/hooks.json",
-		LaunchOpts{Prompt: "Fix the flaky test", Model: "opus", PermissionMode: "acceptEdits"})
+		LaunchOpts{Prompt: "Fix the flaky test", Model: "opus", PermissionMode: "acceptEdits", AppendSystemPrompt: "call finish_step"})
 	want := []string{
 		binary, "-p", "--session-id", "abc-123", "--output-format", "stream-json", "--verbose",
 		"--mcp-config", "/tmp/mcp.json", "--settings", "/tmp/hooks.json",
 		"--model", "opus", "--permission-mode", "acceptEdits",
+		"--append-system-prompt", "call finish_step",
 		"Fix the flaky test",
 	}
 	if got := c.Args; !equalArgs(got, want) {
@@ -34,8 +35,9 @@ func TestHeadlessCmdArgv(t *testing.T) {
 	}
 }
 
-// Unset options add nothing, and stream-json always brings --verbose with
-// it because print mode refuses one without the other.
+// Unset options add nothing (no --append-system-prompt without text), and
+// stream-json always brings --verbose with it because print mode refuses
+// one without the other.
 func TestHeadlessCmdMinimalArgv(t *testing.T) {
 	c := HeadlessCmd(context.Background(), "/tmp/work", "abc-123", "", "", LaunchOpts{Prompt: "go"})
 	want := []string{binary, "-p", "--session-id", "abc-123", "--output-format", "stream-json", "--verbose", "go"}
@@ -48,10 +50,11 @@ func TestHeadlessCmdMinimalArgv(t *testing.T) {
 // so the prompt lands as the next turn of the existing session.
 func TestHeadlessResumeCmdArgv(t *testing.T) {
 	c := HeadlessResumeCmd(context.Background(), "/tmp/work", "abc-123", "/tmp/mcp.json", "",
-		LaunchOpts{Prompt: "continue", Model: "opus", PermissionMode: "acceptEdits"})
+		LaunchOpts{Prompt: "continue", Model: "opus", PermissionMode: "acceptEdits", AppendSystemPrompt: "call finish_step"})
 	want := []string{
 		binary, "-p", "--resume", "abc-123", "--output-format", "stream-json", "--verbose",
 		"--mcp-config", "/tmp/mcp.json", "--model", "opus", "--permission-mode", "acceptEdits",
+		"--append-system-prompt", "call finish_step",
 		"continue",
 	}
 	if got := c.Args; !equalArgs(got, want) {

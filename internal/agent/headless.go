@@ -24,7 +24,8 @@ import (
 //
 //	claude -p --session-id <id> --output-format stream-json --verbose
 //	       [--mcp-config <path>] [--settings <path>]
-//	       [--model <m>] [--permission-mode <mode>] <prompt>
+//	       [--model <m>] [--permission-mode <mode>]
+//	       [--append-system-prompt <text>] <prompt>
 //
 // Everything below was verified against the installed CLI (claude
 // 2.1.267) before this was written; the findings are logged on tend task
@@ -48,6 +49,10 @@ import (
 //     ParseStream surfaces as HeadlessResult.PermissionDenials. Hooks
 //     (--settings) and MCP servers (--mcp-config) both work in print mode
 //     exactly as they do interactively.
+//   - `--append-system-prompt <text>` adds to the default system prompt
+//     (`--system-prompt` would replace it); it is accepted on a `--resume`
+//     turn as well. This is how the runner states the finish_step
+//     contract to every step (tend task #197).
 //
 // opts.Prompt is required: `-p` with no positional prompt reads stdin,
 // which a headless step never has. Options come before the prompt for
@@ -92,6 +97,9 @@ func headlessCmd(ctx context.Context, cwd string, sessionArgs []string, mcpConfi
 	}
 	if opts.PermissionMode != "" {
 		args = append(args, "--permission-mode", opts.PermissionMode)
+	}
+	if opts.AppendSystemPrompt != "" {
+		args = append(args, "--append-system-prompt", opts.AppendSystemPrompt)
 	}
 	args = append(args, opts.Prompt)
 

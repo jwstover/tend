@@ -413,14 +413,18 @@ func TestStepRunsIterateAndFinishOnce(t *testing.T) {
 
 	first, err := s.CreateStepRun(ctx, workflow.StepRun{
 		RunID: run.ID, StepID: implement.ID, SessionExternalID: "sess-1",
-		PromptRendered: "do the thing", Model: "sonnet", PermissionMode: "acceptEdits",
+		PromptRendered: "do the thing", SystemPrompt: "you must call finish_step", Model: "sonnet", PermissionMode: "acceptEdits",
 		Iteration: 42, // ignored: derived by the store
 	})
 	if err != nil {
 		t.Fatalf("CreateStepRun: %v", err)
 	}
-	if first.Iteration != 1 || first.Finished() || first.PromptRendered != "do the thing" || first.Model != "sonnet" {
+	if first.Iteration != 1 || first.Finished() || first.PromptRendered != "do the thing" || first.Model != "sonnet" ||
+		first.SystemPrompt != "you must call finish_step" {
 		t.Errorf("first step run = %+v, want iteration 1, unfinished, with what ran recorded", first)
+	}
+	if reloaded, _ := s.GetStepRun(ctx, first.ID); reloaded.SystemPrompt != "you must call finish_step" {
+		t.Errorf("GetStepRun system prompt = %q, want it read back from the row", reloaded.SystemPrompt)
 	}
 	// The run now points at it.
 	got, err := s.GetRun(ctx, run.ID)

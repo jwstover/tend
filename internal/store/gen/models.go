@@ -145,4 +145,5 @@ type WorkflowStepRun struct {
 	StartedAt         string
 	EndedAt           sql.NullString
 	Feedback          string
+	SystemPrompt      string
 }

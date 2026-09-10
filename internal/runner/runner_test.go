@@ -229,6 +229,16 @@ func TestRunTwoStepLinearWorkflow(t *testing.T) {
 		t.Errorf("implement log path = %q, want %q (stored before the step ran)", impl.LogPath, want)
 	}
 
+	// The hand-off contract rides in the system prompt, built per step
+	// and recorded on the row; the author's prompt is left alone.
+	wantSys := workflow.StepSystemPrompt(workflow.HandoffContext{Workflow: "ship it", Step: "implement", Iteration: 1, Outcomes: []string{"done"}})
+	if reqs[0].StepRun.SystemPrompt != wantSys || impl.SystemPrompt != wantSys {
+		t.Errorf("implement system prompt = %q (recorded %q), want %q", reqs[0].StepRun.SystemPrompt, impl.SystemPrompt, wantSys)
+	}
+	if !strings.Contains(ship.SystemPrompt, `step "ship"`) || !strings.Contains(ship.SystemPrompt, `"done"`) {
+		t.Errorf("ship system prompt = %q, want it to name the step and offer done", ship.SystemPrompt)
+	}
+
 	// One session row per agent step, bound to its step run, ended.
 	sessions := f.sessions()
 	if len(sessions) != 2 {
@@ -356,8 +366,8 @@ func TestRunWaitsAtGate(t *testing.T) {
 		return f.getRun(run.ID).State == workflow.RunWaitingReview
 	})
 	srs := f.stepRuns(run.ID)
-	if len(srs) != 2 || srs[1].StepID != gate.ID || srs[1].Finished() || srs[1].SessionExternalID != "" {
-		t.Fatalf("step runs at the gate = %+v, want implement done and an unfinished gate with no session", srs)
+	if len(srs) != 2 || srs[1].StepID != gate.ID || srs[1].Finished() || srs[1].SessionExternalID != "" || srs[1].SystemPrompt != "" {
+		t.Fatalf("step runs at the gate = %+v, want implement done and an unfinished gate with no session or system prompt", srs)
 	}
 	if want := "input=[PR #7]"; !strings.Contains(srs[1].PromptRendered, want) {
 		t.Errorf("gate reviewer text = %q, want it rendered with %s", srs[1].PromptRendered, want)
@@ -709,14 +719,22 @@ func TestRunRefusesEndedRun(t *testing.T) {
 	}
 }
 
-// A fallback outcome with no matching edge ends the run rather than
+// A recorded outcome with no matching edge ends the run rather than
 // failing it -- the authored contract is "no edge means done" -- and the
-// log says which outcomes the step did route.
+// log says which outcomes the step did route. (finish_step refuses such
+// an outcome, so this is the TUI/CLI writing a gate-style decision
+// straight to the row.)
 func TestRunEndsOnUnroutedOutcome(t *testing.T) {
 	f := newFixture(t)
 	f.step("review", workflow.StepAgent)
 	f.step("ship", workflow.StepAgent)
 	f.edge("review", "approve", "ship", nil)
+	f.exec.handle = func(_ context.Context, req StepExec) (agent.HeadlessResult, error) {
+		if err := f.s.FinishStepRun(f.ctx, req.StepRun.ID, "skip", ""); err != nil {
+			t.Errorf("FinishStepRun: %v", err)
+		}
+		return success("skipped"), nil
+	}
 	run := f.run()
 
 	if err := f.runner().Run(f.ctx, run.ID, false); err != nil {
@@ -728,8 +746,176 @@ func TestRunEndsOnUnroutedOutcome(t *testing.T) {
 	if len(f.exec.requests()) != 1 {
 		t.Errorf("exec calls = %d, want just the review", len(f.exec.requests()))
 	}
-	if !strings.Contains(f.log.String(), `outcome "done" has no edge`) {
+	if !strings.Contains(f.log.String(), `outcome "skip" has no edge`) {
 		t.Errorf("runner log should flag the unrouted outcome:\n%s", f.log)
+	}
+}
+
+// A step that routes more than done and exits without finish_step is
+// not guessed at: its session gets one nudge turn (same step run, same
+// session, no new iteration), and the outcome it then hands off is
+// followed.
+func TestRunNudgesOnceForMissingHandoff(t *testing.T) {
+	f := newFixture(t)
+	f.step("implement", workflow.StepAgent)
+	f.step("review", workflow.StepAgent)
+	f.step("ship", workflow.StepAgent)
+	f.edge("implement", "done", "review", nil)
+	f.edge("review", "approve", "ship", nil)
+	f.edge("review", "reject", "implement", nil)
+	f.exec.handle = func(_ context.Context, req StepExec) (agent.HeadlessResult, error) {
+		if req.StepRun.StepID != f.steps["review"].ID {
+			return success("ok"), nil
+		}
+		if !req.Resume {
+			// First attempt: the verdict is in the text, not in finish_step.
+			return success("LGTM, approving."), nil
+		}
+		if err := f.s.FinishStepRun(f.ctx, req.StepRun.ID, "approve", "LGTM"); err != nil {
+			t.Errorf("FinishStepRun from the nudged agent: %v", err)
+		}
+		return success("Called finish_step."), nil
+	}
+	run := f.run()
+
+	if err := f.runner().Run(f.ctx, run.ID, false); err != nil {
+		t.Fatalf("Run: %v\n%s", err, f.log)
+	}
+	if got := f.getRun(run.ID); got.State != workflow.RunDone {
+		t.Errorf("run = %+v, want done", got)
+	}
+	reqs := f.exec.requests()
+	if len(reqs) != 4 {
+		t.Fatalf("exec calls = %d, want implement, review, the nudge, ship", len(reqs))
+	}
+	first, nudge := reqs[1], reqs[2]
+	if !nudge.Resume || nudge.StepRun.ID != first.StepRun.ID || nudge.StepRun.SessionExternalID != first.StepRun.SessionExternalID {
+		t.Errorf("nudge = %+v, want the review's own session resumed on the same step run", nudge)
+	}
+	if want := workflow.NudgePrompt("review", []string{"approve", "reject"}); nudge.Prompt != want {
+		t.Errorf("nudge prompt = %q, want %q", nudge.Prompt, want)
+	}
+	if nudge.StepRun.SystemPrompt == "" || nudge.StepRun.SystemPrompt != first.StepRun.SystemPrompt {
+		t.Errorf("nudge system prompt = %q, want the step's own block carried on the resume", nudge.StepRun.SystemPrompt)
+	}
+	srs := f.stepRuns(run.ID)
+	if len(srs) != 3 {
+		t.Fatalf("step runs = %+v, want implement, review, ship: the nudge is not a step run", srs)
+	}
+	review := srs[1]
+	if review.Iteration != 1 || review.Outcome != "approve" || review.Deliverable != "LGTM" {
+		t.Errorf("review step run = %+v, want iteration 1 finished approve/LGTM", review)
+	}
+	if srs[2].StepID != f.steps["ship"].ID || srs[2].Input != "LGTM" {
+		t.Errorf("ship step run = %+v, want fed from the nudged hand-off", srs[2])
+	}
+	if sessions := f.sessions(); len(sessions) != 3 {
+		t.Errorf("sessions = %d, want one per step; the nudge reuses the review's", len(sessions))
+	}
+	if !strings.Contains(f.log.String(), "asked once to hand off") {
+		t.Errorf("runner log should record the nudge:\n%s", f.log)
+	}
+}
+
+// A step that stays silent through the nudge fails the run with a
+// message naming the step and what it was supposed to return; nothing is
+// recorded as "done" on its behalf.
+func TestRunFailsWhenHandoffStaysMissing(t *testing.T) {
+	f := newFixture(t)
+	f.step("review", workflow.StepAgent)
+	f.step("ship", workflow.StepAgent)
+	f.edge("review", "approve", "ship", nil)
+	f.edge("review", "reject", "review", nil)
+	f.exec.handle = func(_ context.Context, _ StepExec) (agent.HeadlessResult, error) {
+		return success("I tried `claude mcp call` but it did not work."), nil
+	}
+	run := f.run()
+
+	err := f.runner().Run(f.ctx, run.ID, false)
+	if !errors.Is(err, ErrRunFailed) {
+		t.Fatalf("Run = %v, want ErrRunFailed\n%s", err, f.log)
+	}
+	got := f.getRun(run.ID)
+	if got.State != workflow.RunFailed || !strings.Contains(got.Error, `step "review"`) ||
+		!strings.Contains(got.Error, "finish_step") || !strings.Contains(got.Error, "approve, reject") {
+		t.Errorf("run = %+v, want failed naming the step, finish_step and the outcomes it routes", got)
+	}
+	if reqs := f.exec.requests(); len(reqs) != 2 || !reqs[1].Resume {
+		t.Errorf("exec calls = %+v, want the attempt and exactly one nudge", reqs)
+	}
+	if srs := f.stepRuns(run.ID); len(srs) != 1 || srs[0].Finished() {
+		t.Errorf("step runs = %+v, want the one review, left unfinished rather than guessed done", srs)
+	}
+}
+
+// The stdout fallback survives where it is safe: a step whose only
+// outcome is done (a single done edge, or no edges at all) is settled
+// from its final text without a nudge.
+func TestRunFallsBackToTextForDoneOnlySteps(t *testing.T) {
+	f := newFixture(t)
+	f.step("implement", workflow.StepAgent)
+	f.step("ship", workflow.StepAgent)
+	f.edge("implement", "done", "ship", nil)
+	run := f.run()
+
+	if err := f.runner().Run(f.ctx, run.ID, false); err != nil {
+		t.Fatalf("Run: %v\n%s", err, f.log)
+	}
+	reqs := f.exec.requests()
+	if len(reqs) != 2 || reqs[0].Resume || reqs[1].Resume {
+		t.Errorf("exec calls = %+v, want two fresh attempts and no nudge", reqs)
+	}
+	srs := f.stepRuns(run.ID)
+	if len(srs) != 2 || srs[0].Outcome != "done" || !strings.HasPrefix(srs[0].Deliverable, "did: ") ||
+		srs[1].Outcome != "done" || !strings.HasPrefix(srs[1].Deliverable, "did: ") {
+		t.Errorf("step runs = %+v, want both settled done from their final text", srs)
+	}
+}
+
+// A crash resume that finds the step's result in its log still enforces
+// the hand-off: the settled-from-log path nudges too.
+func TestRunTakeoverNudgesWhenLoggedResultHasNoHandoff(t *testing.T) {
+	f := newFixture(t)
+	f.step("review", workflow.StepAgent)
+	f.step("ship", workflow.StepAgent)
+	f.edge("review", "approve", "ship", nil)
+	f.edge("review", "reject", "review", nil)
+	run := f.run()
+	if ok, err := f.s.ClaimRun(f.ctx, run.ID); err != nil || !ok {
+		t.Fatalf("ClaimRun = (%v, %v)", ok, err)
+	}
+	sr, err := f.s.CreateStepRun(f.ctx, workflow.StepRun{RunID: run.ID, StepID: f.steps["review"].ID, SessionExternalID: "sess-crashed"})
+	if err != nil {
+		t.Fatalf("CreateStepRun: %v", err)
+	}
+	logPath, _ := agent.StepLogPath(run.ID, sr.ID)
+	if err := f.s.SetStepRunLogPath(f.ctx, sr.ID, logPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(logPath, []byte(`{"type":"result","subtype":"success","result":"Approved in prose only"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.exec.handle = func(_ context.Context, req StepExec) (agent.HeadlessResult, error) {
+		if req.Resume {
+			if err := f.s.FinishStepRun(f.ctx, req.StepRun.ID, "approve", "LGTM"); err != nil {
+				t.Errorf("FinishStepRun: %v", err)
+			}
+		}
+		return success("ok"), nil
+	}
+
+	if err := f.runner().Run(f.ctx, run.ID, true); err != nil {
+		t.Fatalf("Run with takeover = %v\n%s", err, f.log)
+	}
+	reqs := f.exec.requests()
+	if len(reqs) != 2 || !reqs[0].Resume || reqs[0].StepRun.SessionExternalID != "sess-crashed" || reqs[1].Resume {
+		t.Errorf("exec calls = %+v, want the nudge on the crashed session, then a fresh ship", reqs)
+	}
+	if srs := f.stepRuns(run.ID); len(srs) != 2 || srs[0].Outcome != "approve" || srs[1].Input != "LGTM" {
+		t.Errorf("step runs = %+v, want review approved via the nudge and ship fed from it", srs)
 	}
 }
 
