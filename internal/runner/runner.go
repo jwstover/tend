@@ -7,7 +7,9 @@
 //
 //  1. Load the run and claim it (Store.ClaimRun). If current_step_run_id
 //     points at an unfinished step run, that step is picked back up
-//     (crash recovery) before anything else.
+//     (crash recovery) before anything else. An unfinished step run with
+//     no session id is one nobody owns -- RestartStep cleared it after a
+//     takeover -- and is started over under a fresh session instead.
 //  2. Otherwise pick the next step from the previous step run's outcome
 //     via the workflow's edges, read live -- there is no snapshot. No
 //     edge for the outcome means the run is done.
@@ -368,12 +370,16 @@ func (r *Runner) startStep(ctx context.Context, run workflow.Run, wf workflow.Wo
 }
 
 // resumeStep picks up a step run a previous runner left unfinished.
-// A gate just goes back to waiting. An agent step whose log already holds
-// a result event finished on its own after the runner died and is settled
-// from that; otherwise its session is continued (ResumePrompt), and if
-// that session cannot be continued -- killed before claude ever wrote it
-// -- the step is started over under a fresh session id, on the same step
-// run, so the iteration count stays honest.
+// A gate just goes back to waiting. An agent step run with no session id
+// belongs to no attempt at all -- RestartStep cleared it, the other half
+// of "rerun this step headlessly" after a takeover -- and is started over
+// under a fresh session id before the log or the old session is even
+// consulted. Otherwise a step whose log already holds a result event
+// finished on its own after the runner died and is settled from that;
+// failing that its session is continued (ResumePrompt), and if that
+// session cannot be continued -- killed before claude ever wrote it --
+// the step is likewise started over. Either way the restart is on the
+// same step run, so the iteration count stays honest.
 func (r *Runner) resumeStep(ctx context.Context, run workflow.Run, tk task.Task, sr workflow.StepRun) (workflow.StepRun, error) {
 	step, err := r.Store.GetStep(ctx, sr.StepID)
 	if err != nil {
@@ -382,6 +388,11 @@ func (r *Runner) resumeStep(ctx context.Context, run workflow.Run, tk task.Task,
 	r.logf("run %d: resuming step %q (iteration %d)", run.ID, step.Name, sr.Iteration)
 	if step.Kind == workflow.StepGate {
 		return r.waitGate(ctx, run, step, sr)
+	}
+
+	if sr.SessionExternalID == "" {
+		r.logf("run %d: step %q has no session; starting it over", run.ID, step.Name)
+		return r.startOver(ctx, run, tk, step, sr)
 	}
 
 	if res, ok := loggedResult(sr.LogPath); ok {
@@ -394,6 +405,16 @@ func (r *Runner) resumeStep(ctx context.Context, run workflow.Run, tk task.Task,
 		return fin, err
 	}
 	r.logf("run %d: step %q could not be resumed (%v); starting it over", run.ID, step.Name, err)
+	return r.startOver(ctx, run, tk, step, sr)
+}
+
+// startOver runs an unfinished agent step run again from its recorded
+// prompt under a brand-new session id, on the same row. The previous
+// session row (if any) is left as history and the log is not truncated:
+// agent.RunHeadless appends, so the earlier attempt stays readable above
+// the new one in the log viewer.
+func (r *Runner) startOver(ctx context.Context, run workflow.Run, tk task.Task, step workflow.Step, sr workflow.StepRun) (workflow.StepRun, error) {
+	var err error
 	sr.SessionExternalID, err = agent.NewSessionID()
 	if err != nil {
 		return workflow.StepRun{}, err
