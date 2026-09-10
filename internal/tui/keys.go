@@ -54,7 +54,7 @@ type keyMap struct {
 	Reject    key.Binding // reject it, with feedback for the step it loops back to
 	Outcome   key.Binding // pick any of the gate's edge outcomes
 	Takeover  key.Binding // resume a paused step's session interactively
-	RawLog    key.Binding // raw stream-json instead of the rendering
+	RawLog    key.Binding // `v` (verbose): raw stream-json instead of the rendering
 
 	// Tree expansion in the list view.
 	ExpandToggle key.Binding // ⏎/Tab flips a branch (⏎ falls back to detail on leaves)
@@ -151,7 +151,9 @@ func defaultKeyMap() keyMap {
 		Reject:    key.NewBinding(key.WithKeys("x"), key.WithHelp("x", "reject gate")),
 		Outcome:   key.NewBinding(key.WithKeys("o"), key.WithHelp("o", "pick gate outcome")),
 		Takeover:  key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "take over step")),
-		RawLog:    key.NewBinding(key.WithKeys("l"), key.WithHelp("l", "raw log")),
+		// `v` for verbose: `l` is "pane to the right" everywhere in the app,
+		// so it cannot double as a toggle in a log pane.
+		RawLog: key.NewBinding(key.WithKeys("v"), key.WithHelp("v", "raw log")),
 
 		ExpandToggle: key.NewBinding(key.WithKeys("enter", "tab"), key.WithHelp("⏎", "expand")),
 		ExpandOpen:   key.NewBinding(key.WithKeys("l", "right"), key.WithHelp("l", "expand")),

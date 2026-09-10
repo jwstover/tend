@@ -392,7 +392,9 @@ func (a app) handleAgentsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	case key.Matches(msg, a.keys.Sessions), key.Matches(msg, a.keys.ExpandToggle) && msg.String() != "tab":
 		return a, a.joinSelectedAgent()
-	case key.Matches(msg, a.keys.ViewRun):
+	// `v` from the list watches the run; in the pane it is the raw-log
+	// toggle (RawLog shares the key), handled by handleAgentPaneKey.
+	case key.Matches(msg, a.keys.ViewRun) && a.focus != paneDetail:
 		if row, ok := a.selectedAgent(); ok && row.run != nil {
 			return a, a.openRunView(*row.run)
 		}
@@ -455,7 +457,8 @@ func (a app) handleAgentListKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 // handleAgentPaneKey scrolls the right pane. For a headless session's log,
 // scrolling away from the bottom stops the tail from yanking the view and
-// scrolling back to it resumes, as in the run view; `l` flips raw.
+// scrolling back to it resumes, as in the run view; `v` flips raw and `h`
+// hands the keyboard back to the sessions.
 func (a app) handleAgentPaneKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, a.keys.ExpandClose):
@@ -802,7 +805,7 @@ func (a app) agentsHints() [][2]string {
 	case paneDetail:
 		hints := [][2]string{{"j/k", "scroll"}, {"h/esc", "to sessions"}}
 		if row, ok := a.selectedAgent(); ok && row.headless() {
-			hints = append(hints, [2]string{"l", "raw"})
+			hints = append(hints, [2]string{"v", "raw"})
 		}
 		return append(hints, [2]string{"⏎", "join"}, [2]string{"dd", "kill"}, [2]string{"?", "help"})
 	}

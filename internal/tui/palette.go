@@ -99,7 +99,7 @@ func (a app) paletteCommands() []paletteCommand {
 					a.status = flash{text: "nothing selected"}
 					return a, nil
 				}
-				return a, a.loadRunsForPicker(t)
+				return a, a.loadRunsForView(t)
 			}},
 		{icon: "✎", label: "Capture a note", hint: "N", aliases: []string{"note"},
 			act: func(a app) (tea.Model, tea.Cmd) {

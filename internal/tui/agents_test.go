@@ -143,8 +143,9 @@ func TestAgentsViewListsProjectSessions(t *testing.T) {
 }
 
 // A headless session's row says so, its pane names the run, and the log
-// tails from the step's stream-json on the poll tick; `l` in the pane
-// flips to raw and `v` opens the run view, which comes back here.
+// tails from the step's stream-json on the poll tick; `v` in the pane
+// flips to raw and `v` from the list opens the run view, which comes back
+// here.
 func TestAgentsViewHeadlessPaneTailsLog(t *testing.T) {
 	stubRunnerAlive(t, true)
 	m, s := wideApp(t)
@@ -192,13 +193,18 @@ func TestAgentsViewHeadlessPaneTailsLog(t *testing.T) {
 	if a := m.(app); a.focus != paneDetail {
 		t.Fatalf("focus = %v after l, want the pane", a.focus)
 	}
-	m = drive(t, m, keyPress('l'))
+	m = drive(t, m, keyPress('v'))
 	content = ansi.Strip(m.View().Content)
 	if !strings.Contains(content, `"type":"assistant"`) || !strings.Contains(content, "raw") {
 		t.Errorf("raw toggle did not show the stream-json lines:\n%s", content)
 	}
 
-	// `v` watches the run; leaving it comes back to the agents view.
+	// `h` back to the sessions, where `v` watches the run; leaving it comes
+	// back to the agents view.
+	m = drive(t, m, keyPress('h'))
+	if a := m.(app); a.focus != paneTasks || a.mode != modeAgents {
+		t.Fatalf("focus=%v mode=%v after h, want the sessions list", a.focus, a.mode)
+	}
 	m = drive(t, m, keyPress('v'))
 	if a := m.(app); a.mode != modeRun || a.rv.runID != l.run.ID {
 		t.Fatalf("mode = %v run %d after v, want the run view on run %d", a.mode, a.rv.runID, l.run.ID)

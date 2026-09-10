@@ -419,12 +419,13 @@ type (
 		tmuxSession string
 	}
 
-	// Run view messages (runview.go). runsForPickerMsg carries a task's
-	// runs for the `v` picker; runViewLoadedMsg is everything the view
-	// shows except the log, which runLogLoadedMsg brings in pieces -- a
-	// read from offset `from` to `to`, so a tail appends and a stale read
-	// is recognized and dropped.
-	runsForPickerMsg struct {
+	// Run view messages (runview.go). runsForViewMsg carries a task's runs
+	// for `v`, which opens the view on the latest with the rest in the
+	// sidebar; runViewLoadedMsg is everything the view shows except the
+	// log, which runLogLoadedMsg brings in pieces -- a read from offset
+	// `from` to `to`, so a tail appends and a stale read is recognized and
+	// dropped.
+	runsForViewMsg struct {
 		t    task.Task
 		runs []runSummary
 	}
@@ -436,6 +437,7 @@ type (
 		stepKinds    map[int64]workflow.StepKind
 		stepOutcomes map[int64][]string
 		runnerGone   bool
+		runs         []runSummary // the task's runs, for the sidebar; nil if unreadable
 	}
 	runLogLoadedMsg struct {
 		stepRunID int64
@@ -590,15 +592,11 @@ type app struct {
 	wfRunPickerSel       int
 	wfRunPending         *workflowRunRequest
 
-	// Run view (runview.go): the run being watched, and the `v` picker
-	// over a task's runs. runsCache is the detail pane's WORKFLOWS source,
+	// Run view (runview.go): the run being watched, with the task's other
+	// runs in its sidebar. runsCache is the detail pane's WORKFLOWS source,
 	// loaded alongside children/log/sessions.
 	rv            runView
 	runsCache     map[int64][]runSummary
-	runPickerOpen bool
-	runPickerTask task.Task
-	runPickerRuns []runSummary
-	runPickerSel  int
 	cancelPending bool // first `c` pressed in the run view; a second confirms
 	// rvBack is the view `v` was pressed in, for leaving the run view to
 	// return there: the list, or the agents view.
@@ -835,8 +833,8 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			msg.req.w.Name, msg.req.t.ID, msg.run.ID, msg.tmuxSession)}
 		return a, nil
 
-	case runsForPickerMsg:
-		return a, a.openRunPicker(msg)
+	case runsForViewMsg:
+		return a, a.openRunViewForTask(msg)
 
 	case runViewLoadedMsg:
 		settle := a.liveReloadSettled()
@@ -1106,11 +1104,6 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// As does the workflow-run picker.
 	if a.wfRunPickerOpen {
 		return a.handleWorkflowRunPickerKey(msg)
-	}
-
-	// And the run picker.
-	if a.runPickerOpen {
-		return a.handleRunPickerKey(msg)
 	}
 
 	// And the gate outcome picker (run view).
@@ -1573,7 +1566,7 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// List only: in triage `v` is the review-state key.
 	case key.Matches(msg, a.keys.ViewRun) && a.mode == modeList:
 		if t, ok := a.selected(); ok {
-			return a, a.loadRunsForPicker(t)
+			return a, a.loadRunsForView(t)
 		}
 		return a, nil
 	}
@@ -2491,8 +2484,7 @@ func (a app) View() tea.View {
 		splits = []int{at}
 		body = a.workflowsView()
 	case modeRun:
-		at, _ := a.runViewWidths()
-		splits = []int{at}
+		splits = a.runViewSplits()
 		body = a.runViewBody()
 	case modeAgents:
 		splits = a.agentsSplits()
@@ -2518,7 +2510,7 @@ func (a app) View() tea.View {
 	// body rows. A panel taller than the screen loses its top rows, like
 	// the design's splice.
 	if a.paletteOpen || a.helpOpen || a.urlPickerOpen || a.sessionPickerOpen ||
-		a.projectPickerOpen || a.wfPickerOpen || a.wfRunPickerOpen || a.runPickerOpen || a.gatePickerOpen {
+		a.projectPickerOpen || a.wfPickerOpen || a.wfRunPickerOpen || a.gatePickerOpen {
 		box := a.paletteView()
 		switch {
 		case a.helpOpen:
@@ -2533,8 +2525,6 @@ func (a app) View() tea.View {
 			box = a.wfPickerView()
 		case a.wfRunPickerOpen:
 			box = a.workflowRunPickerView()
-		case a.runPickerOpen:
-			box = a.runPickerView()
 		case a.gatePickerOpen:
 			box = a.gatePickerView()
 		}

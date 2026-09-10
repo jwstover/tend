@@ -30,10 +30,12 @@ import (
 //
 //   - the detail pane's WORKFLOWS section (renderDetail), one row per run
 //     on the task, built from runSummary;
-//   - the run picker (`v`), the same rows as a chooser when a task has
-//     more than one run;
-//   - the run view (modeRun): the run's step runs on the left, the
-//     selected step's log on the right, tail-following while it runs.
+//   - the run view's RUNS sidebar, the same rows as a column to switch
+//     between the task's runs without leaving the view;
+//   - the run view (modeRun): the task's runs in a sidebar on the left,
+//     the watched run's step runs in the middle, the selected step's log
+//     on the right, tail-following while it runs. `v` opens it on the
+//     task's latest run; h/l move between the three panes.
 //
 // Controls write exactly what the CLI would: SetRunState for pause and
 // cancel (the runner polls for both), FinishStepRun for a gate decision
@@ -201,129 +203,51 @@ func runSummaryLine(s Styles, r runSummary, now time.Time, metaStyle lipgloss.St
 	return name, strings.Join(parts, metaStyle.Render(" · "))
 }
 
-// --- run picker (`v`) -----------------------------------------------------
+// --- opening the view (`v`) -----------------------------------------------
 
-// loadRunsForPicker fetches a task's runs and their summaries off the
-// update loop, then opens the picker -- or the run view directly when
-// there is only one run to watch.
-func (a app) loadRunsForPicker(t task.Task) tea.Cmd {
+// loadRunsForView fetches a task's runs and their summaries off the
+// update loop; openRunViewForTask then lands the view on the latest.
+func (a app) loadRunsForView(t task.Task) tea.Cmd {
 	return func() tea.Msg {
 		runs, err := a.store.ListRunsForTask(a.ctx, t.ID)
 		if err != nil {
 			return errMsg{err}
 		}
-		return runsForPickerMsg{t: t, runs: a.summarizeRuns(a.ctx, runs)}
+		return runsForViewMsg{t: t, runs: a.summarizeRuns(a.ctx, runs)}
 	}
 }
 
-// openRunPicker arms the picker, skipping it for a single run the same
-// way the session picker skips straight to the prompt with no sessions.
-func (a *app) openRunPicker(msg runsForPickerMsg) tea.Cmd {
+// openRunViewForTask opens the view on the task's latest run (the runs
+// come newest first) with every run in the sidebar, so an older one is a
+// j away rather than a picker. A task with no runs flashes instead.
+func (a *app) openRunViewForTask(msg runsForViewMsg) tea.Cmd {
 	a.runsCache[msg.t.ID] = msg.runs
-	switch len(msg.runs) {
-	case 0:
+	if len(msg.runs) == 0 {
 		a.status = flash{text: fmt.Sprintf("no workflow runs on #%d — press w to start one", msg.t.ID)}
 		return nil
-	case 1:
-		return a.openRunView(msg.runs[0].run)
 	}
-	a.runPickerOpen = true
-	a.runPickerTask = msg.t
-	a.runPickerRuns = msg.runs
-	a.runPickerSel = 0
-	return nil
-}
-
-func (a *app) closeRunPicker() {
-	a.runPickerOpen = false
-	a.runPickerTask = task.Task{}
-	a.runPickerRuns = nil
-	a.runPickerSel = 0
-}
-
-// handleRunPickerKey owns the keyboard while the picker is open, in the
-// other pickers' mould: arrows or ctrl-n/ctrl-p move, a digit picks
-// directly, Enter picks the highlight, esc dismisses.
-func (a app) handleRunPickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	runs := a.runPickerRuns
-	pick := func(idx int) (tea.Model, tea.Cmd) {
-		a.closeRunPicker()
-		if idx < 0 || idx >= len(runs) {
-			return a, nil
-		}
-		return a, a.openRunView(runs[idx].run)
-	}
-	switch msg.String() {
-	case "esc":
-		a.closeRunPicker()
-		return a, nil
-	case "enter":
-		return pick(a.runPickerSel)
-	case "up", "ctrl+p", "k":
-		if a.runPickerSel > 0 {
-			a.runPickerSel--
-		}
-		return a, nil
-	case "down", "ctrl+n", "j":
-		if a.runPickerSel < len(runs)-1 {
-			a.runPickerSel++
-		}
-		return a, nil
-	}
-	if len(msg.Text) == 1 && msg.Text[0] >= '1' && msg.Text[0] <= '9' {
-		if idx := int(msg.Text[0] - '1'); idx < len(runs) {
-			return pick(idx)
-		}
-	}
-	return a, nil
-}
-
-// runPickerView renders the chooser: the task named in the title, then
-// the numbered runs newest first with the same glyph and facts as the
-// WORKFLOWS section.
-func (a app) runPickerView() string {
-	s, g := a.styles, a.styles.Glyphs
-	w := max(a.width, 20)
-	cb := s.CardBorder
-	hbar := strings.Repeat(g.RuleH, w-4)
-
-	row := func(content string) string {
-		gap := max(w-5-lipgloss.Width(content), 0)
-		return "  " + cb.Render(g.RuleV) + " " + content +
-			strings.Repeat(" ", gap) + cb.Render(g.RuleV)
-	}
-
-	title := truncTail(a.runPickerTask.Title, max(w-30, 10), g.Ellipsis)
-	lines := []string{"  " + cb.Render(g.BoxTL+hbar+g.BoxTR)}
-	lines = append(lines, row(s.Accent.Bold(true).Render("⚡ ")+
-		s.Title.Render("workflow runs on ")+s.Dimmed.Render(title)+
-		s.Muted.Render("  ⏎ or type a number")))
-	lines = append(lines, "  "+cb.Render(g.TeeRight+hbar+g.TeeLeft))
-
-	now := time.Now().UTC()
-	sel := min(a.runPickerSel, len(a.runPickerRuns)-1)
-	for i, r := range a.runPickerRuns {
-		num := fmt.Sprintf("%d ", i+1)
-		mark, markStyle := runStateCell(s, r.run.State)
-		name, meta := runSummaryLine(s, r, now, s.Muted)
-		var content string
-		if i == sel {
-			content = s.SelBar.Render(g.SelBar+" ") + s.Accent.Render(num) + markStyle.Render(mark) + " " +
-				s.Title.Render(name) + "  " + meta
-		} else {
-			content = "  " + s.Muted.Render(num) + markStyle.Render(mark) + " " +
-				s.Dimmed.Render(name) + "  " + meta
-		}
-		lines = append(lines, row(content))
-	}
-	lines = append(lines, "  "+cb.Render(g.BoxBL+hbar+g.BoxBR))
-	return strings.Join(lines, "\n")
+	cmd := a.openRunView(msg.runs[0].run)
+	a.rv.runs = msg.runs
+	return cmd
 }
 
 // --- run view -------------------------------------------------------------
 
-// runView is the state of modeRun: the run being watched, its step runs,
-// which one is selected, and the selected step's log.
+// rvPane is which run-view column owns the keyboard: the task's runs, the
+// watched run's steps, or the selected step's log. h and l move left and
+// right across them, as they do between every other pair of panes in the
+// app.
+type rvPane int
+
+const (
+	rvPaneRuns  rvPane = iota // the RUNS sidebar
+	rvPaneSteps               // the watched run's step runs
+	rvPaneLog                 // the selected step's log
+)
+
+// runView is the state of modeRun: the run being watched, the task's
+// other runs beside it, its step runs, which one is selected, and the
+// selected step's log.
 type runView struct {
 	runID     int64
 	run       workflow.Run
@@ -336,13 +260,18 @@ type runView struct {
 	stepOutcomes map[int64][]string
 	runnerGone   bool
 
+	// runs is the sidebar: every run on the watched run's task, newest
+	// first, reloaded with the run so their states stay current. runCursor
+	// is the sidebar row of the watched run.
+	runs      []runSummary
+	runCursor int
+
 	cursor int  // selected step run index
 	follow bool // the cursor tracks the current step as the run advances
-	// focusLog is which pane j/k drive: the step list, or the log.
-	focusLog bool
-	raw      bool // `l`: raw stream-json lines rather than the rendering
-	log      runLog
-	vp       viewport.Model
+	focus  rvPane
+	raw    bool // `v`: raw stream-json lines rather than the rendering
+	log    runLog
+	vp     viewport.Model
 }
 
 // runLog is the selected step's log as read so far. offset is the byte
@@ -386,8 +315,24 @@ func (a *app) openRunView(run workflow.Run) tea.Cmd {
 	}
 	a.mode = modeRun
 	a.cancelPending = false
-	a.rv = runView{runID: run.ID, run: run, follow: true, vp: viewport.New()}
+	a.rv = runView{runID: run.ID, run: run, follow: true, focus: rvPaneSteps, vp: viewport.New()}
 	a.resize()
+	return a.loadRunView(run.ID)
+}
+
+// switchRun points the open view at another of the task's runs, from the
+// sidebar. The sidebar and its focus stay; everything about the watched
+// run -- step runs, cursor, log -- starts over, and the load fills it in.
+func (a *app) switchRun(run workflow.Run) tea.Cmd {
+	if run.ID == a.rv.runID {
+		return nil
+	}
+	a.cancelPending = false
+	a.rv.runID, a.rv.run, a.rv.workflow = run.ID, run, ""
+	a.rv.stepRuns, a.rv.cursor, a.rv.follow = nil, 0, true
+	a.rv.runnerGone = false
+	a.rv.log = runLog{}
+	a.renderRunLog()
 	return a.loadRunView(run.ID)
 }
 
@@ -405,7 +350,8 @@ func (a *app) leaveRunView() tea.Cmd {
 
 // loadRunView fetches everything the view shows except the log: the run,
 // its workflow's name, its step runs and their steps' names, kinds and
-// outcomes, and whether a runner is hosting it.
+// outcomes, whether a runner is hosting it, and the task's runs for the
+// sidebar (so a run that ends or starts while watching shows up there).
 func (a app) loadRunView(runID int64) tea.Cmd {
 	return func() tea.Msg {
 		run, err := a.store.GetRun(a.ctx, runID)
@@ -416,6 +362,11 @@ func (a app) loadRunView(runID int64) tea.Cmd {
 			stepKinds: map[int64]workflow.StepKind{}, stepOutcomes: map[int64][]string{}}
 		if wf, err := a.store.GetWorkflow(a.ctx, run.WorkflowID); err == nil {
 			msg.workflow = wf.Name
+		}
+		// The sidebar degrades rather than fails: with the runs unreadable
+		// the view still shows the run it was opened on.
+		if runs, err := a.store.ListRunsForTask(a.ctx, run.TaskID); err == nil {
+			msg.runs = a.summarizeRuns(a.ctx, runs)
 		}
 		msg.stepRuns, err = a.store.ListStepRunsForRun(a.ctx, runID)
 		if err != nil {
@@ -446,15 +397,23 @@ func (a app) loadRunView(runID int64) tea.Cmd {
 	}
 }
 
-// applyRunView installs a loaded run and settles the cursor: on the
-// current step while following, else clamped. It then issues the log
-// read for the selected step -- a tail from where the last read stopped
-// when it is the same step, a fresh read otherwise.
+// applyRunView installs a loaded run and settles the cursors: the sidebar
+// on the watched run, the step cursor on the current step while
+// following, else clamped. It then issues the log read for the selected
+// step -- a tail from where the last read stopped when it is the same
+// step, a fresh read otherwise.
 func (a *app) applyRunView(msg runViewLoadedMsg) tea.Cmd {
 	rv := &a.rv
 	rv.run, rv.workflow, rv.stepRuns = msg.run, msg.workflow, msg.stepRuns
 	rv.stepNames, rv.stepKinds, rv.stepOutcomes = msg.stepNames, msg.stepKinds, msg.stepOutcomes
 	rv.runnerGone = msg.runnerGone
+	if msg.runs != nil {
+		rv.runs = msg.runs
+	}
+	if i := slices.IndexFunc(rv.runs, func(r runSummary) bool { return r.run.ID == rv.runID }); i >= 0 {
+		rv.runCursor = i
+	}
+	rv.runCursor = max(min(rv.runCursor, len(rv.runs)-1), 0)
 	if rv.follow {
 		if cur, ok := rv.current(); ok {
 			rv.cursor = slices.IndexFunc(rv.stepRuns, func(sr workflow.StepRun) bool { return sr.ID == cur.ID })
@@ -581,7 +540,7 @@ func renderLogLines(lines []string, raw bool, width int, s Styles) []string {
 // following.
 func (a *app) renderRunLog() {
 	rv := &a.rv
-	_, w := a.runViewWidths()
+	_, _, w := a.runViewWidths()
 	lines := rv.log.rendered
 	if rv.raw {
 		lines = rv.log.raw
@@ -682,10 +641,12 @@ func (a app) handleRunViewKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, a.keys.Quit) && msg.String() != "q":
 		return a, tea.Quit
-	case key.Matches(msg, a.keys.Quit), key.Matches(msg, a.keys.Back), key.Matches(msg, a.keys.ExpandClose):
-		if a.rv.focusLog && !key.Matches(msg, a.keys.Quit) {
-			// esc / h back out of the log pane before leaving the view.
-			a.rv.focusLog = false
+	case key.Matches(msg, a.keys.Quit):
+		return a, a.leaveRunView()
+	case key.Matches(msg, a.keys.Back):
+		// esc backs out of the log pane before leaving the view.
+		if a.rv.focus == rvPaneLog {
+			a.rv.focus = rvPaneSteps
 			return a, nil
 		}
 		return a, a.leaveRunView()
@@ -698,8 +659,24 @@ func (a app) handleRunViewKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, a.keys.Note):
 		return a, a.modal.Open(modalLog, true, "note", 0, "")
 
+	// h / l walk the panes: runs → steps → log and back. tab keeps its
+	// steps ↔ log flip (from the sidebar it lands on the steps).
+	case key.Matches(msg, a.keys.ExpandClose):
+		if a.rv.focus > rvPaneRuns {
+			a.rv.focus--
+		}
+		return a, nil
+	case key.Matches(msg, a.keys.ExpandOpen):
+		if a.rv.focus < rvPaneLog {
+			a.rv.focus++
+		}
+		return a, nil
 	case msg.String() == "tab", key.Matches(msg, a.keys.ExpandToggle):
-		a.rv.focusLog = !a.rv.focusLog
+		if a.rv.focus == rvPaneLog {
+			a.rv.focus = rvPaneSteps
+		} else {
+			a.rv.focus = rvPaneLog
+		}
 		return a, nil
 	case key.Matches(msg, a.keys.RawLog):
 		a.rv.raw = !a.rv.raw
@@ -726,10 +703,40 @@ func (a app) handleRunViewKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return a, a.takeoverStep()
 	}
 
-	if a.rv.focusLog {
+	switch a.rv.focus {
+	case rvPaneRuns:
+		return a.handleRunListKey(msg)
+	case rvPaneLog:
 		return a.handleRunLogKey(msg)
 	}
 	return a.handleRunStepsKey(msg)
+}
+
+// handleRunListKey moves the sidebar cursor; each move switches the view
+// to that run, the way the projects column reloads the list as its cursor
+// moves.
+func (a app) handleRunListKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	move := func(to int) (tea.Model, tea.Cmd) {
+		to = max(min(to, len(a.rv.runs)-1), 0)
+		if to == a.rv.runCursor || to >= len(a.rv.runs) {
+			return a, nil
+		}
+		a.rv.runCursor = to
+		return a, a.switchRun(a.rv.runs[to].run)
+	}
+	switch {
+	case key.Matches(msg, a.keys.ScrollDown):
+		return move(a.rv.runCursor + 1)
+	case key.Matches(msg, a.keys.ScrollUp):
+		return move(a.rv.runCursor - 1)
+	}
+	switch msg.String() {
+	case "G":
+		return move(len(a.rv.runs) - 1)
+	case "g":
+		return move(0)
+	}
+	return a, nil
 }
 
 // handleRunStepsKey moves the step cursor. Moving it by hand turns
@@ -1061,37 +1068,111 @@ func (a app) cancelPanel() string {
 
 // --- view -----------------------------------------------------------------
 
-// runViewWidths splits the body like the workflows view: steps on the
-// left, the log on the right, one divider between.
-func (a app) runViewWidths() (leftW, rightW int) {
-	w := max(a.width, 20)
-	leftW = max(min(w*2/5, 48), 16)
-	return leftW, w - leftW - 1
+// runViewWidths splits the body three ways: the runs sidebar on the left
+// (the projects column's width, the same kind of thing), the steps in the
+// middle, the log on the right, a divider between each pair.
+func (a app) runViewWidths() (sideW, stepsW, logW int) {
+	w := max(a.width, 40)
+	sideW = projectsPaneWidth
+	rest := w - sideW - 1
+	stepsW = max(min(rest*2/5, 48), 16)
+	return sideW, stepsW, rest - stepsW - 1
+}
+
+// runViewSplits is the divider columns, for the horizontal rules to tee.
+func (a app) runViewSplits() []int {
+	sideW, stepsW, _ := a.runViewWidths()
+	return []int{sideW, sideW + 1 + stepsW}
 }
 
 // sizeRunViewport fits the log viewport under the log pane's heading.
 func (a *app) sizeRunViewport() {
-	_, rightW := a.runViewWidths()
-	a.rv.vp.SetWidth(max(rightW, 10))
+	_, _, logW := a.runViewWidths()
+	a.rv.vp.SetWidth(max(logW, 10))
 	a.rv.vp.SetHeight(max(a.bodyHeight-runLogHeadingRows, 1))
 }
 
 // runLogHeadingRows is the blank line plus heading above the log.
 const runLogHeadingRows = 2
 
-// runViewBody renders the two panes fitted to bodyHeight rows.
+// runViewBody renders the three panes fitted to bodyHeight rows. The
+// divider to the left of the focused pane wears the accent, so the eye
+// finds the keyboard.
 func (a app) runViewBody() string {
 	h := max(a.bodyHeight, 1)
-	leftW, rightW := a.runViewWidths()
-	left := fitPane(a.runStepsLines(leftW), leftW, h, a.runStepsScroll(h, leftW))
-	right := fitPane(append(a.runLogHeading(rightW), strings.Split(a.rv.vp.View(), "\n")...), rightW, h, 0)
-	style := a.styles.Rule
-	if a.rv.focusLog {
-		style = a.styles.Accent
+	sideW, stepsW, logW := a.runViewWidths()
+	side := fitPane(a.runSidebarLines(sideW), sideW, h, a.runSidebarScroll(h, sideW))
+	steps := fitPane(a.runStepsLines(stepsW), stepsW, h, a.runStepsScroll(h, stepsW))
+	log := fitPane(append(a.runLogHeading(logW), strings.Split(a.rv.vp.View(), "\n")...), logW, h, 0)
+	divider := func(focused bool) string {
+		style := a.styles.Rule
+		if focused {
+			style = a.styles.Accent
+		}
+		return strings.TrimSuffix(strings.Repeat(style.Render(a.styles.Glyphs.RuleV)+"\n", h), "\n")
 	}
-	divider := strings.TrimSuffix(strings.Repeat(style.Render(a.styles.Glyphs.RuleV)+"\n", h), "\n")
 	return lipgloss.JoinHorizontal(lipgloss.Top,
-		strings.Join(left, "\n"), divider, strings.Join(right, "\n"))
+		strings.Join(side, "\n"), divider(a.rv.focus == rvPaneSteps),
+		strings.Join(steps, "\n"), divider(a.rv.focus == rvPaneLog),
+		strings.Join(log, "\n"))
+}
+
+// runSidebarHeaderRows is how many lines precede the first sidebar row.
+const runSidebarHeaderRows = 2
+
+// runSidebarScroll keeps the watched run's row on screen when the sidebar
+// outgrows the body.
+func (a app) runSidebarScroll(height, width int) int {
+	total := len(a.runSidebarLines(width))
+	if total <= height {
+		return 0
+	}
+	line := runSidebarHeaderRows + a.rv.runCursor
+	if line < height {
+		return 0
+	}
+	return min(line-height+1, total-height)
+}
+
+// runSidebarLines lays out the RUNS column: a heading naming the task,
+// then one row per run newest first -- its state glyph, the workflow's
+// name, and the run id right-aligned so two runs of one workflow tell
+// apart. The watched run carries the selection bar; the bar is bold while
+// the sidebar has the keyboard.
+func (a app) runSidebarLines(width int) []string {
+	s, g := a.styles, a.styles.Glyphs
+	rv := a.rv
+	focused := rv.focus == rvPaneRuns
+	lines := []string{"", "  " + s.SubHeader.Render("RUNS") + s.Dimmed.Render(fmt.Sprintf(" · #%d", rv.run.TaskID))}
+	if len(rv.runs) == 0 {
+		return append(lines, "  "+s.Muted.Render("loading…"))
+	}
+	for i, r := range rv.runs {
+		selected := i == rv.runCursor
+		gutter, gutterStyle := "  ", s.Normal
+		if selected {
+			gutter, gutterStyle = g.SelBar+" ", s.SelBar
+		}
+		mark, markStyle := runStateCell(s, r.run.State)
+		name := r.workflow
+		if name == "" {
+			name = "workflow"
+		}
+		id := fmt.Sprintf("#%d", r.run.ID)
+		nameStyle := s.Dimmed
+		switch {
+		case selected && focused:
+			nameStyle = s.Title.Bold(true)
+		case selected:
+			nameStyle = s.Title
+		}
+		nameW := max(width-runeWidth(gutter)-2-runeWidth(id)-1, 1)
+		label := truncTail(name, nameW, g.Ellipsis)
+		gap := max(width-runeWidth(gutter)-2-runeWidth(label)-runeWidth(id), 0)
+		lines = append(lines, gutterStyle.Render(gutter)+markStyle.Render(mark)+" "+nameStyle.Render(label)+
+			strings.Repeat(" ", gap)+s.CountLabel.Render(id))
+	}
+	return lines
 }
 
 // runStepsScroll keeps the selected step row on screen when the list
@@ -1154,7 +1235,7 @@ func (a app) runStepsLines(width int) []string {
 		return lines
 	}
 	cur, hasCur := rv.current()
-	focused := !rv.focusLog
+	focused := rv.focus == rvPaneSteps
 	for i, sr := range rv.stepRuns {
 		selected := i == rv.cursor
 		isCur := hasCur && sr.ID == cur.ID
@@ -1222,13 +1303,17 @@ func (a app) runLogHeading(width int) []string {
 	return []string{"", heading + strings.Repeat(" ", gap) + s.Faint.Render(mode)}
 }
 
-// runViewHints is the footer for the view.
+// runViewHints is the footer for the view, per focused pane.
 func (a app) runViewHints() [][2]string {
-	hints := [][2]string{{"j/k", "steps"}}
-	if a.rv.focusLog {
-		hints = [][2]string{{"j/k", "scroll"}}
+	var hints [][2]string
+	switch a.rv.focus {
+	case rvPaneRuns:
+		hints = [][2]string{{"j/k", "switch run"}, {"l", "to steps"}}
+	case rvPaneLog:
+		hints = [][2]string{{"j/k", "scroll"}, {"h", "to steps"}}
+	default:
+		hints = [][2]string{{"j/k", "steps"}, {"h/l", "runs / log"}}
 	}
-	hints = append(hints, [2]string{"tab", "steps ↔ log"})
 	switch a.rv.run.State {
 	case workflow.RunPaused:
 		hints = append(hints, [2]string{"p", "resume"}, [2]string{"t", "take over step"})
@@ -1240,5 +1325,5 @@ func (a app) runViewHints() [][2]string {
 	if !a.rv.run.State.Terminal() {
 		hints = append(hints, [2]string{"cc", "cancel"})
 	}
-	return append(hints, [2]string{"l", "raw"}, [2]string{"esc/q", "back"}, [2]string{"?", "help"})
+	return append(hints, [2]string{"v", "raw"}, [2]string{"esc/q", "back"}, [2]string{"?", "help"})
 }

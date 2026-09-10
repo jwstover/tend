@@ -60,7 +60,8 @@ func helpGroups() []helpGroup {
 			{"dd", "kill it (headless: cancel run)"},
 			{"v", "watch a headless session's run"},
 			{"C", "show / hide ended sessions"},
-			{"l", "raw / rendered log (in pane)"},
+			{"h / l", "projects ← sessions → pane"},
+			{"v", "raw / rendered log (in pane)"},
 		}},
 		{"PROJECTS", []helpEntry{
 			{"h / [", "focus / toggle projects column"},
@@ -87,8 +88,9 @@ func helpGroups() []helpGroup {
 			{"dd", "delete workflow or step"},
 		}},
 		{"RUN VIEW", []helpEntry{
-			{"j / k / tab", "select step / scroll / pane"},
-			{"l", "raw stream-json / rendered log"},
+			{"j / k", "switch run / select step / scroll"},
+			{"h / l", "runs ← steps → log panes"},
+			{"v", "raw stream-json / rendered log"},
 			{"p / cc", "pause or resume / cancel the run"},
 			{"a / x", "approve / reject (with feedback) gate"},
 			{"o", "pick any outcome the gate routes"},
