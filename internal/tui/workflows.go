@@ -277,8 +277,9 @@ func (a app) handleStepsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if st.Kind == workflow.StepGate {
 			next = workflow.StepAgent
 		}
-		st.Kind = next
-		return a, a.updateStep(st, flash{kind: flashEdit, text: fmt.Sprintf("%s → %s", st.Name, next)})
+		return a, a.setStepAttr(st.ID, flash{kind: flashEdit, text: fmt.Sprintf("%s → %s", st.Name, next)}, func() error {
+			return a.store.SetStepKind(a.ctx, st.ID, next)
+		})
 	case key.Matches(msg, a.keys.StepDown):
 		return a, a.moveStep(a.wfStepCursor, a.wfStepCursor+1)
 	case key.Matches(msg, a.keys.StepUp):
@@ -410,13 +411,15 @@ func inUseOrErr(err error, name string) tea.Msg {
 	return errMsg{err}
 }
 
-// updateStep writes a step's editable attributes and keeps the cursor on
-// it across the reload.
-func (a *app) updateStep(st workflow.Step, status flash) tea.Cmd {
-	a.wfSelectStepID = st.ID
-	return a.mutate(status, func() error {
-		return a.store.UpdateStep(a.ctx, st)
-	})
+// setStepAttr runs write, a single-attribute store update for step stepID,
+// and keeps the cursor on the step across the reload that follows. Each
+// keypress writes only the attribute it changed rather than the whole
+// cached step: a mutation's reload can still be in flight when the next
+// key lands, and rewriting every column from the stale copy would undo the
+// earlier write.
+func (a *app) setStepAttr(stepID int64, status flash, write func() error) tea.Cmd {
+	a.wfSelectStepID = stepID
+	return a.mutate(status, write)
 }
 
 // moveStep swaps the step at from with the one at to and writes the new
@@ -535,15 +538,16 @@ func (a app) handleWfPickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 		o := opts[idx]
-		var status flash
 		if kind == wfPickPermission {
-			st.PermissionMode = o.value
-			status = flash{kind: flashEdit, text: fmt.Sprintf("%s permission mode → %s", st.Name, o.label)}
-		} else {
-			st.Model = o.value
-			status = flash{kind: flashEdit, text: fmt.Sprintf("%s model → %s", st.Name, o.label)}
+			status := flash{kind: flashEdit, text: fmt.Sprintf("%s permission mode → %s", st.Name, o.label)}
+			return a, a.setStepAttr(st.ID, status, func() error {
+				return a.store.SetStepPermissionMode(a.ctx, st.ID, o.value)
+			})
 		}
-		return a, a.updateStep(st, status)
+		status := flash{kind: flashEdit, text: fmt.Sprintf("%s model → %s", st.Name, o.label)}
+		return a, a.setStepAttr(st.ID, status, func() error {
+			return a.store.SetStepModel(a.ctx, st.ID, o.value)
+		})
 	}
 
 	switch msg.String() {

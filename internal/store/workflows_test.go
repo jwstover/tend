@@ -190,6 +190,25 @@ func TestStepsAppendReorderAndUpdate(t *testing.T) {
 	if got, _ = s.GetStep(ctx, second.ID); got.PromptMD != "# new prompt" {
 		t.Errorf("PromptMD after SetStepPrompt = %q", got.PromptMD)
 	}
+	// The single-attribute setters touch one column each and leave the
+	// rest of the row as it was.
+	if err := s.SetStepKind(ctx, second.ID, workflow.StepAgent); err != nil {
+		t.Fatalf("SetStepKind: %v", err)
+	}
+	if err := s.SetStepModel(ctx, second.ID, "haiku"); err != nil {
+		t.Fatalf("SetStepModel: %v", err)
+	}
+	if err := s.SetStepPermissionMode(ctx, second.ID, "acceptEdits"); err != nil {
+		t.Fatalf("SetStepPermissionMode: %v", err)
+	}
+	got, _ = s.GetStep(ctx, second.ID)
+	if got.Kind != workflow.StepAgent || got.Model != "haiku" || got.PermissionMode != "acceptEdits" ||
+		got.Name != "adversarial review" || got.PromptMD != "# new prompt" {
+		t.Errorf("after single-attribute setters = %+v", got)
+	}
+	if err := s.SetStepKind(ctx, second.ID, workflow.StepKind("human")); err == nil {
+		t.Error("SetStepKind with an unknown kind should fail")
+	}
 	if _, err := s.GetStep(ctx, 9999); !errors.Is(err, workflow.ErrStepNotFound) {
 		t.Errorf("GetStep(unknown) = %v, want ErrStepNotFound", err)
 	}

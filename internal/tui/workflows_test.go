@@ -50,6 +50,15 @@ func waitForSteps(t *testing.T, s *store.Store, workflowID int64, what string, c
 	return got
 }
 
+// reloadWorkflows runs the view's load synchronously and applies its
+// result, so the model reflects the store before the next key press or
+// assertion. A mutation's own follow-up reload runs through collect and
+// can be abandoned on a slow runner; calling the Cmd directly cannot be.
+func reloadWorkflows(t *testing.T, m tea.Model, workflowID int64) tea.Model {
+	t.Helper()
+	return drive(t, m, m.(app).loadWorkflows(workflowID)())
+}
+
 // openWorkflows enters the view and waits for the initial load.
 func openWorkflows(t *testing.T, m tea.Model) tea.Model {
 	t.Helper()
@@ -86,7 +95,7 @@ func TestWorkflowsAuthoringRoundTrip(t *testing.T) {
 		t.Fatalf("created workflow = %+v, want name 'ship it'", wfs[0])
 	}
 	// Drain the follow-up load so the view reflects the store.
-	m = drive(t, m, collect(m.(app).loadWorkflows(wfs[0].ID))[0])
+	m = reloadWorkflows(t, m, wfs[0].ID)
 	a := m.(app)
 	if got := a.selectedWorkflowID(); got != wfs[0].ID {
 		t.Fatalf("selected workflow = %d, want %d", got, wfs[0].ID)
@@ -111,7 +120,7 @@ func TestWorkflowsAuthoringRoundTrip(t *testing.T) {
 	if steps[0].Name != "implement" || steps[0].Kind != workflow.StepAgent {
 		t.Fatalf("created step = %+v, want agent step 'implement'", steps[0])
 	}
-	m = drive(t, m, collect(m.(app).loadWorkflows(wfs[0].ID))[0])
+	m = reloadWorkflows(t, m, wfs[0].ID)
 	content = ansi.Strip(m.View().Content)
 	for _, want := range []string{"1  implement", "agent", "no prompt", "PROMPT"} {
 		if !strings.Contains(content, want) {
@@ -133,7 +142,7 @@ func TestWorkflowsAuthoringRoundTrip(t *testing.T) {
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Errorf("temp file %s not removed after save (err=%v)", path, err)
 	}
-	m = drive(t, m, collect(m.(app).loadWorkflows(wfs[0].ID))[0])
+	m = reloadWorkflows(t, m, wfs[0].ID)
 	content = ansi.Strip(m.View().Content)
 	if !strings.Contains(content, "Implement {{.Task.Title}}") {
 		t.Errorf("prompt preview missing the saved template:\n%s", content)
@@ -177,6 +186,9 @@ func TestWorkflowsStepAttributesAndOrder(t *testing.T) {
 	waitForSteps(t, s, w.ID, "model set", func(st []workflow.Step) bool {
 		return st[0].ID == first.ID && st[0].Model == "sonnet"
 	})
+	// The store having the write is not the same as the model having it:
+	// bring the model up to date before the next key acts on its copy.
+	m = reloadWorkflows(t, m, w.ID)
 
 	// p → permission picker, arrow down to acceptEdits, ⏎.
 	m = drive(t, m, keyPress('p'))
@@ -188,13 +200,14 @@ func TestWorkflowsStepAttributesAndOrder(t *testing.T) {
 	waitForSteps(t, s, w.ID, "permission mode set", func(st []workflow.Step) bool {
 		return st[0].PermissionMode == "acceptEdits"
 	})
+	m = reloadWorkflows(t, m, w.ID)
 
 	// t flips agent → gate.
 	m = drive(t, m, keyPress('t'))
 	waitForSteps(t, s, w.ID, "kind toggled", func(st []workflow.Step) bool {
 		return st[0].Kind == workflow.StepGate
 	})
-	m = drive(t, m, collect(m.(app).loadWorkflows(w.ID))[0])
+	m = reloadWorkflows(t, m, w.ID)
 	content = ansi.Strip(m.View().Content)
 	if !strings.Contains(content, "gate · sonnet · acceptEdits") {
 		t.Errorf("step row missing its attributes:\n%s", content)
@@ -205,7 +218,7 @@ func TestWorkflowsStepAttributesAndOrder(t *testing.T) {
 	steps := waitForSteps(t, s, w.ID, "reordered", func(st []workflow.Step) bool {
 		return len(st) == 2 && st[0].ID == second.ID && st[1].ID == first.ID
 	})
-	m = drive(t, m, collect(m.(app).loadWorkflows(w.ID))[0])
+	m = reloadWorkflows(t, m, w.ID)
 	if got, ok := m.(app).selectedStep(); !ok || got.ID != first.ID {
 		t.Errorf("cursor after J on step %d, want it to follow %d", got.ID, first.ID)
 	}
@@ -220,7 +233,7 @@ func TestWorkflowsStepAttributesAndOrder(t *testing.T) {
 	})
 
 	// dd deletes the selected step after the panel confirms.
-	m = drive(t, m, collect(m.(app).loadWorkflows(w.ID))[0])
+	m = reloadWorkflows(t, m, w.ID)
 	m = drive(t, m, keyPress('d'))
 	if !m.(app).deletePending {
 		t.Fatal("first d did not arm the delete chord")
@@ -232,6 +245,57 @@ func TestWorkflowsStepAttributesAndOrder(t *testing.T) {
 	waitForSteps(t, s, w.ID, "step deleted", func(st []workflow.Step) bool {
 		return len(st) == 1 && st[0].ID == second.ID
 	})
+}
+
+// TestWorkflowsStepEditsDoNotClobberEachOther pins the lost update behind
+// the flaky CI run of TestWorkflowsStepAttributesAndOrder: an attribute
+// written to the store after the model last loaded its steps must survive
+// the next edit made from that (now stale) model. Each key writes only the
+// attribute it changed, so the stale copy is never written back.
+func TestWorkflowsStepEditsDoNotClobberEachOther(t *testing.T) {
+	m, s := newTestApp(t)
+	ctx := context.Background()
+	w, err := s.CreateWorkflow(ctx, "review loop", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := s.AddStep(ctx, w.ID, "draft", workflow.StepAgent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m = openWorkflows(t, m)
+	m = drive(t, m, keyPress('l'))
+	if got, ok := m.(app).selectedStep(); !ok || got.PermissionMode != "" {
+		t.Fatalf("selected step = (%+v, %v), want the fresh draft step", got, ok)
+	}
+
+	// Land a write behind the model's back, as a picker's mutate does when
+	// its reload is still in flight while the next key arrives.
+	if err := s.SetStepPermissionMode(ctx, st.ID, "acceptEdits"); err != nil {
+		t.Fatal(err)
+	}
+	// t toggles the kind from the stale model.
+	m = drive(t, m, keyPress('t'))
+	steps := waitForSteps(t, s, w.ID, "kind toggled", func(st []workflow.Step) bool {
+		return st[0].Kind == workflow.StepGate
+	})
+	if steps[0].PermissionMode != "acceptEdits" {
+		t.Errorf("kind toggle clobbered permission mode: got %q, want acceptEdits", steps[0].PermissionMode)
+	}
+
+	// Same through the picker: the kind flips behind the model's back, then
+	// a model pick from the stale copy must leave it alone.
+	if err := s.SetStepKind(ctx, st.ID, workflow.StepAgent); err != nil {
+		t.Fatal(err)
+	}
+	m = drive(t, m, keyPress('m'))
+	drive(t, m, keyPress('2'))
+	steps = waitForSteps(t, s, w.ID, "model set", func(st []workflow.Step) bool {
+		return st[0].Model == "sonnet"
+	})
+	if steps[0].Kind != workflow.StepAgent || steps[0].PermissionMode != "acceptEdits" {
+		t.Errorf("model pick clobbered other attributes: %+v", steps[0])
+	}
 }
 
 func TestWorkflowsRenameDuplicateDelete(t *testing.T) {
@@ -259,7 +323,7 @@ func TestWorkflowsRenameDuplicateDelete(t *testing.T) {
 	})
 
 	// D duplicates, steps included, and lands on the copy.
-	m = drive(t, m, collect(m.(app).loadWorkflows(w.ID))[0])
+	m = reloadWorkflows(t, m, w.ID)
 	m = drive(t, m, keyPress('D'))
 	if m.(app).promptKind != promptDuplicateWorkflow {
 		t.Fatal("D did not open the duplicate prompt")
@@ -278,7 +342,7 @@ func TestWorkflowsRenameDuplicateDelete(t *testing.T) {
 	if copyID == 0 {
 		t.Fatalf("duplicate not found in %+v", wfs)
 	}
-	m = drive(t, m, collect(m.(app).loadWorkflows(copyID))[0])
+	m = reloadWorkflows(t, m, copyID)
 	if got := m.(app).selectedWorkflowID(); got != copyID {
 		t.Errorf("selection after duplicate = %d, want the copy %d", got, copyID)
 	}

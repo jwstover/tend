@@ -822,6 +822,57 @@ func (q *Queries) SetRunTmuxSession(ctx context.Context, arg SetRunTmuxSessionPa
 	return err
 }
 
+const setStepKind = `-- name: SetStepKind :exec
+UPDATE workflow_steps
+SET kind       = ?,
+    updated_at = datetime('now')
+WHERE id = ?
+`
+
+type SetStepKindParams struct {
+	Kind string
+	ID   int64
+}
+
+func (q *Queries) SetStepKind(ctx context.Context, arg SetStepKindParams) error {
+	_, err := q.db.ExecContext(ctx, setStepKind, arg.Kind, arg.ID)
+	return err
+}
+
+const setStepModel = `-- name: SetStepModel :exec
+UPDATE workflow_steps
+SET model      = ?,
+    updated_at = datetime('now')
+WHERE id = ?
+`
+
+type SetStepModelParams struct {
+	Model string
+	ID    int64
+}
+
+func (q *Queries) SetStepModel(ctx context.Context, arg SetStepModelParams) error {
+	_, err := q.db.ExecContext(ctx, setStepModel, arg.Model, arg.ID)
+	return err
+}
+
+const setStepPermissionMode = `-- name: SetStepPermissionMode :exec
+UPDATE workflow_steps
+SET permission_mode = ?,
+    updated_at      = datetime('now')
+WHERE id = ?
+`
+
+type SetStepPermissionModeParams struct {
+	PermissionMode string
+	ID             int64
+}
+
+func (q *Queries) SetStepPermissionMode(ctx context.Context, arg SetStepPermissionModeParams) error {
+	_, err := q.db.ExecContext(ctx, setStepPermissionMode, arg.PermissionMode, arg.ID)
+	return err
+}
+
 const setStepPrompt = `-- name: SetStepPrompt :exec
 UPDATE workflow_steps
 SET prompt_md  = ?,
