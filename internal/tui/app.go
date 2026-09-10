@@ -627,7 +627,8 @@ type app struct {
 	urlPickerURLs []link
 	urlPickerSel  int
 
-	helpOpen bool // `?` key-reference overlay
+	helpOpen   bool // `?` key-reference overlay
+	helpScroll int  // first body row of the overlay on screen (help.go)
 
 	showCompleted bool // C toggles whether completed (done) and someday tasks are loaded
 
@@ -1076,12 +1077,27 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return a.handlePaletteKey(msg)
 	}
 
-	// The help overlay swallows all keys; a few of them close it.
+	// The help overlay swallows all keys: j/k and friends scroll a
+	// reference taller than the screen, a few others close it.
 	if a.helpOpen {
-		switch msg.String() {
-		case "esc", "?", "enter", "q":
+		page := a.helpPageRows()
+		switch {
+		case msg.String() == "esc", msg.String() == "?", msg.String() == "enter", msg.String() == "q":
 			a.helpOpen = false
+		case key.Matches(msg, a.keys.ScrollDown):
+			a.helpScroll++
+		case key.Matches(msg, a.keys.ScrollUp):
+			a.helpScroll--
+		case key.Matches(msg, a.keys.PageDown):
+			a.helpScroll += page
+		case key.Matches(msg, a.keys.PageUp):
+			a.helpScroll -= page
+		case msg.String() == "G":
+			a.helpScroll = a.helpMaxScroll()
+		case msg.String() == "g":
+			a.helpScroll = 0
 		}
+		a.helpScroll = min(max(a.helpScroll, 0), a.helpMaxScroll())
 		return a, nil
 	}
 
@@ -1416,6 +1432,7 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	case key.Matches(msg, a.keys.Help):
 		a.helpOpen = true
+		a.helpScroll = 0
 		return a, nil
 
 	case key.Matches(msg, a.keys.ChangeState):
