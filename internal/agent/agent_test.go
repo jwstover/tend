@@ -166,6 +166,19 @@ func writeTranscript(t *testing.T, cwd, externalID string, lines []string) {
 	}
 }
 
+func TestTranscriptPathSanitizesLikeClaude(t *testing.T) {
+	t.Setenv("HOME", "/home/u")
+	got, err := transcriptPath("/private/tmp/claude-502/x_y.z/-Users-j", "sess-1")
+	if err != nil {
+		t.Fatalf("transcriptPath: %v", err)
+	}
+	want := filepath.Join("/home/u", ".claude", "projects",
+		"-private-tmp-claude-502-x-y-z--Users-j", "sess-1.jsonl")
+	if got != want {
+		t.Errorf("transcriptPath = %q, want %q", got, want)
+	}
+}
+
 func TestTranscriptLineCountMissingFile(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	n, err := TranscriptLineCount("/tmp/work", "no-such-session")
