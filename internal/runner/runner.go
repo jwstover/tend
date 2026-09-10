@@ -16,9 +16,14 @@
 //  4. Agent steps: create the step run, render the prompt with the task,
 //     cwd, Input, Feedback, Iteration and allowed Outcomes, create the
 //     session row, and exec claude headlessly (agent.HeadlessCmd via the
-//     Exec seam). On exit the outcome and deliverable written by
-//     finish_step are read back; a step that never called it is taken as
-//     "done" with the stream's final text as its deliverable.
+//     Exec seam) with a runner-built system prompt block
+//     (workflow.StepSystemPrompt) stating the finish_step contract. On
+//     exit the outcome and deliverable written by finish_step are read
+//     back. A step that never called it is taken as "done" with the
+//     stream's final text as its deliverable only when done is its sole
+//     outcome; otherwise its session is nudged once to hand off
+//     (workflow.NudgePrompt), and if it still does not, the run fails
+//     naming the step and the outcomes it routes.
 //  5. Gate steps: create the step run, set the run waiting_review, and
 //     poll the step run until the TUI or CLI records a decision.
 //  6. paused and cancelled, written by the TUI or CLI, are honoured by
@@ -190,7 +195,7 @@ func (r *Runner) Run(ctx context.Context, runID int64, takeover bool) error {
 			r.logf("run %d: done", run.ID)
 			return nil
 		}
-		sr, err := r.startStep(ctx, run, tk, *next, input, feedback)
+		sr, err := r.startStep(ctx, run, wf, tk, *next, input, feedback)
 		if err != nil {
 			return r.stopped(ctx, run, err)
 		}
@@ -286,7 +291,7 @@ func (r *Runner) nextStep(ctx context.Context, run workflow.Run, wf workflow.Wor
 }
 
 // startStep creates and runs one step run of step, returning it finished.
-func (r *Runner) startStep(ctx context.Context, run workflow.Run, tk task.Task, step workflow.Step, input, feedback string) (workflow.StepRun, error) {
+func (r *Runner) startStep(ctx context.Context, run workflow.Run, wf workflow.Workflow, tk task.Task, step workflow.Step, input, feedback string) (workflow.StepRun, error) {
 	prior, err := r.priorRuns(ctx, run.ID, step.ID)
 	if err != nil {
 		return workflow.StepRun{}, err
@@ -326,6 +331,11 @@ func (r *Runner) startStep(ctx context.Context, run workflow.Run, tk task.Task, 
 		return r.waitGate(ctx, run, step, sr)
 	}
 
+	// The hand-off contract goes in the system prompt, not prompt_md, so
+	// no author has to remember it; recorded on the row like the prompt.
+	sr.SystemPrompt = workflow.StepSystemPrompt(workflow.HandoffContext{
+		Workflow: wf.Name, Step: step.Name, Iteration: data.Iteration, Outcomes: data.Outcomes,
+	})
 	sr.SessionExternalID, err = agent.NewSessionID()
 	if err != nil {
 		return workflow.StepRun{}, err
@@ -347,7 +357,7 @@ func (r *Runner) startStep(ctx context.Context, run workflow.Run, tk task.Task, 
 		return workflow.StepRun{}, err
 	}
 	r.logf("run %d: step %q (iteration %d) as session %s", run.ID, step.Name, sr.Iteration, sr.SessionExternalID)
-	return r.execStep(ctx, run, tk, step, sr, prompt, false)
+	return r.execStep(ctx, run, tk, step, sr, prompt, false, false)
 }
 
 // resumeStep picks up a step run a previous runner left unfinished.
@@ -369,10 +379,10 @@ func (r *Runner) resumeStep(ctx context.Context, run workflow.Run, tk task.Task,
 
 	if res, ok := loggedResult(sr.LogPath); ok {
 		r.logf("run %d: step %q had already finished; recording its result", run.ID, step.Name)
-		return r.settle(ctx, run, step, sr, res, nil)
+		return r.settle(ctx, run, tk, step, sr, res, nil, false)
 	}
 
-	fin, err := r.execStep(ctx, run, tk, step, sr, ResumePrompt, true)
+	fin, err := r.execStep(ctx, run, tk, step, sr, ResumePrompt, true, false)
 	if !errors.Is(err, errNoResult) {
 		return fin, err
 	}
@@ -387,7 +397,7 @@ func (r *Runner) resumeStep(ctx context.Context, run workflow.Run, tk task.Task,
 	if err := r.createSession(ctx, run, tk, step, sr); err != nil {
 		return workflow.StepRun{}, err
 	}
-	return r.execStep(ctx, run, tk, step, sr, sr.PromptRendered, false)
+	return r.execStep(ctx, run, tk, step, sr, sr.PromptRendered, false, false)
 }
 
 // createSession writes the agent_sessions row for a step's headless
@@ -410,8 +420,10 @@ var errNoResult = errors.New("attempt produced no result")
 // execStep runs one attempt of an agent step and settles the step run
 // from what it left behind. While claude runs, the run's state is polled
 // so a pause or cancel written by the TUI stops the process: cancelling
-// ctx SIGTERMs it, and its session stays resumable either way.
-func (r *Runner) execStep(ctx context.Context, run workflow.Run, tk task.Task, step workflow.Step, sr workflow.StepRun, prompt string, resume bool) (workflow.StepRun, error) {
+// ctx SIGTERMs it, and its session stays resumable either way. nudged
+// marks the attempt as the one follow-up turn settle sends when a step
+// exits without handing off, so settle does not send another.
+func (r *Runner) execStep(ctx context.Context, run workflow.Run, tk task.Task, step workflow.Step, sr workflow.StepRun, prompt string, resume, nudged bool) (workflow.StepRun, error) {
 	stepCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	interrupted := make(chan workflow.RunState, 1)
@@ -435,18 +447,27 @@ func (r *Runner) execStep(ctx context.Context, run workflow.Run, tk task.Task, s
 	if ctx.Err() != nil {
 		return workflow.StepRun{}, ctx.Err()
 	}
-	return r.settle(ctx, run, step, sr, res, runErr)
+	return r.settle(ctx, run, tk, step, sr, res, runErr, nudged)
 }
 
 // settle records how an attempt ended. An outcome already on the step
 // run -- the agent called finish_step -- stands, whatever the process
-// did afterwards. Otherwise the stream's final text is the deliverable
-// and the outcome is "done", unless the stream never reached a result,
-// claude reported an error, or tool calls were denied for want of a
-// permission mode, each of which fails the run with a message that says
-// which. Denials are checked even on a "success" result: a step that
-// could not use its tools almost certainly did not do its job.
-func (r *Runner) settle(ctx context.Context, run workflow.Run, step workflow.Step, sr workflow.StepRun, res agent.HeadlessResult, runErr error) (workflow.StepRun, error) {
+// did afterwards. Otherwise the run fails, with a message that says
+// which, when the stream never reached a result, claude reported an
+// error, or tool calls were denied for want of a permission mode.
+// Denials are checked even on a "success" result: a step that could not
+// use its tools almost certainly did not do its job.
+//
+// A step that ran fine but never called finish_step is settled from the
+// stream's final text as a "done" deliverable only when done is the one
+// outcome it can have (workflow.FallbackAllowed). A step that routes
+// anything else is nudged: its session gets one more turn
+// (workflow.NudgePrompt, over the same crash-resume path) to hand off,
+// on the same step run and without counting as an iteration. If that
+// turn also ends without finish_step the run fails, naming the step and
+// the outcomes it was supposed to return, rather than routing on a
+// guessed "done" -- the same reasoning as the denials rule.
+func (r *Runner) settle(ctx context.Context, run workflow.Run, tk task.Task, step workflow.Step, sr workflow.StepRun, res agent.HeadlessResult, runErr error, nudged bool) (workflow.StepRun, error) {
 	fin, err := r.Store.GetStepRun(ctx, sr.ID)
 	if err != nil {
 		return workflow.StepRun{}, err
@@ -478,6 +499,28 @@ func (r *Runner) settle(ctx context.Context, run workflow.Run, step workflow.Ste
 	if runErr != nil {
 		r.logf("run %d: step %q exited with an error after its result (%v); keeping the result", run.ID, step.Name, runErr)
 	}
+
+	edges, err := r.Store.OutgoingEdges(ctx, step.ID)
+	if err != nil {
+		return workflow.StepRun{}, err
+	}
+	outcomes := outcomesOf(edges)
+	if !workflow.FallbackAllowed(outcomes) {
+		routes := strings.Join(outcomes, ", ")
+		if nudged {
+			return workflow.StepRun{}, fmt.Errorf("step %q exited without calling finish_step, even after being asked to; it routes %s and the runner will not guess which",
+				step.Name, routes)
+		}
+		r.logf("run %d: step %q exited without finish_step; it routes %s, so its session is asked once to hand off", run.ID, step.Name, routes)
+		fin, err := r.execStep(ctx, run, tk, step, sr, workflow.NudgePrompt(step.Name, outcomes), true, true)
+		if errors.Is(err, errNoResult) {
+			// Not errNoResult to the caller: resumeStep would read that as
+			// "the session cannot be continued" and start the step over.
+			return workflow.StepRun{}, fmt.Errorf("step %q: its session could not be continued to hand off: %v", step.Name, err)
+		}
+		return fin, err
+	}
+
 	if err := r.Store.FinishStepRun(ctx, sr.ID, workflow.OutcomeDone, text); err != nil {
 		return workflow.StepRun{}, err
 	}

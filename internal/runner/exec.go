@@ -32,7 +32,12 @@ func (e ClaudeExec) Run(ctx context.Context, req StepExec) (agent.HeadlessResult
 	hooksPath, hooksCleanup, _ := agent.WriteHookSettings(e.DBPath)
 	defer hooksCleanup()
 
-	opts := agent.LaunchOpts{Prompt: req.Prompt, Model: req.StepRun.Model, PermissionMode: req.StepRun.PermissionMode}
+	// The system prompt rides along on a resume too: a nudge or a crash
+	// resume is a new turn of the same step, with the same contract.
+	opts := agent.LaunchOpts{
+		Prompt: req.Prompt, Model: req.StepRun.Model, PermissionMode: req.StepRun.PermissionMode,
+		AppendSystemPrompt: req.StepRun.SystemPrompt,
+	}
 	build := agent.HeadlessCmd
 	if req.Resume {
 		build = agent.HeadlessResumeCmd
