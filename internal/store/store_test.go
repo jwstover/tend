@@ -308,6 +308,71 @@ func TestSetTitle(t *testing.T) {
 	}
 }
 
+func TestAppendBody(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	created, err := s.AddTask(ctx, "notes")
+	if err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	body := func() string {
+		t.Helper()
+		got, err := s.GetTask(ctx, created.ID)
+		if err != nil {
+			t.Fatalf("GetTask: %v", err)
+		}
+		return got.BodyMD
+	}
+
+	// Appending to an empty body must not leave a leading blank line.
+	if err := s.AppendBody(ctx, created.ID, "first"); err != nil {
+		t.Fatalf("AppendBody: %v", err)
+	}
+	if got := body(); got != "first" {
+		t.Errorf("after first append body = %q, want %q", got, "first")
+	}
+
+	// Subsequent appends land as a new paragraph.
+	if err := s.AppendBody(ctx, created.ID, "second"); err != nil {
+		t.Fatalf("AppendBody: %v", err)
+	}
+	if got, want := body(), "first\n\nsecond"; got != want {
+		t.Errorf("after second append body = %q, want %q", got, want)
+	}
+
+	// Trailing whitespace on the existing body is normalised so the
+	// separator is always exactly one blank line.
+	if err := s.SetBody(ctx, created.ID, "hand edited\n\n\n"); err != nil {
+		t.Fatalf("SetBody: %v", err)
+	}
+	if err := s.AppendBody(ctx, created.ID, "- link"); err != nil {
+		t.Fatalf("AppendBody: %v", err)
+	}
+	if got, want := body(), "hand edited\n\n- link"; got != want {
+		t.Errorf("after append to padded body = %q, want %q", got, want)
+	}
+
+	// Whitespace-only text is a no-op.
+	if err := s.AppendBody(ctx, created.ID, "  \n"); err != nil {
+		t.Fatalf("AppendBody(blank): %v", err)
+	}
+	if got, want := body(), "hand edited\n\n- link"; got != want {
+		t.Errorf("blank append mutated body to %q", got)
+	}
+
+	// A whitespace-only body is treated as empty.
+	if err := s.SetBody(ctx, created.ID, "\n  \n"); err != nil {
+		t.Fatalf("SetBody: %v", err)
+	}
+	if err := s.AppendBody(ctx, created.ID, "fresh"); err != nil {
+		t.Fatalf("AppendBody: %v", err)
+	}
+	if got := body(); got != "fresh" {
+		t.Errorf("append to whitespace body = %q, want %q", got, "fresh")
+	}
+}
+
 func TestListLiveOrdersByPriorityWithinState(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

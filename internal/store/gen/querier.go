@@ -10,6 +10,10 @@ import (
 )
 
 type Querier interface {
+	// Appends text as a new paragraph: an empty body just becomes the text,
+	// otherwise trailing whitespace is trimmed and a blank line separates the
+	// old body from the new text. Done in SQL so the append is atomic.
+	AppendTaskBody(ctx context.Context, arg AppendTaskBodyParams) error
 	AttachTag(ctx context.Context, arg AttachTagParams) error
 	// Compare-and-swap for starting a runner: only a pending or paused run can
 	// be taken to running, so two runners racing for one run see exactly one

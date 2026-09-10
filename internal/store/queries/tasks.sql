@@ -124,6 +124,18 @@ SET body_md    = ?,
     updated_at = datetime('now')
 WHERE id = ?;
 
+-- name: AppendTaskBody :exec
+-- Appends text as a new paragraph: an empty body just becomes the text,
+-- otherwise trailing whitespace is trimmed and a blank line separates the
+-- old body from the new text. Done in SQL so the append is atomic.
+UPDATE tasks
+SET body_md    = CASE
+                   WHEN trim(body_md, ' ' || char(9, 10, 13)) = '' THEN sqlc.arg(text)
+                   ELSE rtrim(body_md, ' ' || char(9, 10, 13)) || char(10, 10) || sqlc.arg(text)
+                 END,
+    updated_at = datetime('now')
+WHERE id = sqlc.arg(id);
+
 -- name: DeleteTask :exec
 DELETE FROM tasks
 WHERE id = ?;

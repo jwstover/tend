@@ -80,6 +80,24 @@ func (s *fakeStore) SetBody(_ context.Context, id int64, body string) error {
 	return nil
 }
 
+// AppendBody mirrors the store's paragraph-append semantics.
+func (s *fakeStore) AppendBody(_ context.Context, id int64, text string) error {
+	t, ok := s.tasks[id]
+	if !ok {
+		return errors.New("no such task")
+	}
+	if strings.TrimSpace(text) == "" {
+		return nil
+	}
+	if strings.TrimSpace(t.BodyMD) == "" {
+		t.BodyMD = text
+	} else {
+		t.BodyMD = strings.TrimRight(t.BodyMD, " \t\r\n") + "\n\n" + text
+	}
+	s.tasks[id] = t
+	return nil
+}
+
 func (s *fakeStore) SetState(_ context.Context, id int64, st task.State) error {
 	if !st.Valid() {
 		return errors.New("unknown state")
@@ -297,6 +315,43 @@ func TestSetTaskTagsReplacesWholeList(t *testing.T) {
 		map[string]any{"tags": []string{"alpha", "beta"}})
 	if len(got.Tags) != 2 || got.Tags[0] != "alpha" || got.Tags[1] != "beta" {
 		t.Errorf("Tags = %v, want [alpha beta] replacing the old list", got.Tags)
+	}
+}
+
+func TestAppendTaskBodyKeepsExistingBody(t *testing.T) {
+	store := newFakeStore(task.Task{ID: 1, Title: "bound", BodyMD: "## Context\nsee the spec"})
+	cs := dial(t, store, 1)
+
+	got := callTool[taskOut](t, cs, "append_task_body", map[string]any{"text": "PR: https://example.com/pr/1"})
+	want := "## Context\nsee the spec\n\nPR: https://example.com/pr/1"
+	if got.BodyMD != want {
+		t.Errorf("append_task_body body = %q, want %q", got.BodyMD, want)
+	}
+}
+
+func TestAppendTaskBodyOnEmptyBodyHasNoLeadingSeparator(t *testing.T) {
+	store := newFakeStore(task.Task{ID: 1, Title: "bound"})
+	cs := dial(t, store, 1)
+
+	got := callTool[taskOut](t, cs, "append_task_body", map[string]any{"text": "first note"})
+	if got.BodyMD != "first note" {
+		t.Errorf("append_task_body on empty body = %q, want %q", got.BodyMD, "first note")
+	}
+}
+
+func TestAppendTaskBodyAcceptsExplicitTaskOverride(t *testing.T) {
+	store := newFakeStore(
+		task.Task{ID: 1, Title: "bound", BodyMD: "untouched"},
+		task.Task{ID: 2, Title: "other", BodyMD: "a"},
+	)
+	cs := dial(t, store, 1)
+
+	got := callTool[taskOut](t, cs, "append_task_body", map[string]any{"text": "b", "task_id": 2})
+	if got.ID != 2 || got.BodyMD != "a\n\nb" {
+		t.Errorf("append_task_body(task_id=2) = %+v, want id=2 body %q", got, "a\n\nb")
+	}
+	if store.tasks[1].BodyMD != "untouched" {
+		t.Errorf("bound task body mutated to %q", store.tasks[1].BodyMD)
 	}
 }
 

@@ -141,20 +141,40 @@ func registerTools(srv *mcp.Server, store Store, boundTaskID int64) {
 		return nil, toTaskOut(t, nil), nil
 	})
 
-	// The only free-form write an agent gets. There is deliberately no
+	// The only free-form writes an agent gets. There is deliberately no
 	// add_log_entry tool: log entries are the user's standup notes, so an
 	// agent that wants to leave a record on a task edits its body instead.
 	mcp.AddTool(srv, &mcp.Tool{
 		Name: "update_task_body",
 		Description: "Replace a task's markdown body; defaults to the bound task. This is the " +
 			"place to record progress, links, or a summary of the work — log entries are " +
-			"reserved for the user.",
+			"reserved for the user. To add to the body without rewriting it, use " +
+			"append_task_body instead.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in struct {
 		BodyMD string `json:"body_md" jsonschema:"the new markdown body, replacing the existing one"`
 		TaskID *int64 `json:"task_id,omitempty" jsonschema:"task id to update; defaults to the session's bound task"`
 	}) (*mcp.CallToolResult, taskOut, error) {
 		id := resolveID(in.TaskID, boundTaskID)
 		if err := store.SetBody(ctx, id, in.BodyMD); err != nil {
+			return nil, taskOut{}, err
+		}
+		return fetchTask(ctx, store, id)
+	})
+
+	// The incremental sibling of update_task_body: most agent updates are
+	// "add a PR link" or "note what changed", and re-sending the whole
+	// body for those risks clobbering edits made since it was last read.
+	mcp.AddTool(srv, &mcp.Tool{
+		Name: "append_task_body",
+		Description: "Append markdown to the end of a task's body as a new paragraph, keeping " +
+			"what is already there; defaults to the bound task. Prefer this over " +
+			"update_task_body for adding a link, a progress note, or a summary.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in struct {
+		Text   string `json:"text" jsonschema:"markdown to append; a blank line is inserted before it when the body is non-empty"`
+		TaskID *int64 `json:"task_id,omitempty" jsonschema:"task id to update; defaults to the session's bound task"`
+	}) (*mcp.CallToolResult, taskOut, error) {
+		id := resolveID(in.TaskID, boundTaskID)
+		if err := store.AppendBody(ctx, id, in.Text); err != nil {
 			return nil, taskOut{}, err
 		}
 		return fetchTask(ctx, store, id)
