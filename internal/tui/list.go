@@ -196,8 +196,8 @@ func moveOffHeading(m *list.Model, dir int) {
 
 // taskDelegate renders rows per the design spec: a front gutter carrying
 // the selection bar and the agent-session marker, then the state dot,
-// caret slot, priority, flexible title, and a fixed right-aligned meta
-// block.
+// caret slot, flexible title, and a fixed right-aligned meta block that
+// opens with the priority.
 type taskDelegate struct {
 	styles Styles
 	// sessions is the latest agent-session status per task id, used for
@@ -342,13 +342,13 @@ func (d taskDelegate) renderChildRow(it childItem, selected bool, width int) str
 
 // renderTaskRow draws one task row at any depth:
 //
-//	gutter(3) indent(depth) dot(2) caret(2) pri(2+1) title ... meta
+//	gutter(3) indent(depth) dot(2) caret(2) title ... pri(2+1) meta
 //
 // Top-level and sub-task rows share every column, so they share one
-// renderer. Depth 0 additionally carries the right-hand meta block,
-// which is the only structural difference left between them — the two
-// were separate functions once and drifted into different column orders
-// (CHILD-ROW-PARITY.md).
+// renderer. Depth 0 additionally fills the right-hand meta block past
+// the priority, which is the only structural difference left between
+// them — the two were separate functions once and drifted into
+// different column orders (CHILD-ROW-PARITY.md).
 func (d taskDelegate) renderTaskRow(r rowSpec, selected bool, width int) string {
 	t := r.t
 	g := d.styles.Glyphs
@@ -380,28 +380,11 @@ func (d taskDelegate) renderTaskRow(r rowSpec, selected bool, width int) string 
 		segs = append(segs, seg{"  ", s.Normal})
 	}
 
-	// Priority sits just before the title; blank when unset so titles
-	// stay aligned across rows.
-	segs = append(segs, d.priCell(t.Priority))
-	segs = append(segs, seg{" ", s.Normal})
-
 	// Right meta block, fixed-width columns; absent fields stay blank so
-	// alignment holds down the list. Sub-task rows carry no meta block
-	// and give the width back to the title.
-	var meta []seg
-	if r.depth == 0 {
-		if width >= compactMetaWidth {
-			meta = append(meta, d.tagsCell(d.tags[t.ID], tagsCellWidth))
-			meta = append(meta, seg{" ", s.Normal})
-			meta = append(meta, d.dueCell(t.Due, 7))
-			meta = append(meta, seg{" ", s.Normal})
-			meta = append(meta, d.subCell(r.done, r.total, 4))
-		} else {
-			meta = append(meta, d.dueCell(t.Due, 6))
-			meta = append(meta, seg{" ", s.Normal})
-			meta = append(meta, d.subCell(r.done, r.total, 4))
-		}
-	}
+	// alignment holds down the list. Priority leads it, directly after
+	// the title, so the flag reads as an attribute of the task rather
+	// than a prefix on its name.
+	meta := d.metaCells(r, width)
 	metaW := segWidth(meta)
 
 	// Flexible title; only the title truncates.
@@ -463,6 +446,34 @@ func caretStyle(s Styles, selected bool) lipgloss.Style {
 		return s.SelBar
 	}
 	return s.Caret
+}
+
+// metaCells builds the right-hand meta block: priority, then tags, due
+// and sub-task progress (tags drop out below compactMetaWidth).
+//
+// Sub-task rows show only their priority; the rest of the block is blank
+// padding of the same width, so the priority column runs straight down
+// the list at every depth instead of sliding right on child rows.
+func (d taskDelegate) metaCells(r rowSpec, width int) []seg {
+	s := d.styles
+	meta := []seg{d.priCell(r.t.Priority), {" ", s.Normal}}
+
+	var rest []seg
+	if width >= compactMetaWidth {
+		rest = append(rest, d.tagsCell(d.tags[r.t.ID], tagsCellWidth))
+		rest = append(rest, seg{" ", s.Normal})
+		rest = append(rest, d.dueCell(r.t.Due, 7))
+		rest = append(rest, seg{" ", s.Normal})
+		rest = append(rest, d.subCell(r.done, r.total, 4))
+	} else {
+		rest = append(rest, d.dueCell(r.t.Due, 6))
+		rest = append(rest, seg{" ", s.Normal})
+		rest = append(rest, d.subCell(r.done, r.total, 4))
+	}
+	if r.depth > 0 {
+		return append(meta, seg{strings.Repeat(" ", segWidth(rest)), s.Normal})
+	}
+	return append(meta, rest...)
 }
 
 // priCell is the 2-col priority column: flag + letter (A–D).
