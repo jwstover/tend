@@ -96,9 +96,11 @@ func (g groupBy) String() string {
 	return "state"
 }
 
-// stateOrder is the display order of state sections: active work first,
-// then the queue, then everything waiting.
+// stateOrder is the display order of state sections: work waiting on a
+// reviewer first (it is closest to done and someone else is holding it
+// up), then active work, then the queue, then everything waiting.
 var stateOrder = []task.State{
+	task.StateReview,
 	task.StateDoing,
 	task.StateTodo,
 	task.StateBlocked,
@@ -195,7 +197,7 @@ func groupByStateFn(top []task.Task, st Styles) []section {
 		if !ok {
 			glyph = st.Glyphs.State[task.StateInbox]
 		}
-		return sectionItem{label: strings.ToLower(string(s)), glyph: glyph, style: style}
+		return sectionItem{label: strings.ToLower(s.Label()), glyph: glyph, style: style}
 	}
 	var out []section
 	for _, s := range stateOrder {

@@ -26,6 +26,34 @@ func sectionTitles(sections []section) []string {
 	return out
 }
 
+// Review heads the state grouping: it is the work closest to done and
+// someone else is holding it, so it outranks even doing (tend task #199).
+func TestGroupTasksByStatePutsReviewAboveDoing(t *testing.T) {
+	tasks := []task.Task{
+		{ID: 1, Title: "queued", State: task.StateTodo},
+		{ID: 2, Title: "in flight", State: task.StateDoing},
+		{ID: 3, Title: "awaiting eyes", State: task.StateReview},
+		{ID: 4, Title: "stuck", State: task.StateBlocked},
+		{ID: 5, Title: "child", State: task.StateReview, ParentID: ptr(2)},
+	}
+	got := sectionTitles(groupTasks(groupByState, tasks, nil, DefaultStyles()))
+	want := []string{
+		"in review: awaiting eyes",
+		"doing: in flight",
+		"todo: queued",
+		"blocked: stuck",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("sections:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	styles := DefaultStyles()
+	for _, s := range groupTasks(groupByState, tasks, nil, styles) {
+		if s.label == "in review" && s.glyph != styles.Glyphs.State[task.StateReview] {
+			t.Errorf("review heading glyph = %q, want %q", s.glyph, styles.Glyphs.State[task.StateReview])
+		}
+	}
+}
+
 func TestGroupTasksByPriority(t *testing.T) {
 	tasks := []task.Task{
 		{ID: 1, Title: "b first", Priority: ptr(2)},

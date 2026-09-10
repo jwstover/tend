@@ -29,6 +29,7 @@ var (
 	tokInbox   = token{"#E8833A", "#C2410C"}
 	tokTodo    = token{"#8B98A8", "#5A6573"}
 	tokDoing   = token{"#F2C94C", "#A16207"}
+	tokReview  = token{"#58A6FF", "#2066AC"} // blue: handed off, waiting on eyes
 	tokBlocked = token{"#F85149", "#DC2626"}
 	tokDone    = token{"#6E7681", "#909090"} // gray: done recedes, it doesn't celebrate
 	tokSomeday = token{"#A371F7", "#4E46D7"}
@@ -49,7 +50,7 @@ type palette struct {
 	Border, Rule            color.Color
 	Accent, AccentBg, Link  color.Color
 
-	Inbox, Todo, Doing, Blocked, Done, Someday color.Color
+	Inbox, Todo, Doing, Review, Blocked, Done, Someday color.Color
 
 	Complete, Overdue, DueToday, DueFuture color.Color
 	P1, P2, P3, P4                         color.Color
@@ -63,7 +64,7 @@ func newPalette(isDark bool) palette {
 		Fg: pick(tokFg), FgDim: pick(tokFgDim), Muted: pick(tokMuted), Faint: pick(tokFaint),
 		Border: pick(tokBorder), Rule: pick(tokRule),
 		Accent: pick(tokAccent), AccentBg: pick(tokAccentBg), Link: pick(tokLink),
-		Inbox: pick(tokInbox), Todo: pick(tokTodo), Doing: pick(tokDoing),
+		Inbox: pick(tokInbox), Todo: pick(tokTodo), Doing: pick(tokDoing), Review: pick(tokReview),
 		Blocked: pick(tokBlocked), Done: pick(tokDone), Someday: pick(tokSomeday),
 		Complete: pick(tokComplete), Overdue: pick(tokOverdue),
 		DueToday: pick(tokDueToday), DueFuture: pick(tokDueFuture),
@@ -110,6 +111,7 @@ func unicodeGlyphs() glyphs {
 			task.StateInbox:   "●",
 			task.StateTodo:    "○",
 			task.StateDoing:   "◐",
+			task.StateReview:  "◎",
 			task.StateBlocked: "⊘",
 			task.StateDone:    "✓",
 			task.StateSomeday: "◇",
@@ -149,6 +151,7 @@ func asciiGlyphs() glyphs {
 			task.StateInbox:   "*",
 			task.StateTodo:    "o",
 			task.StateDoing:   ">",
+			task.StateReview:  "?",
 			task.StateBlocked: "!",
 			task.StateDone:    "x",
 			task.StateSomeday: "~",
@@ -302,6 +305,7 @@ func newStyles(isDark bool) Styles {
 			task.StateInbox:   fg(p.Inbox),
 			task.StateTodo:    fg(p.Todo),
 			task.StateDoing:   fg(p.Doing),
+			task.StateReview:  fg(p.Review),
 			task.StateBlocked: fg(p.Blocked),
 			task.StateDone:    fg(p.Done),
 			task.StateSomeday: fg(p.Someday),

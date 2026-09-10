@@ -190,7 +190,8 @@ CREATE TABLE states (
   is_terminal       INTEGER NOT NULL DEFAULT 0,  -- done-like; excluded from the live view
   hidden_by_default INTEGER NOT NULL DEFAULT 0   -- e.g. someday/backlog; excluded from the live view
 );
--- Seed rows: inbox(0), todo(1), doing(2), blocked(3), done(4,terminal), someday(5,hidden)
+-- Seed rows: inbox(0), todo(1), review(2), doing(3), blocked(4), done(5,terminal), someday(6,hidden)
+-- (review arrived in migration 00014; the list view shows it above doing)
 
 CREATE TABLE tasks (
   id           INTEGER PRIMARY KEY,

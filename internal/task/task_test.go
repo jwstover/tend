@@ -33,14 +33,25 @@ func TestNormalizeDate(t *testing.T) {
 }
 
 func TestStateValid(t *testing.T) {
-	for _, s := range []State{StateInbox, StateTodo, StateDoing, StateBlocked, StateDone, StateSomeday} {
+	for _, s := range []State{StateInbox, StateTodo, StateDoing, StateReview, StateBlocked, StateDone, StateSomeday} {
 		if !s.Valid() {
 			t.Errorf("State(%q).Valid() = false, want true", s)
 		}
 	}
-	for _, s := range []State{"", "DONE", "archived"} {
+	for _, s := range []State{"", "DONE", "archived", "in review", "in_review"} {
 		if s.Valid() {
 			t.Errorf("State(%q).Valid() = true, want false", s)
+		}
+	}
+}
+
+func TestStateLabel(t *testing.T) {
+	if got := StateReview.Label(); got != "in review" {
+		t.Errorf("StateReview.Label() = %q, want %q", got, "in review")
+	}
+	for _, s := range []State{StateInbox, StateTodo, StateDoing, StateBlocked, StateDone, StateSomeday} {
+		if got := s.Label(); got != string(s) {
+			t.Errorf("State(%q).Label() = %q, want the name itself", s, got)
 		}
 	}
 }

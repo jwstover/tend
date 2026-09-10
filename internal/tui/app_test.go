@@ -501,7 +501,7 @@ func TestChangeStateChord(t *testing.T) {
 		t.Fatal("statePending = false after c, want true")
 	}
 	content := ansi.Strip(m.View().Content)
-	for _, want := range []string{"state", "t todo", "x done", "esc cancel"} {
+	for _, want := range []string{"state", "t todo", "v in review", "x done", "esc cancel"} {
 		if !strings.Contains(content, want) {
 			t.Errorf("which-key panel missing %q:\n%s", want, content)
 		}
