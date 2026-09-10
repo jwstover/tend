@@ -99,22 +99,22 @@ func TestGroupTasksByAgent(t *testing.T) {
 	}
 	got := sectionTitles(groupTasks(groupByAgent, tasks, sessions, DefaultStyles()))
 	want := []string{
-		"session blocked: waiting",
-		"session working: busy",
-		"session idle: idle one",
-		"session ended: finished",
-		"session weird: odd status",
-		"no session: never launched, unknown status",
+		"agent blocked: waiting",
+		"agent working: busy",
+		"agent idle: idle one",
+		"agent ended: finished",
+		"agent weird: odd status",
+		"no agent: never launched, unknown status",
 	}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Errorf("sections:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
 
-	// With no status map at all every task is "no session" — the shape the
+	// With no status map at all every task is "no agent" — the shape the
 	// list has when SessionStatuses failed and degraded to nil.
 	got = sectionTitles(groupTasks(groupByAgent, tasks, nil, DefaultStyles()))
-	if len(got) != 1 || !strings.HasPrefix(got[0], "no session: ") {
-		t.Errorf("nil sessions: %v, want one no-session section", got)
+	if len(got) != 1 || !strings.HasPrefix(got[0], "no agent: ") {
+		t.Errorf("nil sessions: %v, want one no-agent section", got)
 	}
 }
 

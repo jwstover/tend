@@ -12,6 +12,7 @@ import (
 
 	"github.com/jwstover/tend/internal/agent"
 	"github.com/jwstover/tend/internal/task"
+	"github.com/jwstover/tend/internal/workflow"
 )
 
 // loadSessionsForPicker fetches a task's sessions fresh (not from the
@@ -131,9 +132,41 @@ func (a app) chooseSessionPickerRow(row int) (tea.Model, tea.Cmd) {
 		return a, a.openSessionCwdPrompt(taskID, label, a.defaultCwd(sessions, projectID))
 	}
 	if i := row - 1; i >= 0 && i < len(sessions) {
-		return a, resumeSessionCmd(sessions[i], a.dbPath)
+		return a, a.resumeGuardedCmd(sessions[i])
 	}
 	return a, nil
+}
+
+// resumeGuardedCmd is resumeSessionCmd behind the takeover guard: a
+// session that ran a workflow step is refused while its run is live and
+// not paused, since the runner still owns that transcript and a second
+// claude on it -- interactive on top of headless -- is exactly the
+// hazard tmux-backed backgrounding exists to avoid. Pausing the run
+// (`p` in the run view) is what hands the session over; the flash says
+// so. An ordinary session, or a step session of an ended or paused run,
+// resumes as before. The check is a store read, so it runs as a Cmd and
+// the resume follows inside it.
+func (a app) resumeGuardedCmd(sess task.Session) tea.Cmd {
+	if sess.StepRunID == nil {
+		return resumeSessionCmd(sess, a.dbPath)
+	}
+	stepRunID := *sess.StepRunID
+	return func() tea.Msg {
+		sr, err := a.store.GetStepRun(a.ctx, stepRunID)
+		if err != nil {
+			return errMsg{err}
+		}
+		run, err := a.store.GetRun(a.ctx, sr.RunID)
+		if err != nil {
+			return errMsg{err}
+		}
+		if !run.State.Terminal() && run.State != workflow.RunPaused {
+			return statusMsg{isErr: true, text: fmt.Sprintf(
+				"session belongs to run %d, which is %s — pause the run first (v, then p) to take it over",
+				run.ID, run.State)}
+		}
+		return resumeSessionCmd(sess, a.dbPath)()
+	}
 }
 
 // wrapInTmux rewrites a direct claude command to run inside a named tmux
@@ -453,6 +486,55 @@ func pollSessions(ctx context.Context, store Store, settleAfter time.Duration) b
 		}
 	}
 	return changed
+}
+
+// runSnapshot is what the poller remembers of one active workflow run
+// between ticks: enough to notice the run moving without diffing rows.
+// logMod is the current step's log mtime, so a step that keeps writing
+// counts as movement too -- that is what lets the run view tail its log
+// off this tick rather than a timer of its own.
+type runSnapshot struct {
+	state     workflow.RunState
+	stepRunID int64
+	logMod    int64
+}
+
+// pollRuns is the run half of the poller's tick (see runSessionPoller):
+// it snapshots every non-terminal run and reports whether anything moved
+// since prev -- a run changing state or step, its step's log growing, a
+// new run appearing, or a run leaving the active set by ending. It reads
+// only; a run's state is the runner's (and the user's) to write. A nil
+// prev is the first tick, which reports a change whenever there is
+// anything live to show. Store errors keep the previous snapshot and
+// report nothing, like every other failure on this tick.
+func pollRuns(ctx context.Context, store Store, prev map[int64]runSnapshot) (map[int64]runSnapshot, bool) {
+	runs, err := store.ListActiveRuns(ctx)
+	if err != nil {
+		return prev, false
+	}
+	next := make(map[int64]runSnapshot, len(runs))
+	for _, run := range runs {
+		snap := runSnapshot{state: run.State}
+		if run.CurrentStepRunID != nil {
+			snap.stepRunID = *run.CurrentStepRunID
+			if sr, err := store.GetStepRun(ctx, snap.stepRunID); err == nil {
+				snap.logMod = logModTime(sr.LogPath).UnixNano()
+			}
+		}
+		next[run.ID] = snap
+	}
+	if prev == nil {
+		return next, len(next) > 0
+	}
+	if len(next) != len(prev) {
+		return next, true
+	}
+	for id, snap := range next {
+		if prev[id] != snap {
+			return next, true
+		}
+	}
+	return next, false
 }
 
 // settleable reports whether a status is eligible for pollSessions' idle

@@ -257,6 +257,34 @@ func TestRunTwoStepLinearWorkflow(t *testing.T) {
 	}
 }
 
+// While claude runs, the step's session row reads 'working': it has no
+// tmux pane for the TUI's poller to classify, so the runner is the only
+// thing that can say so. After the step it reads 'ended' as before.
+func TestRunMarksStepSessionWorkingDuringExec(t *testing.T) {
+	f := newFixture(t)
+	f.step("implement", workflow.StepAgent)
+	var midRun task.SessionStatus
+	f.exec.handle = func(_ context.Context, req StepExec) (agent.HeadlessResult, error) {
+		for _, sess := range f.sessions() {
+			if sess.ExternalID == req.StepRun.SessionExternalID {
+				midRun = sess.Status
+			}
+		}
+		return success("ok"), nil
+	}
+	run := f.run()
+
+	if err := f.runner().Run(f.ctx, run.ID, false); err != nil {
+		t.Fatalf("Run: %v\n%s", err, f.log)
+	}
+	if midRun != task.SessionWorking {
+		t.Errorf("session status during the step = %q, want working", midRun)
+	}
+	if sessions := f.sessions(); len(sessions) != 1 || sessions[0].Status != task.SessionEnded {
+		t.Errorf("sessions after the step = %+v, want one, ended", sessions)
+	}
+}
+
 // An outcome the agent hands off through finish_step is followed, even
 // when the stream's own text says something else.
 func TestRunFollowsFinishStepOutcome(t *testing.T) {
