@@ -1478,6 +1478,123 @@ func TestHelpOverlay(t *testing.T) {
 	}
 }
 
+// The reference outgrew a 30-row terminal and used to splice in with its
+// top rows cut off. Now it clamps to the screen and scrolls.
+func TestHelpOverlayScrollsOnShortScreen(t *testing.T) {
+	m, _ := newTestApp(t) // 100x30
+	m = drive(t, m, keyPress('?'))
+	a := m.(app)
+	if a.helpMaxScroll() == 0 {
+		t.Fatal("help fits a 30-row screen; the scroll test needs it to overflow")
+	}
+
+	content := ansi.Strip(m.View().Content)
+	lines := strings.Split(content, "\n")
+	if len(lines) != 30 {
+		t.Errorf("frame is %d rows, want 30", len(lines))
+	}
+	// The box title survives (nothing is cut off the top) and the footer
+	// row advertises scrolling with a count of hidden rows below.
+	if !strings.Contains(lines[0]+lines[1]+lines[2], "help") {
+		t.Errorf("help title not at the top of the overlay:\n%s", content)
+	}
+	if !strings.Contains(content, "NAVIGATE") || !strings.Contains(content, "j / k scroll") {
+		t.Errorf("help overlay missing the first group or the scroll hint:\n%s", content)
+	}
+	if !strings.Contains(content, "↓ ") || strings.Contains(content, "↑ ") {
+		t.Errorf("at the top the footer should count rows below only:\n%s", content)
+	}
+	if strings.Contains(content, "take over paused step's session") {
+		t.Errorf("last entry visible before scrolling on a 30-row screen:\n%s", content)
+	}
+
+	// j scrolls one row; G jumps to the end where the last group shows.
+	m = drive(t, m, keyPress('j'))
+	if got := m.(app).helpScroll; got != 1 {
+		t.Errorf("helpScroll after j = %d, want 1", got)
+	}
+	m = drive(t, m, keyPress('G'))
+	a = m.(app)
+	if a.helpScroll != a.helpMaxScroll() {
+		t.Errorf("helpScroll after G = %d, want %d", a.helpScroll, a.helpMaxScroll())
+	}
+	content = ansi.Strip(m.View().Content)
+	for _, want := range []string{"RUN VIEW", "take over paused step's session", "esc close", "↑ "} {
+		if !strings.Contains(content, want) {
+			t.Errorf("help overlay at the bottom missing %q:\n%s", want, content)
+		}
+	}
+	if strings.Contains(content, "↓ ") {
+		t.Errorf("at the bottom the footer should count rows above only:\n%s", content)
+	}
+
+	// k walks back up, g jumps home, and neither goes past the ends.
+	m = drive(t, m, keyPress('k'))
+	if got := m.(app).helpScroll; got != a.helpMaxScroll()-1 {
+		t.Errorf("helpScroll after k = %d, want %d", got, a.helpMaxScroll()-1)
+	}
+	m = drive(t, m, keyPress('g'))
+	m = drive(t, m, keyPress('k'))
+	if got := m.(app).helpScroll; got != 0 {
+		t.Errorf("helpScroll after g,k = %d, want 0", got)
+	}
+	// pgdown moves a page, or to the end when less than a page remains.
+	m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyPgDown})
+	if got, want := m.(app).helpScroll, min(a.helpPageRows(), a.helpMaxScroll()); got != want {
+		t.Errorf("helpScroll after pgdown = %d, want %d", got, want)
+	}
+
+	// Reopening starts back at the top.
+	m = drive(t, m, keyPress('?'))
+	m = drive(t, m, keyPress('?'))
+	if got := m.(app).helpScroll; got != 0 {
+		t.Errorf("helpScroll after reopen = %d, want 0", got)
+	}
+}
+
+// Wide screens lay the groups out in two balanced columns; narrow ones
+// keep a single column.
+func TestHelpOverlayColumns(t *testing.T) {
+	m, _ := newTestApp(t)
+	m = drive(t, m, tea.WindowSizeMsg{Width: 140, Height: 80})
+	m = drive(t, m, keyPress('?'))
+	content := ansi.Strip(m.View().Content)
+	var sideBySide bool
+	for _, line := range strings.Split(content, "\n") {
+		if strings.Contains(line, "NAVIGATE") && strings.Contains(line, "PROJECTS") {
+			sideBySide = true
+		}
+	}
+	if !sideBySide {
+		t.Errorf("at 140 columns NAVIGATE and PROJECTS should head side-by-side columns:\n%s", content)
+	}
+	// Every group is on screen without scrolling.
+	for _, g := range helpGroups() {
+		if !strings.Contains(content, g.title) {
+			t.Errorf("two-column help missing group %q:\n%s", g.title, content)
+		}
+	}
+	// Rows never spill past the right border.
+	for i, line := range strings.Split(content, "\n") {
+		if w := ansi.StringWidth(line); w > 140 {
+			t.Errorf("row %d is %d columns wide, want ≤ 140: %q", i, w, line)
+		}
+	}
+
+	m = drive(t, m, keyPress('?'))
+	m = drive(t, m, tea.WindowSizeMsg{Width: 60, Height: 80})
+	m = drive(t, m, keyPress('?'))
+	content = ansi.Strip(m.View().Content)
+	for _, line := range strings.Split(content, "\n") {
+		if strings.Contains(line, "NAVIGATE") && strings.Contains(line, "PROJECTS") {
+			t.Errorf("at 60 columns the help should be a single column:\n%s", content)
+		}
+	}
+	if !strings.Contains(content, "RUN VIEW") || !strings.Contains(content, "NAVIGATE") {
+		t.Errorf("single-column help on an 80-row screen should show every group:\n%s", content)
+	}
+}
+
 func TestLoadingFrameBeforeFirstLoad(t *testing.T) {
 	ctx := context.Background()
 	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "tend.db"))
