@@ -256,6 +256,32 @@ func registerTools(srv *mcp.Server, store Store, boundTaskID int64) {
 		return fetchTask(ctx, store, id)
 	})
 
+	// parent_id is a plain int64 with 0 meaning "top level", not a *int64:
+	// over MCP a pointer cannot tell an explicit null from an omitted
+	// field, and "promote to the top level" has to be a deliberate request,
+	// not the accident of forgetting the argument.
+	mcp.AddTool(srv, &mcp.Tool{
+		Name: "move_task",
+		Description: "Move a task, and its whole sub-tree, under another task as a sub-task, " +
+			"or to the top level by sending parent_id 0. A task cannot be moved under " +
+			"itself or under one of its own sub-tasks. If the new parent is in a " +
+			"different project, the sub-tree moves into that project too. Defaults to " +
+			"the bound task.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in struct {
+		ParentID int64  `json:"parent_id" jsonschema:"id of the task to become the parent; 0 moves the task to the top level"`
+		TaskID   *int64 `json:"task_id,omitempty" jsonschema:"task id to move; defaults to the session's bound task"`
+	}) (*mcp.CallToolResult, taskOut, error) {
+		id := resolveID(in.TaskID, boundTaskID)
+		var parent *int64
+		if in.ParentID != 0 {
+			parent = &in.ParentID
+		}
+		if err := store.SetParent(ctx, id, parent); err != nil {
+			return nil, taskOut{}, err
+		}
+		return fetchTask(ctx, store, id)
+	})
+
 	mcp.AddTool(srv, &mcp.Tool{
 		Name: "set_task_tags",
 		Description: "Replace a task's tags with the given list; send an empty list to clear " +

@@ -215,7 +215,9 @@ CREATE TABLE tasks (
   title        TEXT NOT NULL,
   body_md      TEXT NOT NULL DEFAULT '',         -- long-form description + links + notes; rendered with glamour
   state        TEXT NOT NULL DEFAULT 'inbox' REFERENCES states(name),
-  parent_id    INTEGER REFERENCES tasks(id) ON DELETE CASCADE,  -- sub-tasks via self-reference
+  parent_id    INTEGER REFERENCES tasks(id) ON DELETE CASCADE,  -- sub-tasks via self-reference. Writable: Store.SetParent
+                                                 -- re-parents a task (nil = top level), refusing cycles in Go and
+                                                 -- re-projecting the sub-tree when the new parent is in another project.
   project_id   INTEGER NOT NULL DEFAULT 1,       -- added by migration 00007; points at projects(id), row 1 = 'Unsorted'.
                                                  -- Deliberately NO `REFERENCES` clause (SQLite rejects a non-NULL-default
                                                  -- FK column add); integrity for project deletes lives in Store.DeleteProject.
@@ -250,8 +252,9 @@ CREATE TABLE settings (          -- key/value bag for state that must outlive a 
 CREATE TABLE task_events (       -- append-only activity log behind `tend standup`; not a foreign key to tasks —
   id, task_id, task_title,        -- the log must outlive the tasks it describes. Populated by AFTER INSERT/UPDATE/DELETE
   kind TEXT CHECK (kind IN         -- triggers on `tasks`, not Go-layer writes, so OLD/NEW state is free and
-    ('created','state','deleted','project')),  -- cascade-deleted sub-tasks still get an event.
-  old_value, new_value, created_at
+    ('created','state','deleted',  -- cascade-deleted sub-tasks still get an event. The exceptions are 'project'
+     'project','parent')),         -- (00008) and 'parent' (00015): the store writes those, one row per user action,
+  old_value, new_value, created_at -- because a move also re-projects the sub-tree and a trigger would log every row.
 );
 
 CREATE TABLE log_entries (        -- manual standup notes (TUI `U`/`N`, or `tend log`); task_id is optional
@@ -375,7 +378,7 @@ Schema in `internal/store/migrations`, queries in `internal/store/queries`, gene
 | `tend workflow logs <run-id> [--step N] [-f] [--raw] [--runner]` | A step's log rendered as the run view shows it (`agent.RenderStreamLine`; `--raw` for the stream-json lines). `--step N` is the step's number in `status <run-id>`, default the current step; a gate has no log. `-f` follows until the step finishes or the run ends. `--runner` tails `runner.log` instead. |
 | `tend workflow resume <run-id>` | Start a fresh runner for a workflow run whose runner died (host reboot, tmux server killed) or was paused. Refuses a run that has ended (`ErrRunEnded`) or whose runner is still alive (`runner.ErrRunnerAlive`, via `tmux has-session`). Needs `tmux` (`runner.ErrNoTmux`). |
 | `tend workflow run <run-id>` | Hidden. The runner: drives one workflow run to a terminal state and exits — hosted in tmux session `tend-wf-<run-id>` by `start`, the TUI's `w` chord, or `resume`, never run by hand. `--takeover` re-enters a run left `running` by a dead runner instead of claiming it from `pending`. |
-| `tend mcp --task-id <id> [--step-run-id <id>]` | Hidden. Runs tend's MCP server over stdio, bound to one task — spawned by a launched `claude` session, never by the user directly. Task tools: `get_current_task`, `get_task`, `list_subtasks`, `create_task`, `create_subtask`, `update_task_body`, `append_task_body`, `set_task_state`, `set_task_project`, `set_task_tags`, `set_task_priority`, `set_task_due`, `get_current_project`, `list_projects`. `--step-run-id` (set by the workflow runner) adds the step tools `get_workflow_step` and `finish_step` for that step run. |
+| `tend mcp --task-id <id> [--step-run-id <id>]` | Hidden. Runs tend's MCP server over stdio, bound to one task — spawned by a launched `claude` session, never by the user directly. Task tools: `get_current_task`, `get_task`, `list_subtasks`, `create_task`, `create_subtask`, `update_task_body`, `append_task_body`, `set_task_state`, `set_task_project`, `move_task`, `set_task_tags`, `set_task_priority`, `set_task_due`, `get_current_project`, `list_projects`. `--step-run-id` (set by the workflow runner) adds the step tools `get_workflow_step` and `finish_step` for that step run. |
 | `tend agent-hook <event>` | Hidden. Records a Claude Code hook event (session status) against its session — spawned by Claude Code itself via injected `--settings`. |
 | `tend version` | Print the version |
 
@@ -392,7 +395,7 @@ There is no `tend done` — completing, deleting, and every other state transiti
 
 Built on Bubble Tea v2 + Bubbles v2 + Lip Gloss v2; Glamour v2 renders the body.
 
-- **List view (default).** A grouped/tree view of the live view (sub-tasks nest under their parent), with vim-style navigation, search, a `:`/`Ctrl-P` command palette, and quick add. Tasks group by state by default; the `g` chord regroups by priority or by latest agent-session status (`gg` stays "top of list"). A project column scopes the list to the selected project (or shows all).
+- **List view (default).** A grouped/tree view of the live view (sub-tasks nest under their parent), with vim-style navigation, search, a `:`/`Ctrl-P` command palette, and quick add. Tasks group by state by default; the `g` chord regroups by priority or by latest agent-session status (`gg` stays "top of list"). A project column scopes the list to the selected project (or shows all). `m` opens a move-to-parent picker that re-parents the selected task and its sub-tree under another task in the project, or promotes it to the top level (the `(top level)` row).
 - **Detail pane.** The heart of the tool: glamour-rendered markdown body, a sub-task checklist, a `SESSIONS` section (this task's Claude Code sessions — launch, resume, or attach to a backgrounded one), and a `LOG` section (manual notes plus auto-generated session recaps). Scrollable and independently focusable so long histories are reachable. URL detection lets the user open a link under the cursor or all of them via the OS opener.
 - **Triage view.** Filtered to `inbox`. Fast keys to set state, assign a project, add tags or a due date, open the body in `$EDITOR`, or send to `someday`/`done` — the batched processing pass.
 - **Standup view.** Manual notes grouped by task plus a generated activity summary (completed/blocked/started, derived from `task_events`); yank the whole thing as markdown.
