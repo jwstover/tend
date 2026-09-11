@@ -166,7 +166,10 @@ func registerWorkflowTools(srv *mcp.Server, store Store) {
 			"add_workflow_edge. prompt_md is a Go text/template over {{.Task.Title}}, " +
 			"{{.Task.Body}}, {{.Task.ID}}, {{.Cwd}}, {{.Input}} (the previous step's " +
 			"deliverable), {{.Feedback}} (the deliverable of a step that routed back here), " +
-			"{{.Iteration}} and {{.Outcomes}}; it must render or the step is refused. " +
+			"{{.Iteration}}, {{.Outcomes}} and {{.Subtasks}} (the task's direct sub-tasks, " +
+			"each with .ID, .Title, .State, .IsBlocked and .DependsOn, for a " +
+			"{{range .Subtasks}}...{{end}} block; empty when the task has none); it must " +
+			"render or the step is refused. " +
 			"model is opus, sonnet, haiku or inherit; permission_mode is default, acceptEdits, " +
 			"bypassPermissions, plan or inherit.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in struct {
@@ -305,7 +308,9 @@ func registerWorkflowTools(srv *mcp.Server, store Store) {
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name: "set_step_prompt",
-		Description: "Replace a step's prompt template (see add_workflow_step for the variables). " +
+		Description: "Replace a step's prompt template (see add_workflow_step for the variables: " +
+			"{{.Task.*}}, {{.Cwd}}, {{.Input}}, {{.Feedback}}, {{.Iteration}}, {{.Outcomes}} " +
+			"and {{.Subtasks}}, the task's sub-tasks with ID, Title, State, IsBlocked and DependsOn). " +
 			"The template must render or the write is refused, since a broken template fails " +
 			"every run at launch. Every outcome the prompt tells the agent to finish with " +
 			"needs an edge (add_workflow_edge), or finish_step will refuse it at run time.",

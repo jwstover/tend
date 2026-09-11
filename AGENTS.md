@@ -111,7 +111,7 @@ tend/
 │   │   └── log.go            #   LogEntry (manual standup notes), StandupMarkdown rendering
 │   ├── workflow/              # DOMAIN — agent workflows: types + rules, zero I/O. A sibling of task, not a tenant (own vocabulary).
 │   │   ├── workflow.go        #   Workflow, Step (StepKind agent/gate), Edge, Run (RunState + Terminal), StepRun; Normalize*; the Err* values
-│   │   ├── prompt.go          #   RenderPrompt / ValidatePrompt — prompt_md is a Go text/template over PromptData (Task, Input, Feedback, Iteration, …)
+│   │   ├── prompt.go          #   RenderPrompt / ValidatePrompt — prompt_md is a Go text/template over PromptData (Task, Cwd, Input, Feedback, Iteration, Outcomes, Subtasks)
 │   │   ├── graph.go           #   Preview (text graph for the authoring view) + Validate (unreachable steps, unrouted outcomes, unbounded loops, …)
 │   │   ├── handoff.go         #   StepSystemPrompt / NudgePrompt / FallbackAllowed; the exact step-tool ids (mcp__tend__finish_step, …)
 │   │   └── status.go          #   RunState.SessionStatus — maps a live run into the agent-session status vocabulary the TUI renders

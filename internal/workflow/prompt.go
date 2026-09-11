@@ -24,6 +24,19 @@ type PromptTask struct {
 	Body  string
 }
 
+// PromptSubtask is one direct sub-task of the run's task as a prompt
+// template sees it. IsBlocked says whether any task it waits on is still
+// open; DependsOn lists every task it waits on, open or done, so a prompt
+// can spell out the ready set ("sub-tasks not done and not blocked")
+// rather than the agent having to call list_subtasks to work it out.
+type PromptSubtask struct {
+	ID        int64
+	Title     string
+	State     string
+	IsBlocked bool
+	DependsOn []int64
+}
+
 // PromptData is the variable set a step prompt is rendered against. Every
 // exported field is a template variable; anything else is a render error.
 //
@@ -35,6 +48,9 @@ type PromptTask struct {
 //	{{.Iteration}}  1-based count of this step within the run
 //	{{.Outcomes}}   allowed outcomes for this step, so a prompt can tell
 //	                the agent what finish_step accepts
+//	{{.Subtasks}}   the task's direct sub-tasks, oldest first, each with
+//	                ID, Title, State, IsBlocked and DependsOn; empty when
+//	                the task has none, so {{range .Subtasks}} renders nothing
 type PromptData struct {
 	Task      PromptTask
 	Cwd       string
@@ -42,6 +58,7 @@ type PromptData struct {
 	Feedback  string
 	Iteration int64
 	Outcomes  []string
+	Subtasks  []PromptSubtask
 }
 
 // RenderPrompt renders a step's prompt_md against data. Unknown variables
@@ -78,7 +95,10 @@ func ValidatePrompt(promptMD string) error {
 }
 
 // samplePromptData has every field non-zero so validation walks the
-// truthy branch of any conditional.
+// truthy branch of any conditional. Its Subtasks mix a ready one with a
+// blocked one so a {{range .Subtasks}} body that reads IsBlocked or
+// DependsOn is exercised both ways; the zero-value PromptData that
+// validation also runs against covers the empty list.
 var samplePromptData = PromptData{
 	Task:      PromptTask{ID: 1, Title: "sample task", Body: "sample body"},
 	Cwd:       "/tmp/sample",
@@ -86,6 +106,10 @@ var samplePromptData = PromptData{
 	Feedback:  "sample feedback",
 	Iteration: 1,
 	Outcomes:  []string{OutcomeDone},
+	Subtasks: []PromptSubtask{
+		{ID: 2, Title: "sample sub-task", State: "todo"},
+		{ID: 3, Title: "sample blocked sub-task", State: "todo", IsBlocked: true, DependsOn: []int64{2}},
+	},
 }
 
 func parsePrompt(promptMD string) (*template.Template, error) {

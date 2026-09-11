@@ -221,6 +221,22 @@ func (f *fakeWorkflowStore) GetTask(_ context.Context, id int64) (task.Task, err
 	return task.Task{}, fmt.Errorf("loading task %d: not found", id)
 }
 
+func (f *fakeWorkflowStore) ListChildren(_ context.Context, parentID int64) ([]task.Task, error) {
+	var out []task.Task
+	for _, t := range f.tasks {
+		if t.ParentID != nil && *t.ParentID == parentID {
+			out = append(out, t)
+		}
+	}
+	return out, nil
+}
+
+// Blockers reports no dependencies: the workflow commands only need the
+// runner's prompt data to build, and no cli test renders {{.Subtasks}}.
+func (f *fakeWorkflowStore) Blockers(context.Context, int64) ([]task.Task, error) {
+	return nil, nil
+}
+
 func (f *fakeWorkflowStore) GetProject(_ context.Context, id int64) (task.Project, error) {
 	for _, p := range f.projects {
 		if p.ID == id {
