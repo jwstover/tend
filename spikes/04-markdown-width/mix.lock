@@ -1,0 +1,8 @@
+%{
+  "back_breeze": {:hex, :back_breeze, "0.4.4", "7f378e0dc2913a85741d336883e99310759e317ec4dfc52a2b5ea4acf838b2c3", [:mix], [{:termite, "~> 0.4.2 or ~> 0.5", [hex: :termite, repo: "hexpm", optional: false]}], "hexpm", "c14eacac49761e86ca7f59287e06b5a8e807c4769dfa913926eabe06b9928884"},
+  "breeze": {:hex, :breeze, "0.5.1", "f90521e00dc7b9ddb265f3cc2613e5364ab0ea091268a7605e173213b16917fc", [:mix], [{:back_breeze, "~> 0.4.2", [hex: :back_breeze, repo: "hexpm", optional: false]}, {:file_system, "~> 1.1", [hex: :file_system, repo: "hexpm", optional: true]}, {:telemetry, "~> 1.0", [hex: :telemetry, repo: "hexpm", optional: false]}, {:termite, "~> 0.4", [hex: :termite, repo: "hexpm", optional: false]}], "hexpm", "f4f9819503a0dc2e1d08c4caf88b4060e3c63bb51a7ba301db4d004f26bc70f4"},
+  "earmark_parser": {:hex, :earmark_parser, "1.4.46", "67607a0532e810c6f630a515c548d0b24949643f168cc556303bee4cf96105c7", [:mix], [], "hexpm", "9c44636e8a1c68c62f526b2dcd85d941dbbcee7ab82cf64ba06ce28bef8e89f5"},
+  "jason": {:hex, :jason, "1.4.5", "2e3a008590b0b8d7388c20293e9dcc9cf3e5d642fd2a114e4cbbb52e595d940a", [:mix], [{:decimal, "~> 1.0 or ~> 2.0 or ~> 3.0", [hex: :decimal, repo: "hexpm", optional: true]}], "hexpm", "b0c823996102bcd0239b3c2444eb00409b72f6a140c1950bc8b457d836b30684"},
+  "telemetry": {:hex, :telemetry, "1.4.2", "a0cb522801dffb1c49fe6e30561badffc7b6d0e180db1300df759faa22062855", [:rebar3], [], "hexpm", "928f6495066506077862c0d1646609eed891a4326bee3126ba54b60af61febb1"},
+  "termite": {:hex, :termite, "0.4.4", "ffd81e3c8ad27e09d08b7dd722548743567fcf15dd75260edec6d301597ffb9c", [:mix], [], "hexpm", "8d5b4b9368cae7c2a3ff9cc755c64ee34ea3652b0fa5e35872bd492933aec10a"},
+}
