@@ -7,14 +7,15 @@ import (
 
 // reviewLoop is the acceptance workflow of the edges editor: implement,
 // review, a manual gate, ship, with a bounded reject loop from review
-// back to implement. Edges are returned the way ListEdges orders them:
+// back to implement. Every agent step carries a permission mode, as a
+// sound workflow must. Edges are returned the way ListEdges orders them:
 // by source step, then outcome.
 func reviewLoop() ([]Step, []Edge) {
 	steps := []Step{
-		{ID: 1, Name: "implement", Kind: StepAgent, SortOrder: 0, PromptMD: "Implement {{.Task.Title}}.{{if .Feedback}} Feedback: {{.Feedback}}{{end}}"},
-		{ID: 2, Name: "review", Kind: StepAgent, SortOrder: 1, PromptMD: "Review {{.Input}}; finish with approve or reject."},
+		{ID: 1, Name: "implement", Kind: StepAgent, SortOrder: 0, PermissionMode: "acceptEdits", PromptMD: "Implement {{.Task.Title}}.{{if .Feedback}} Feedback: {{.Feedback}}{{end}}"},
+		{ID: 2, Name: "review", Kind: StepAgent, SortOrder: 1, PermissionMode: "acceptEdits", PromptMD: "Review {{.Input}}; finish with approve or reject."},
 		{ID: 3, Name: "gate", Kind: StepGate, SortOrder: 2},
-		{ID: 4, Name: "ship", Kind: StepAgent, SortOrder: 3, PromptMD: "Open the PR."},
+		{ID: 4, Name: "ship", Kind: StepAgent, SortOrder: 3, PermissionMode: "bypassPermissions", PromptMD: "Open the PR."},
 	}
 	three := int64(3)
 	edges := []Edge{
@@ -90,7 +91,7 @@ func TestValidateProblems(t *testing.T) {
 	steps, edges := reviewLoop()
 	// A review step whose prompt names no outcome, for the cases about
 	// edges alone.
-	plainReview := Step{ID: 2, Name: "review", Kind: StepAgent, SortOrder: 1, PromptMD: "Review it."}
+	plainReview := Step{ID: 2, Name: "review", Kind: StepAgent, SortOrder: 1, PermissionMode: "acceptEdits", PromptMD: "Review it."}
 	cases := []struct {
 		name  string
 		steps []Step
@@ -117,19 +118,19 @@ func TestValidateProblems(t *testing.T) {
 		},
 		{
 			name:  "prompt names an outcome the step does not route",
-			steps: []Step{steps[0], {ID: 2, Name: "review", Kind: StepAgent, PromptMD: "Say APPROVE, or `reject` it."}},
+			steps: []Step{steps[0], {ID: 2, Name: "review", Kind: StepAgent, PermissionMode: "acceptEdits", PromptMD: "Say APPROVE, or `reject` it."}},
 			edges: []Edge{{FromStepID: 1, Outcome: "done", ToStepID: 2}, {FromStepID: 2, Outcome: "approve", ToStepID: 1, MaxIterations: ptr(2)}},
 			want:  []string{`review: prompt mentions "reject" but no edge routes it`},
 		},
 		{
 			name:  "an outcome from another step's edges counts as vocabulary too",
-			steps: []Step{steps[0], {ID: 2, Name: "review", Kind: StepAgent, PromptMD: "finish with retry if flaky"}},
+			steps: []Step{steps[0], {ID: 2, Name: "review", Kind: StepAgent, PermissionMode: "acceptEdits", PromptMD: "finish with retry if flaky"}},
 			edges: []Edge{{FromStepID: 1, Outcome: "retry", ToStepID: 1, MaxIterations: ptr(2)}, {FromStepID: 1, Outcome: "done", ToStepID: 2}},
 			want:  []string{`review: prompt mentions "retry" but no edge routes it`},
 		},
 		{
 			name:  "a word containing the outcome is not a mention",
-			steps: []Step{steps[0], {ID: 2, Name: "ship", Kind: StepAgent, PromptMD: "The change was approved and rejections are logged."}},
+			steps: []Step{steps[0], {ID: 2, Name: "ship", Kind: StepAgent, PermissionMode: "acceptEdits", PromptMD: "The change was approved and rejections are logged."}},
 			edges: edges[:1],
 			want:  nil,
 		},
@@ -190,8 +191,33 @@ func TestValidateProblems(t *testing.T) {
 		},
 		{
 			name:  "template that does not render",
-			steps: []Step{{ID: 1, Name: "implement", Kind: StepAgent, PromptMD: "{{.Nope}}"}},
+			steps: []Step{{ID: 1, Name: "implement", Kind: StepAgent, PermissionMode: "acceptEdits", PromptMD: "{{.Nope}}"}},
 			want:  []string{"implement: invalid prompt template"},
+		},
+		{
+			name:  "an agent step with a permission mode is fine",
+			steps: []Step{{ID: 1, Name: "implement", Kind: StepAgent, PermissionMode: "bypassPermissions", PromptMD: "Build it."}},
+			want:  nil,
+		},
+		{
+			name:  "an agent step with no permission mode: headless claude would deny its tool calls",
+			steps: []Step{{ID: 1, Name: "implement", Kind: StepAgent, PromptMD: "Build it."}},
+			want:  []string{"implement: no permission mode: a headless step denies every tool call that would need approval; set one on the step"},
+		},
+		{
+			name:  "a gate needs no permission mode: no claude runs",
+			steps: []Step{{ID: 1, Name: "gate", Kind: StepGate}},
+			want:  nil,
+		},
+		{
+			name:  "the missing mode is reported alongside the step's other problems, after its edge problems",
+			steps: []Step{steps[0], {ID: 2, Name: "review", Kind: StepAgent, PromptMD: "finish with approve"}},
+			edges: []Edge{{FromStepID: 1, Outcome: "done", ToStepID: 2}, {FromStepID: 2, Outcome: "reject", ToStepID: 1}},
+			want: []string{
+				`review: "reject" loops back to implement with no max iterations`,
+				"review: no permission mode",
+				`review: prompt mentions "approve" but no edge routes it`,
+			},
 		},
 		{
 			name:  "gates carry no prompt, so theirs is never checked",
