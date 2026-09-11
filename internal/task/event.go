@@ -13,7 +13,17 @@ const (
 	// hold project *names*, snapshotted like TaskTitle, so the log stays
 	// readable after a project is renamed or deleted.
 	EventProject EventKind = "project"
+	// EventParent records a task moving to a different parent: promoted
+	// to the top level, demoted under another task, or shifted between
+	// parents. Old and New hold the parent *titles*, snapshotted like
+	// TaskTitle, with TopLevelLabel standing in for "no parent".
+	// Summarize ignores it; a re-parent is bookkeeping, not standup news.
+	EventParent EventKind = "parent"
 )
+
+// TopLevelLabel is what an EventParent row records in Old or New when
+// the task had, or now has, no parent.
+const TopLevelLabel = "(top level)"
 
 // Event is one row of the append-only activity log. Events record raw
 // facts (a state went from Old to New); standup verbs like "started"

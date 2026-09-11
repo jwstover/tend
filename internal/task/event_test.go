@@ -74,6 +74,18 @@ func TestSummarizeIgnoresNonStateEvents(t *testing.T) {
 	}
 }
 
+// A re-parent is bookkeeping, not standup news: it must not show up as a
+// move (that is for projects) or touch anything else.
+func TestSummarizeIgnoresParentEvents(t *testing.T) {
+	from, to := TopLevelLabel, "host"
+	sum := Summarize([]Event{
+		{TaskID: 1, TaskTitle: "nested", Kind: EventParent, Old: &from, New: &to},
+	})
+	if !sum.Empty() {
+		t.Errorf("Summarize = %+v, want empty summary", sum)
+	}
+}
+
 func TestLastWorkdayStart(t *testing.T) {
 	loc := time.FixedZone("test", -7*3600)
 	cases := []struct {

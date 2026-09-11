@@ -437,3 +437,112 @@ func TestWorkflowsMigrationRoundTrips(t *testing.T) {
 		t.Errorf("seeded session after the round trip = %+v, want one unbound session", sessions)
 	}
 }
+
+// schemaBeforeParentEvents is the last migration before task_events
+// admits the 'parent' kind.
+const schemaBeforeParentEvents = 14
+
+// Migration 00015 rebuilds task_events to widen its CHECK, the way 00008
+// did for 'project'. It is driven up and down here on a database with
+// history: the rebuild must keep every row, the triggers must survive
+// being dropped and recreated, the widened CHECK must admit 'parent', and
+// Down must drop the rows it can no longer hold rather than fail.
+func TestParentEventMigrationRoundTrips(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "tend.db")
+
+	db := openAt(t, path, schemaBeforeParentEvents)
+	if _, err := db.Exec(`INSERT INTO tasks (title) VALUES ('pre-existing')`); err != nil {
+		t.Fatalf("seeding a task: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO task_events (task_id, task_title, kind, old_value, new_value)
+		VALUES (1, 'pre-existing', 'project', 'Unsorted', 'elsewhere')`); err != nil {
+		t.Fatalf("seeding a project event: %v", err)
+	}
+	var before int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM task_events`).Scan(&before); err != nil {
+		t.Fatalf("counting seeded events: %v", err)
+	}
+	if before != 2 {
+		t.Fatalf("seeded %d events, want 2 (the created trigger's and the project row)", before)
+	}
+	// The old CHECK refuses what the migration is about to admit.
+	if _, err := db.Exec(`INSERT INTO task_events (task_id, task_title, kind) VALUES (1, 'x', 'parent')`); err == nil {
+		t.Fatal("schema 14 accepted a 'parent' event; the test is not exercising the widening")
+	}
+	provider := providerFor(t, db)
+
+	// Up: rows survive, and the new kind is admitted.
+	if _, err := provider.UpTo(ctx, schemaBeforeParentEvents+1); err != nil {
+		t.Fatalf("migrating up to 00015: %v", err)
+	}
+	var after int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM task_events`).Scan(&after); err != nil {
+		t.Fatalf("counting migrated events: %v", err)
+	}
+	if after != before {
+		t.Errorf("task_events holds %d rows after the rebuild, want %d", after, before)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO task_events (task_id, task_title, kind, old_value, new_value)
+		VALUES (1, 'pre-existing', 'parent', '(top level)', 'host')`); err != nil {
+		t.Fatalf("after up, a 'parent' event is refused: %v", err)
+	}
+
+	// Down: the parent row goes, everything else stays.
+	if _, err := provider.DownTo(ctx, schemaBeforeParentEvents); err != nil {
+		t.Fatalf("migrating back down to 00014: %v", err)
+	}
+	var kinds []string
+	rows, err := db.QueryContext(ctx, `SELECT kind FROM task_events ORDER BY id`)
+	if err != nil {
+		t.Fatalf("reading events after down: %v", err)
+	}
+	for rows.Next() {
+		var k string
+		if err := rows.Scan(&k); err != nil {
+			t.Fatalf("scanning: %v", err)
+		}
+		kinds = append(kinds, k)
+	}
+	rows.Close()
+	if len(kinds) != 2 || kinds[0] != "created" || kinds[1] != "project" {
+		t.Errorf("after down, kinds = %v, want [created project]", kinds)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("closing: %v", err)
+	}
+
+	// And up again through the normal path, then use it end to end.
+	s, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("re-migrating: %v", err)
+	}
+	t.Cleanup(func() { s.Close() })
+	host, err := s.AddTask(ctx, "host")
+	if err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	if err := s.SetParent(ctx, 1, &host.ID); err != nil {
+		t.Fatalf("SetParent after the round trip: %v", err)
+	}
+	// The triggers still fire after two rebuilds.
+	if err := s.SetState(ctx, host.ID, task.StateDoing); err != nil {
+		t.Fatalf("SetState: %v", err)
+	}
+	events, err := s.ListEvents(ctx, time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("ListEvents: %v", err)
+	}
+	var sawParent, sawState bool
+	for _, ev := range events {
+		switch ev.Kind {
+		case task.EventParent:
+			sawParent = ev.TaskID == 1 && ev.New != nil && *ev.New == "host"
+		case task.EventState:
+			sawState = sawState || ev.TaskID == host.ID
+		}
+	}
+	if !sawParent || !sawState {
+		t.Errorf("after the round trip: parent event=%v state trigger=%v, want both", sawParent, sawState)
+	}
+}
