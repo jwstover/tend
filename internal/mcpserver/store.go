@@ -35,6 +35,17 @@ type Store interface {
 	SetPriority(ctx context.Context, id int64, p *int64) error
 	SetDue(ctx context.Context, id int64, due *string) error
 
+	// Task dependencies: "task waits on blocker". Blockers and Blocking
+	// are read on every task response so an agent sees what is holding a
+	// task up (and what it holds up) without a second call; the writes
+	// back set_task_dependencies and its add/remove siblings. The store
+	// owns the rules (no self-dependency, no cycle).
+	Blockers(ctx context.Context, taskID int64) ([]task.Task, error)
+	Blocking(ctx context.Context, taskID int64) ([]task.Task, error)
+	SetDependencies(ctx context.Context, taskID int64, dependsOn []int64) error
+	AddDependency(ctx context.Context, taskID, dependsOnID int64) error
+	RemoveDependency(ctx context.Context, taskID, dependsOnID int64) error
+
 	// The workflow step tools (steps.go), used only when the session is
 	// bound to a step run. Edges are read live, the same as the runner
 	// does, so a step's allowed outcomes are whatever is authored now.

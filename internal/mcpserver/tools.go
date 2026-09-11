@@ -2,6 +2,7 @@ package mcpserver
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -22,9 +23,24 @@ type taskOut struct {
 	Tags      []string `json:"tags,omitempty"`
 	Priority  *int64   `json:"priority,omitempty"`
 	Due       *string  `json:"due,omitempty"`
+	// DependsOn is what this task waits on; Blocks is the reverse edge,
+	// the tasks waiting on this one. IsBlocked is derived rather than
+	// left to the agent: true while any depends_on task is not done, so
+	// "can I start this?" needs no second look at each blocker's state.
+	DependsOn []depOut `json:"depends_on,omitempty"`
+	Blocks    []depOut `json:"blocks,omitempty"`
+	IsBlocked bool     `json:"is_blocked"`
 }
 
-func toTaskOut(t task.Task, tags []string) taskOut {
+// depOut is the far end of a dependency edge: enough to name the task
+// and see whether it is done, without nesting a whole taskOut.
+type depOut struct {
+	ID    int64  `json:"id"`
+	Title string `json:"title"`
+	State string `json:"state"`
+}
+
+func toTaskOut(t task.Task, tags []string, blockers, blocking []task.Task) taskOut {
 	return taskOut{
 		ID:        t.ID,
 		Title:     t.Title,
@@ -35,7 +51,21 @@ func toTaskOut(t task.Task, tags []string) taskOut {
 		Tags:      tags,
 		Priority:  t.Priority,
 		Due:       t.Due,
+		DependsOn: toDepOuts(blockers),
+		Blocks:    toDepOuts(blocking),
+		IsBlocked: len(task.OpenBlockers(blockers)) > 0,
 	}
+}
+
+func toDepOuts(ts []task.Task) []depOut {
+	if len(ts) == 0 {
+		return nil
+	}
+	out := make([]depOut, len(ts))
+	for i, t := range ts {
+		out[i] = depOut{ID: t.ID, Title: t.Title, State: string(t.State)}
+	}
+	return out
 }
 
 // projectOut is a project rendered for a tool response.
@@ -102,11 +132,11 @@ func registerTools(srv *mcp.Server, store Store, boundTaskID int64) {
 			// Per-child rather than one batch map: a task's sub-tasks
 			// number in the handful, and this is not a hot path the way
 			// the TUI list is.
-			tags, err := store.TagsForTask(ctx, c.ID)
+			_, o, err := fetchTask(ctx, store, c.ID)
 			if err != nil {
 				return nil, subtasksOut{}, err
 			}
-			out[i] = toTaskOut(c, tags)
+			out[i] = o
 		}
 		return nil, subtasksOut{Tasks: out}, nil
 	})
@@ -116,14 +146,18 @@ func registerTools(srv *mcp.Server, store Store, boundTaskID int64) {
 		Description: "Create a new top-level task — NOT scoped to the bound task. Use for a " +
 			"genuinely separate work item; use create_subtask for phases of the current task.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in struct {
-		Title  string `json:"title" jsonschema:"the task title"`
-		BodyMD string `json:"body_md,omitempty" jsonschema:"optional markdown body"`
+		Title     string  `json:"title" jsonschema:"the task title"`
+		BodyMD    string  `json:"body_md,omitempty" jsonschema:"optional markdown body"`
+		DependsOn []int64 `json:"depends_on,omitempty" jsonschema:"ids of tasks this one must wait for; each must be done before this task can be worked on"`
 	}) (*mcp.CallToolResult, taskOut, error) {
 		t, err := store.AddTaskWithBody(ctx, in.Title, in.BodyMD)
 		if err != nil {
 			return nil, taskOut{}, err
 		}
-		return nil, toTaskOut(t, nil), nil
+		if err := setInitialDependencies(ctx, store, t.ID, in.DependsOn); err != nil {
+			return nil, taskOut{}, err
+		}
+		return fetchTask(ctx, store, t.ID)
 	})
 
 	mcp.AddTool(srv, &mcp.Tool{
@@ -131,14 +165,18 @@ func registerTools(srv *mcp.Server, store Store, boundTaskID int64) {
 		Description: "Create a sub-task; parent defaults to the bound task — the way to split " +
 			"the current task's work into phases.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in struct {
-		Title    string `json:"title" jsonschema:"the sub-task title"`
-		ParentID *int64 `json:"parent_id,omitempty" jsonschema:"parent task id; defaults to the session's bound task"`
+		Title     string  `json:"title" jsonschema:"the sub-task title"`
+		ParentID  *int64  `json:"parent_id,omitempty" jsonschema:"parent task id; defaults to the session's bound task"`
+		DependsOn []int64 `json:"depends_on,omitempty" jsonschema:"ids of tasks this sub-task must wait for (often earlier phases); each must be done before it can be worked on"`
 	}) (*mcp.CallToolResult, taskOut, error) {
 		t, err := store.AddChild(ctx, resolveID(in.ParentID, boundTaskID), in.Title)
 		if err != nil {
 			return nil, taskOut{}, err
 		}
-		return nil, toTaskOut(t, nil), nil
+		if err := setInitialDependencies(ctx, store, t.ID, in.DependsOn); err != nil {
+			return nil, taskOut{}, err
+		}
+		return fetchTask(ctx, store, t.ID)
 	})
 
 	// The only free-form writes an agent gets. There is deliberately no
@@ -329,6 +367,75 @@ func registerTools(srv *mcp.Server, store Store, boundTaskID int64) {
 		}
 		return fetchTask(ctx, store, id)
 	})
+
+	// Dependencies: "this task waits on that one". The wholesale form
+	// mirrors set_task_tags, the single-edge forms mirror the relationship
+	// append_task_body has to update_task_body -- most agent edits are
+	// "this also needs #12 first", and re-sending the list for that risks
+	// dropping an edge the user added since it was last read.
+	mcp.AddTool(srv, &mcp.Tool{
+		Name: "set_task_dependencies",
+		Description: "Replace the list of tasks a task waits on (its blockers): each must be done " +
+			"before the task can be worked on. Send an empty list to clear every dependency. " +
+			"A task cannot depend on itself or on a task that already waits on it, directly or " +
+			"indirectly. Defaults to the bound task. Dependencies do not change the task's " +
+			"state; is_blocked on the returned task says whether any blocker is still open.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in struct {
+		DependsOn []int64 `json:"depends_on" jsonschema:"the complete list of task ids this task waits on; empty clears every dependency"`
+		TaskID    *int64  `json:"task_id,omitempty" jsonschema:"task id to update; defaults to the session's bound task"`
+	}) (*mcp.CallToolResult, taskOut, error) {
+		id := resolveID(in.TaskID, boundTaskID)
+		if err := store.SetDependencies(ctx, id, in.DependsOn); err != nil {
+			return nil, taskOut{}, err
+		}
+		return fetchTask(ctx, store, id)
+	})
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name: "add_task_dependency",
+		Description: "Record that a task waits on one more task (depends_on must be done before " +
+			"it can be worked on), keeping its other dependencies. Prefer this over " +
+			"set_task_dependencies for adding a single blocker. Refused for a self-dependency " +
+			"or one that would form a cycle. Defaults to the bound task.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in struct {
+		DependsOn int64  `json:"depends_on" jsonschema:"id of the task that must be done first"`
+		TaskID    *int64 `json:"task_id,omitempty" jsonschema:"task id to update; defaults to the session's bound task"`
+	}) (*mcp.CallToolResult, taskOut, error) {
+		id := resolveID(in.TaskID, boundTaskID)
+		if err := store.AddDependency(ctx, id, in.DependsOn); err != nil {
+			return nil, taskOut{}, err
+		}
+		return fetchTask(ctx, store, id)
+	})
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name: "remove_task_dependency",
+		Description: "Forget that a task waits on depends_on, keeping its other dependencies. " +
+			"Removing a dependency that is not there is not an error. Defaults to the bound task.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in struct {
+		DependsOn int64  `json:"depends_on" jsonschema:"id of the task it no longer waits on"`
+		TaskID    *int64 `json:"task_id,omitempty" jsonschema:"task id to update; defaults to the session's bound task"`
+	}) (*mcp.CallToolResult, taskOut, error) {
+		id := resolveID(in.TaskID, boundTaskID)
+		if err := store.RemoveDependency(ctx, id, in.DependsOn); err != nil {
+			return nil, taskOut{}, err
+		}
+		return fetchTask(ctx, store, id)
+	})
+}
+
+// setInitialDependencies applies a create tool's optional depends_on
+// list to the task it just made. The task row is already written when a
+// bad id is refused, so the error says so: the agent should fix the
+// dependencies with set_task_dependencies, not create the task again.
+func setInitialDependencies(ctx context.Context, store Store, id int64, dependsOn []int64) error {
+	if len(dependsOn) == 0 {
+		return nil
+	}
+	if err := store.SetDependencies(ctx, id, dependsOn); err != nil {
+		return fmt.Errorf("task %d was created, but setting its dependencies failed: %w", id, err)
+	}
+	return nil
 }
 
 // resolveID returns override when the caller supplied one, else def —
@@ -352,5 +459,13 @@ func fetchTask(ctx context.Context, store Store, id int64) (*mcp.CallToolResult,
 	if err != nil {
 		return nil, taskOut{}, err
 	}
-	return nil, toTaskOut(t, tags), nil
+	blockers, err := store.Blockers(ctx, id)
+	if err != nil {
+		return nil, taskOut{}, err
+	}
+	blocking, err := store.Blocking(ctx, id)
+	if err != nil {
+		return nil, taskOut{}, err
+	}
+	return nil, toTaskOut(t, tags, blockers, blocking), nil
 }
