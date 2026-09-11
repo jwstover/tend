@@ -53,6 +53,15 @@ func (a app) paletteCommands() []paletteCommand {
 				a.openProjectPicker(t)
 				return a, nil
 			}},
+		{icon: "▸", label: "Move task to parent", hint: "m", aliases: []string{"parent", "reparent", "promote", "demote"},
+			act: func(a app) (tea.Model, tea.Cmd) {
+				t, ok := a.selected()
+				if !ok {
+					a.status = flash{text: "nothing selected"}
+					return a, nil
+				}
+				return a, a.loadParentCandidates(t)
+			}},
 		{icon: "≡", label: "Group by state", hint: "gs", aliases: []string{"group", "groupstate"},
 			act: func(a app) (tea.Model, tea.Cmd) { return a.setGroupBy(groupByState) }},
 		{icon: "⚑", label: "Group by priority", hint: "gp", aliases: []string{"grouppriority"},

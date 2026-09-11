@@ -32,6 +32,7 @@ type keyMap struct {
 	ChangeState    key.Binding
 	Delete         key.Binding // first `d` of the `dd` delete chord
 	MoveProject    key.Binding // move the selected task to another project
+	MoveParent     key.Binding // move the selected task under another task, or to the top level
 	Archive        key.Binding // archive/restore the selected project
 	ProjectCwd     key.Binding // set the selected project's default cwd for new sessions
 
@@ -132,6 +133,7 @@ func defaultKeyMap() keyMap {
 		ChangeState:  key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "change state")),
 		Delete:       key.NewBinding(key.WithKeys("d"), key.WithHelp("dd", "delete")),
 		MoveProject:  key.NewBinding(key.WithKeys("P"), key.WithHelp("P", "move to project")),
+		MoveParent:   key.NewBinding(key.WithKeys("m"), key.WithHelp("m", "move to parent")),
 		Archive:      key.NewBinding(key.WithKeys("A"), key.WithHelp("A", "archive")),
 		ProjectCwd:   key.NewBinding(key.WithKeys("w"), key.WithHelp("w", "default cwd")),
 
