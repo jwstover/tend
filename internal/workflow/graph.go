@@ -141,8 +141,15 @@ var conventionalOutcomes = []string{OutcomeApprove, OutcomeReject}
 // a step no edge leads to never runs; a step nothing leaves ends the run,
 // which is only right for the last one; an outcome a prompt names has to
 // have an edge or finish_step will refuse it; a loop-back from an agent
-// step with no max_iterations can run forever; and a prompt that does not
-// render as a template fails the run at launch.
+// step with no max_iterations can run forever; a prompt that does not
+// render as a template fails the run at launch; and an agent step with no
+// permission mode runs `claude -p` with whatever the user's settings say,
+// which by default denies every tool call that would have needed approval
+// -- silently, and the runner then fails the run on the denials. That
+// last rule is advisory in one case: a step with no mode does work when
+// the user-level settings (~/.claude/settings.json defaultMode or allow
+// rules) already grant what it needs, but the workflow then only runs on
+// that machine, so the validator still asks for the mode to be explicit.
 func Validate(steps []Step, edges []Edge) []Problem {
 	if len(steps) == 0 {
 		return []Problem{{Msg: "no steps"}}
@@ -203,6 +210,9 @@ func Validate(steps []Step, edges []Edge) []Problem {
 			}
 		}
 		if st.Kind == StepAgent {
+			if st.PermissionMode == "" {
+				add(st, "no permission mode: a headless step denies every tool call that would need approval; set one on the step (acceptEdits, or bypassPermissions for a step that runs commands)")
+			}
 			if err := ValidatePrompt(st.PromptMD); err != nil {
 				add(st, "%v", err)
 			}
