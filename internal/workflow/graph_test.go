@@ -134,6 +134,49 @@ func TestValidateProblems(t *testing.T) {
 			want:  nil,
 		},
 		{
+			// The wave workflow's steps talk about the sub-task done *state*
+			// while their own outcomes are "wave ready" and the like. done is
+			// never vocabulary: every step may finish with it, so it is not a
+			// hand-off the edges have to route.
+			name:  "the sub-task done state is not an outcome: done is never vocabulary",
+			steps: []Step{steps[0], {ID: 2, Name: "dispatch", Kind: StepAgent, PermissionMode: "acceptEdits", PromptMD: "Set the sub-task to done when its PR merges. Finish with `wave ready` or `stuck`."}},
+			edges: []Edge{{FromStepID: 1, Outcome: "done", ToStepID: 2}, {FromStepID: 2, Outcome: "wave ready", ToStepID: 1, MaxIterations: ptr(2)}, {FromStepID: 2, Outcome: "stuck", ToStepID: 1, MaxIterations: ptr(2)}},
+			want:  nil,
+		},
+		{
+			// Dispatch's prose uses "ready", "escalate" and "continue" as
+			// plain English; the gate and Prepare route them as outcomes.
+			// Only a word in a hand-off context is a mention.
+			name:  "wave-style prose: an outcome word outside a hand-off context is not a mention",
+			steps: []Step{steps[0], {ID: 2, Name: "dispatch", Kind: StepAgent, PermissionMode: "acceptEdits", PromptMD: "Wait until the wave is ready. If a sub-task is stuck, do not escalate on your own; note it and continue.\nFinish with `wave ready`, or `stuck` once nothing can proceed."}, {ID: 3, Name: "gate", Kind: StepGate}},
+			edges: []Edge{
+				{FromStepID: 1, Outcome: "ready", ToStepID: 2}, {FromStepID: 1, Outcome: "escalate", ToStepID: 3},
+				{FromStepID: 2, Outcome: "wave ready", ToStepID: 1, MaxIterations: ptr(2)}, {FromStepID: 2, Outcome: "stuck", ToStepID: 3},
+				{FromStepID: 3, Outcome: "continue", ToStepID: 2},
+			},
+			want: nil,
+		},
+		{
+			// "wave ready" is routed; the "ready" inside it is not a second,
+			// unrouted mention.
+			name:  "a routed outcome containing a shorter one is not a mention of the shorter",
+			steps: []Step{steps[0], {ID: 2, Name: "dispatch", Kind: StepAgent, PermissionMode: "acceptEdits", PromptMD: "finish_step with outcome `wave ready`"}},
+			edges: []Edge{{FromStepID: 1, Outcome: "ready", ToStepID: 2}, {FromStepID: 2, Outcome: "wave ready", ToStepID: 1, MaxIterations: ptr(2)}},
+			want:  nil,
+		},
+		{
+			name:  "an outcome named after a hand-off cue is a mention even unquoted",
+			steps: []Step{steps[0], {ID: 2, Name: "dispatch", Kind: StepAgent, PermissionMode: "acceptEdits", PromptMD: "When nothing can proceed, set the outcome to escalate. Otherwise finish with wave ready."}, {ID: 3, Name: "gate", Kind: StepGate}},
+			edges: []Edge{{FromStepID: 1, Outcome: "escalate", ToStepID: 3}, {FromStepID: 2, Outcome: "wave ready", ToStepID: 1, MaxIterations: ptr(2)}, {FromStepID: 3, Outcome: "continue", ToStepID: 2}},
+			want:  []string{`dispatch: prompt mentions "escalate" but no edge routes it`},
+		},
+		{
+			name:  "an outcome in quotes is a mention wherever it appears",
+			steps: []Step{steps[0], {ID: 2, Name: "review", Kind: StepAgent, PermissionMode: "acceptEdits", PromptMD: `If the tests are red, "reject" the change.`}},
+			edges: []Edge{{FromStepID: 1, Outcome: "done", ToStepID: 2}, {FromStepID: 2, Outcome: "approve", ToStepID: 1, MaxIterations: ptr(2)}},
+			want:  []string{`review: prompt mentions "reject" but no edge routes it`},
+		},
+		{
 			name:  "agent loop-back with no max iterations",
 			steps: []Step{steps[0], plainReview},
 			edges: []Edge{{FromStepID: 1, Outcome: "done", ToStepID: 2}, {FromStepID: 2, Outcome: "reject", ToStepID: 1}},
