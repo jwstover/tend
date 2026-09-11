@@ -349,3 +349,94 @@ func TestRunWorkflowWithNoStepsIsRefused(t *testing.T) {
 		t.Errorf("status = %+v, want a no-steps refusal", a.status)
 	}
 }
+
+// Typing in the picker fuzzy-filters the workflows by name, resets the
+// cursor, and the digit shortcuts and Enter follow the visible order;
+// backspace widens again and an unmatched query says so.
+func TestRunWorkflowPickerTypeToFilter(t *testing.T) {
+	ctx := context.Background()
+	m, s := newTestApp(t)
+	if _, err := s.AddTask(ctx, "do the thing"); err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	for _, name := range []string{"Simple One-shot", "Review then ship", "Triage"} {
+		oneStepWorkflow(t, s, name, "Do it.")
+	}
+	m = drive(t, m, refreshMsg{})
+
+	m = stepW(t, m)
+	if got := wfRunPickerNames(m); len(got) != 3 {
+		t.Fatalf("rows = %q, want all three workflows", got)
+	}
+	// Move the cursor first so the reset on typing is observable.
+	m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyDown})
+	if m.(app).wfRunPickerSel != 1 {
+		t.Fatalf("sel after down = %d, want 1", m.(app).wfRunPickerSel)
+	}
+
+	// "sos" is a substring of nothing and an in-order match of one name.
+	m = typeText(t, m, "sos")
+	a := m.(app)
+	if got := wfRunPickerNames(m); len(got) != 1 || got[0] != "Simple One-shot" {
+		t.Fatalf("rows after typing sos = %q, want just Simple One-shot", got)
+	}
+	if a.wfRunPickerSel != 0 {
+		t.Errorf("sel after typing = %d, want reset to 0", a.wfRunPickerSel)
+	}
+	content := ansi.Strip(m.View().Content)
+	for _, want := range []string{"sos", "Simple One-shot"} {
+		if !strings.Contains(content, want) {
+			t.Errorf("picker missing %q:\n%s", want, content)
+		}
+	}
+	if strings.Contains(content, "Triage") {
+		t.Errorf("picker still lists a filtered-out workflow:\n%s", content)
+	}
+
+	m = typeText(t, m, "q")
+	if got := wfRunPickerNames(m); len(got) != 0 {
+		t.Fatalf("rows after typing sosq = %q, want none", got)
+	}
+	if content := ansi.Strip(m.View().Content); !strings.Contains(content, "no matching workflows") {
+		t.Errorf("picker missing the no-match hint:\n%s", content)
+	}
+	// Enter with nothing to pick dismisses rather than running anything.
+	m = drive(t, m, enter())
+	if m.(app).wfRunPickerOpen {
+		t.Fatal("enter on an empty match list should close the picker")
+	}
+
+	// Open again: backspace widens, and a digit picks by visible index.
+	m = stepW(t, m)
+	m = typeText(t, m, "ship")
+	if got := wfRunPickerNames(m); len(got) != 1 || got[0] != "Review then ship" {
+		t.Fatalf("rows after typing ship = %q, want just Review then ship", got)
+	}
+	m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyBackspace})
+	if got := m.(app).wfRunPickerQuery; got != "shi" {
+		t.Fatalf("query after backspace = %q, want shi", got)
+	}
+	m = typeText(t, m, "p")
+	runnable(t)
+	m2, cmd := m.Update(keyPress('1'))
+	if m2.(app).wfRunPickerOpen {
+		t.Fatal("digit should pick and close")
+	}
+	if cmd == nil {
+		t.Fatal("digit did not start the runnable check")
+	}
+	if msg, ok := cmd().(workflowRunReadyMsg); !ok {
+		t.Fatalf("picked message = %T, want workflowRunReadyMsg", cmd())
+	} else if msg.req.w.Name != "Review then ship" {
+		t.Errorf("picked %q, want the filtered hit Review then ship", msg.req.w.Name)
+	}
+}
+
+// wfRunPickerNames is the picker's visible workflow names.
+func wfRunPickerNames(m tea.Model) []string {
+	var out []string
+	for _, w := range m.(app).wfRunPickerMatches() {
+		out = append(out, w.Name)
+	}
+	return out
+}

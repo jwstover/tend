@@ -631,11 +631,13 @@ type app struct {
 	takeover takeoverPicker
 
 	// Workflow-run picker overlay (workflowrun.go): choose a workflow to
-	// run on a task. wfRunPending is the validated request while its cwd
-	// prompt is open, nil otherwise.
+	// run on a task. wfRunPickerQuery is the type-to-filter text and
+	// wfRunPickerSel indexes the filtered rows. wfRunPending is the
+	// validated request while its cwd prompt is open, nil otherwise.
 	wfRunPickerOpen      bool
 	wfRunPickerTask      task.Task
 	wfRunPickerWorkflows []workflow.Workflow
+	wfRunPickerQuery     string
 	wfRunPickerSel       int
 	wfRunPending         *workflowRunRequest
 
