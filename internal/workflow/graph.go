@@ -206,8 +206,9 @@ func Validate(steps []Step, edges []Edge) []Problem {
 			if err := ValidatePrompt(st.PromptMD); err != nil {
 				add(st, "%v", err)
 			}
+			prompt := maskOutcomes(st.PromptMD, slices.Sorted(maps.Keys(routes)))
 			for _, o := range slices.Sorted(maps.Keys(vocabulary)) {
-				if !routes[o] && mentionsOutcome(st.PromptMD, o) {
+				if !routes[o] && mentionsOutcome(prompt, o) {
 					add(st, "prompt mentions %q but no edge routes it", o)
 				}
 			}
@@ -216,13 +217,51 @@ func Validate(steps []Step, edges []Edge) []Problem {
 	return problems
 }
 
-// mentionsOutcome reports whether prompt names outcome as a whole word,
-// case-insensitively -- "approve" in "finish with approve or reject", but
-// not in "approved".
+// maskOutcomes blanks every whole-word occurrence of the given outcomes
+// in prompt, longest first, so that a routed "wave ready" is not also read
+// as an unrouted "ready". The replacement keeps the prompt's length and
+// breaks word boundaries, so nothing else shifts or matches across it.
+func maskOutcomes(prompt string, outcomes []string) string {
+	slices.SortStableFunc(outcomes, func(a, b string) int { return len(b) - len(a) })
+	for _, o := range outcomes {
+		re, err := regexp.Compile(`(?i)\b` + regexp.QuoteMeta(o) + `\b`)
+		if err != nil {
+			continue
+		}
+		prompt = re.ReplaceAllStringFunc(prompt, func(m string) string { return strings.Repeat("#", len(m)) })
+	}
+	return prompt
+}
+
+// handoffCue introduces the outcome an agent is to finish with: "finish
+// with approve or reject", "finish_step with outcome `stuck`", "set the
+// outcome to escalate". A cue reaches to the end of its sentence.
+var handoffCue = regexp.MustCompile(`(?i)\b(?:finish(?:_step)?|outcomes?)\b[^.;\n]*`)
+
+// mentionsOutcome reports whether prompt names outcome, case-insensitively
+// and as a whole word, in a hand-off context: quoted or backticked
+// anywhere ("reject", `reject`), or unquoted in the same sentence as a
+// hand-off cue. Prose that happens to use the word -- "wait until the wave
+// is ready", "note it and continue" -- is not a mention: the wave-style
+// workflows route "ready" and "continue" from other steps while their
+// Dispatch prompt uses both as plain English.
 func mentionsOutcome(prompt, outcome string) bool {
-	re, err := regexp.Compile(`(?i)\b` + regexp.QuoteMeta(outcome) + `\b`)
+	word := `(?i)\b` + regexp.QuoteMeta(outcome) + `\b`
+	quoted, err := regexp.Compile("(?i)([`\"'])" + regexp.QuoteMeta(outcome) + `([` + "`" + `"'])`)
 	if err != nil {
 		return false
 	}
-	return re.MatchString(prompt)
+	if quoted.MatchString(prompt) {
+		return true
+	}
+	bare, err := regexp.Compile(word)
+	if err != nil {
+		return false
+	}
+	for _, sentence := range handoffCue.FindAllString(prompt, -1) {
+		if bare.MatchString(sentence) {
+			return true
+		}
+	}
+	return false
 }
