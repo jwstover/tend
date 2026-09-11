@@ -120,7 +120,7 @@ tend/
 │   │   ├── queries/           #   *.sql — input to sqlc (tasks, projects, tags, sessions, events, logs, settings, workflows)
 │   │   ├── gen/                #   sqlc OUTPUT — generated; never hand-edited
 │   │   ├── store.go            #   Store: wraps generated Queries, returns domain types, owns transactions
-│   │   ├── projects.go / tags.go / workflows.go   #   per-area Store methods (workflows.go: definitions, runs, step runs, ClaimRun, FinishStepRun, …)
+│   │   ├── projects.go / tags.go / dependencies.go / workflows.go   #   per-area Store methods (dependencies.go: AddDependency with the cycle check, Blockers/Blocking, BlockerCounts; workflows.go: definitions, runs, step runs, ClaimRun, FinishStepRun, …)
 │   │   └── watch.go            #   Watcher: PRAGMA data_version poller behind the TUI's live reload
 │   ├── agent/                  # I/O EDGE — the only package that shells out to `claude`/`tmux`
 │   │   ├── agent.go             #   LaunchCmd/ResumeCmd — builds the exec.Cmd; never runs it
@@ -158,6 +158,7 @@ tend/
 │   │   ├── takeover.go                   #   `t`: pause the run, resume the step's session interactively, then the continue/hand-back/rerun/abandon picker
 │   │   ├── agents.go                     #   `A`: agents view — a project's sessions across its tasks; join, kill, task detail or tailed step log
 │   │   ├── projects.go / projectpicker.go   #   projects column + the project picker overlay
+│   │   ├── parentpicker.go / dependencypicker.go   #   `m`: move-to-parent picker; `b`: the multi-select "blocked by" picker
 │   │   ├── palette.go / urlpicker.go / whichkey.go / modal.go / help.go   #   supporting overlays
 │   │   ├── keys.go                       #   key bindings (source of truth — see the in-app `?` help too)
 │   │   └── styles.go                      #   lipgloss styles, status glyphs
@@ -243,6 +244,13 @@ CREATE TABLE tags (              -- free-form labels; multi-valued per task. The
 CREATE TABLE task_tags (         -- many-to-many join, both sides ON DELETE CASCADE.
   task_id, tag_id, PRIMARY KEY (task_id, tag_id)
 );
+
+CREATE TABLE task_dependencies ( -- "task_id cannot be worked on until depends_on_id is done" (migration 00016).
+  task_id, depends_on_id          -- A many-to-many like task_tags, both sides ON DELETE CASCADE, so a deleted
+    REFERENCES tasks ON DELETE CASCADE,   -- task stops blocking anything. CHECK (task_id <> depends_on_id); longer
+  created_at,                     -- cycles are refused in Go by Store.AddDependency/SetDependencies. Deliberately
+  PRIMARY KEY (task_id, depends_on_id)    -- NOT tied to the `blocked` state: the state is what the user says, the rows
+);                                -- are what the graph says, and the TUI derives "waiting on N" from them.
 
 CREATE TABLE settings (          -- key/value bag for state that must outlive a TUI process. First tenant:
   key TEXT PRIMARY KEY,           -- active_project_id, so a bare-shell `tend add` can read the last TUI selection.
@@ -338,6 +346,7 @@ Semantics:
 - **Sub-tasks** are `parent_id` self-references; the UI computes child completion for a progress indicator and gives sub-tasks the same detail-pane functionality as top-level tasks (body, log, sessions).
 - **Projects** are a hard grouping: every task has exactly one `project_id`, defaulting to `Unsorted` (id 1). Deleting a project reassigns its tasks to `Unsorted` inside a transaction (`Store.DeleteProject`); `Unsorted` itself cannot be deleted.
 - **Tags** are the soft, multi-valued labelling mechanism (`task_tags`), and are what the pre-00007 flat `project` string became.
+- **Dependencies** (`task_dependencies`) say a task waits on other tasks: each blocker must be done before the task can be worked on. A task can wait on several tasks, in any project, and several can wait on one. The store refuses self-dependency and cycles (`task.ErrSelfDependency`, `task.ErrDependencyCycle`); `Store.SetDependencies` is the wholesale replace (the `SetTags` shape) and `Store.BlockerCounts` the batch `{Open, Total}` map the list view renders from (the `ChildCounts` shape). Nothing changes a task's *state* automatically: `blocked` stays the user's call, and a task whose blockers are all done simply reads as free to start. Over MCP (`internal/mcpserver/tools.go`), `create_task` and `create_subtask` take an optional `depends_on` id list, `set_task_dependencies` replaces the list wholesale, `add_task_dependency` / `remove_task_dependency` edit one edge, and every task the tools return carries `depends_on`, `blocks` and a derived `is_blocked`.
 - **Long-form body** is the re-entry-cost killer: a task carries its own context so resuming it is free.
 - **`snooze_until`** defers a task out of the live view until its wake date.
 - **Live view** = tasks whose state has `is_terminal = 0` AND `hidden_by_default = 0` AND (`snooze_until` is null OR in the past).
@@ -395,8 +404,8 @@ There is no `tend done` — completing, deleting, and every other state transiti
 
 Built on Bubble Tea v2 + Bubbles v2 + Lip Gloss v2; Glamour v2 renders the body.
 
-- **List view (default).** A grouped/tree view of the live view (sub-tasks nest under their parent), with vim-style navigation, search, a `:`/`Ctrl-P` command palette, and quick add. Tasks group by state by default; the `g` chord regroups by priority or by latest agent-session status (`gg` stays "top of list"). A project column scopes the list to the selected project (or shows all). `m` opens a move-to-parent picker that re-parents the selected task and its sub-tree under another task in the project, or promotes it to the top level (the `(top level)` row).
-- **Detail pane.** The heart of the tool: glamour-rendered markdown body, a sub-task checklist, a `SESSIONS` section (this task's Claude Code sessions — launch, resume, or attach to a backgrounded one), and a `LOG` section (manual notes plus auto-generated session recaps). Scrollable and independently focusable so long histories are reachable. URL detection lets the user open a link under the cursor or all of them via the OS opener.
+- **List view (default).** A grouped/tree view of the live view (sub-tasks nest under their parent), with vim-style navigation, search, a `:`/`Ctrl-P` command palette, and quick add. Tasks group by state by default; the `g` chord regroups by priority or by latest agent-session status (`gg` stays "top of list"). A project column scopes the list to the selected project (or shows all). `m` opens a move-to-parent picker that re-parents the selected task and its sub-tree under another task in the project, or promotes it to the top level (the `(top level)` row). `b` opens the **dependency picker** (`dependencypicker.go`): every open task across every project, the ones the selected task already waits on checked and listed first; ⏎ or a digit toggles a row (`AddDependency`/`RemoveDependency`) and the picker stays open, so several blockers are set in one visit; a refused edge (a cycle) shows in the status line and leaves the row unchecked. The list row carries a dependency cell after the sub-task count: `⊘N` in the blocked colour while N blockers are still open, a green check once every blocker is done (the task is free to start), blank when it waits on nothing.
+- **Detail pane.** The heart of the tool: glamour-rendered markdown body, a sub-task checklist, a `BLOCKED BY` section (the tasks this one waits on, done ones checked off, with an open count) and a `BLOCKS` section (the tasks waiting on this one), a `SESSIONS` section (this task's Claude Code sessions — launch, resume, or attach to a backgrounded one), and a `LOG` section (manual notes plus auto-generated session recaps). Scrollable and independently focusable so long histories are reachable. URL detection lets the user open a link under the cursor or all of them via the OS opener.
 - **Triage view.** Filtered to `inbox`. Fast keys to set state, assign a project, add tags or a due date, open the body in `$EDITOR`, or send to `someday`/`done` — the batched processing pass.
 - **Standup view.** Manual notes grouped by task plus a generated activity summary (completed/blocked/started, derived from `task_events`); yank the whole thing as markdown.
 - **Workflows view.** Authoring for agent workflows (`internal/workflow`): the workflows on the left, the selected one's steps on the right in `sort_order`, three panes walked with `h`/`l` (workflows → steps → the selected step's edges). Create/rename/duplicate/delete workflows; add, reorder and delete steps; set a step's model, permission mode and kind (agent/gate); edit its prompt template in `$EDITOR`. The step list doubles as the **text graph preview** (`workflow.Preview`): numbered steps, each annotated inline with every edge that is not the linear default `done -> next step` (`2  review  [approve -> 3]  [reject -> 1 (max 3)]`), and `[done -> end]` on a step nothing leaves. The **EDGES** sub-list under it shows the selected step's edges as `on <outcome> -> <step> (max N)`; `n` adds one and `e` edits one through a three-stage flow (outcome prompt, target-step picker, max-iterations prompt, esc anywhere abandons it; a renamed outcome deletes the old row since `SetEdge` upserts on `(from, outcome)`), `dd` deletes one. Adding a step after one with no edges writes `done -> new step` for you, so a linear workflow needs no edge work. `v` runs `workflow.Validate` (unreachable steps, a non-final step nothing leaves, a prompt naming an outcome its edges do not route, an agent loop-back with no `max_iterations`, templates that fail to render) and lists the problems under the steps, recomputed on every reload so they disappear as they are fixed.

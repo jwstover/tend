@@ -22,6 +22,9 @@ type fakeStore struct {
 	tags     map[int64][]string
 	projects []task.Project
 	nextID   int64
+	// deps are the task_dependencies rows in insertion order: the task
+	// that waits, and the task it waits on (dependencies_test.go).
+	deps []depEdge
 
 	workflows map[int64]workflow.Workflow
 	steps     map[int64]workflow.Step

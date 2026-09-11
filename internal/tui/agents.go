@@ -86,6 +86,8 @@ type agentDetail struct {
 	sessionID int64
 	t         task.Task
 	children  []task.Task
+	blockers  []task.Task
+	blocking  []task.Task
 	log       []task.LogEntry
 	sessions  []task.Session
 	runs      []runSummary
@@ -297,8 +299,16 @@ func (a app) loadAgentDetail(sess task.Session) tea.Cmd {
 		if err != nil {
 			return errMsg{err}
 		}
-		return agentDetailLoadedMsg{sessionID: sess.ID, t: t, children: children, log: log,
-			sessions: sessions, runs: a.summarizeRuns(a.ctx, runs), tags: tags}
+		blockers, err := a.store.Blockers(a.ctx, t.ID)
+		if err != nil {
+			return errMsg{err}
+		}
+		blocking, err := a.store.Blocking(a.ctx, t.ID)
+		if err != nil {
+			return errMsg{err}
+		}
+		return agentDetailLoadedMsg{sessionID: sess.ID, t: t, children: children, blockers: blockers,
+			blocking: blocking, log: log, sessions: sessions, runs: a.summarizeRuns(a.ctx, runs), tags: tags}
 	}
 }
 
@@ -790,7 +800,8 @@ func (a *app) renderAgentPane() {
 		out = []string{"  " + a.styles.Muted.Render("loading task…")}
 	default:
 		d := a.av.detail
-		out = []string{renderDetail(d.t, d.children, d.log, d.sessions, d.runs, d.tags, a.av.renderer, a.styles, detailW)}
+		out = []string{renderDetail(d.t, d.children, d.blockers, d.blocking, d.log, d.sessions, d.runs, d.tags,
+			a.av.renderer, a.styles, detailW)}
 	}
 	a.av.vp.SetContent(strings.Join(out, "\n"))
 }

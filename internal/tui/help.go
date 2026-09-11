@@ -47,6 +47,7 @@ func helpGroups() []helpGroup {
 			{"T", "set tags"},
 			{"P", "move to project"},
 			{"m", "move to parent"},
+			{"b", "edit dependencies (blocked by)"},
 			{"u", "set due (triage)"},
 			{"R", "rename task"},
 			{"e", "edit body in $EDITOR"},

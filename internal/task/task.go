@@ -86,6 +86,37 @@ type ChildCount struct {
 	Done, Total int64
 }
 
+// Dependency errors. A task cannot wait on itself, and the dependency
+// graph must stay acyclic: two tasks each waiting on the other could
+// never be worked on. Both are the store's to refuse (Store.AddDependency).
+var (
+	ErrSelfDependency  = errors.New("a task cannot depend on itself")
+	ErrDependencyCycle = errors.New("dependency would form a cycle")
+)
+
+// BlockerCount summarizes what a task waits on, for the list row's
+// dependency cell: how many tasks it depends on and how many of those
+// are still open. Like ChildCount it loads as a batch map
+// (Store.BlockerCounts) rather than per row.
+type BlockerCount struct {
+	Open, Total int64
+}
+
+// Blocked reports whether the task still waits on something.
+func (c BlockerCount) Blocked() bool { return c.Open > 0 }
+
+// OpenBlockers narrows a task's dependencies to the ones not yet done —
+// the tasks actually holding it up.
+func OpenBlockers(blockers []Task) []Task {
+	var open []Task
+	for _, b := range blockers {
+		if b.State != StateDone {
+			open = append(open, b)
+		}
+	}
+	return open
+}
+
 // Task is the domain representation of a row in the tasks table.
 // Due and SnoozeUntil stay as ISO 8601 date strings (YYYY-MM-DD); the DB
 // compares them lexically and v1 has no date arithmetic to justify parsing.

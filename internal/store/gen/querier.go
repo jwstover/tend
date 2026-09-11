@@ -10,6 +10,9 @@ import (
 )
 
 type Querier interface {
+	// OR IGNORE so recording a dependency that already exists is a no-op
+	// rather than a constraint error: SetDependencies re-adds the survivors.
+	AddDependency(ctx context.Context, arg AddDependencyParams) error
 	// Appends text as a new paragraph: an empty body just becomes the text,
 	// otherwise trailing whitespace is trimmed and a blank line separates the
 	// old body from the new text. Done in SQL so the append is atomic.
@@ -20,6 +23,8 @@ type Querier interface {
 	// success. Same idiom as ClaimSessionRecap.
 	ClaimRun(ctx context.Context, id int64) (int64, error)
 	ClaimSessionRecap(ctx context.Context, externalID string) (int64, error)
+	// Drops everything a task waits on (not what waits on it).
+	ClearDependencies(ctx context.Context, taskID int64) error
 	ClearTaskTags(ctx context.Context, taskID int64) error
 	CountInboxTasks(ctx context.Context, projectID interface{}) (int64, error)
 	// The child's project is read off the parent rather than passed in: a
@@ -92,10 +97,22 @@ type Querier interface {
 	// definition in place.
 	ListActiveRunIDsForWorkflow(ctx context.Context, workflowID int64) ([]int64, error)
 	ListActiveRuns(ctx context.Context) ([]WorkflowRun, error)
+	// Every edge, for the cycle check in Store.AddDependency. The table is
+	// as small as the user's own task graph, so walking it in Go is cheaper
+	// to reason about than a recursive CTE sqlc cannot parse anyway.
+	ListAllDependencies(ctx context.Context) ([]ListAllDependenciesRow, error)
 	// Batch load for the list view: one query for every visible row's tags,
 	// collapsed into a map[taskID][]string, rather than N+1 per-row queries.
 	// Same idiom as ListChildCounts.
 	ListAllTaskTags(ctx context.Context) ([]ListAllTaskTagsRow, error)
+	// Batch load for the list view: per task, how many tasks it waits on and
+	// how many of those are still open (not done). Same idiom as
+	// ListChildCounts -- one query for every visible row, not N+1.
+	ListBlockerCounts(ctx context.Context) ([]ListBlockerCountsRow, error)
+	// The tasks a task waits on, in the order they were recorded.
+	ListBlockers(ctx context.Context, taskID int64) ([]Task, error)
+	// The reverse: the tasks that wait on this one.
+	ListBlocking(ctx context.Context, dependsOnID int64) ([]Task, error)
 	ListChildCounts(ctx context.Context) ([]ListChildCountsRow, error)
 	// One level of the sub-tree walk that stands in for the recursive CTE.
 	ListChildIDs(ctx context.Context, parentID sql.NullInt64) ([]int64, error)
@@ -113,6 +130,11 @@ type Querier interface {
 	// non-null when the note is freestanding or its task was deleted.
 	ListLogEntriesBetween(ctx context.Context, arg ListLogEntriesBetweenParams) ([]ListLogEntriesBetweenRow, error)
 	ListLogEntriesForTask(ctx context.Context, taskID sql.NullInt64) ([]LogEntry, error)
+	// Every task not yet done, in every project and at any depth: the
+	// candidate list for the TUI's dependency picker. A done task cannot
+	// usefully block anything, so it is left out; someday and snoozed tasks
+	// stay in, since "wait for that someday thing" is a real dependency.
+	ListOpenTasks(ctx context.Context) ([]Task, error)
 	// Every task in a project at any depth and in any state: the candidate
 	// list for the TUI's move-to-parent picker, which the scoped live list
 	// and per-branch child cache cannot supply.
@@ -151,6 +173,7 @@ type Querier interface {
 	// Half of Store.DeleteProject's transaction: project_id carries no foreign
 	// key (see 00007's comment), so orphan prevention is explicit here.
 	ReassignProjectTasks(ctx context.Context, arg ReassignProjectTasksParams) error
+	RemoveDependency(ctx context.Context, arg RemoveDependencyParams) error
 	RenameProject(ctx context.Context, arg RenameProjectParams) error
 	RenameWorkflow(ctx context.Context, arg RenameWorkflowParams) error
 	SetProjectArchived(ctx context.Context, arg SetProjectArchivedParams) error

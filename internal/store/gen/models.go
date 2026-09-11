@@ -72,6 +72,12 @@ type Task struct {
 	ProjectID   int64
 }
 
+type TaskDependency struct {
+	TaskID      int64
+	DependsOnID int64
+	CreatedAt   string
+}
+
 type TaskEvent struct {
 	ID        int64
 	TaskID    int64

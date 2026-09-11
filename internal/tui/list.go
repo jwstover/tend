@@ -385,6 +385,11 @@ type taskDelegate struct {
 	// sessions it rides on the delegate rather than the item: it is purely
 	// visual, so only the renderer needs it.
 	tags map[int64][]string
+	// blockers is the open/total dependency count per task id, for the
+	// dependency cell after the sub-task count. Same deal as tags: a row
+	// marker, so it rides here. Only tasks that wait on something have an
+	// entry.
+	blockers map[int64]task.BlockerCount
 }
 
 // sessionCell renders the agent-session marker for a task row: a
@@ -618,8 +623,9 @@ func caretStyle(s Styles, selected bool) lipgloss.Style {
 	return s.Caret
 }
 
-// metaCells builds the right-hand meta block: priority, then tags, due
-// and sub-task progress (tags drop out below compactMetaWidth).
+// metaCells builds the right-hand meta block: priority, then tags, due,
+// sub-task progress and the dependency cell (tags drop out below
+// compactMetaWidth).
 //
 // Sub-task rows show only their priority; the rest of the block is blank
 // padding of the same width, so the priority column runs straight down
@@ -635,10 +641,14 @@ func (d taskDelegate) metaCells(r rowSpec, width int) []seg {
 		rest = append(rest, d.dueCell(r.t.Due, 7))
 		rest = append(rest, seg{" ", s.Normal})
 		rest = append(rest, d.subCell(r.done, r.total, 4))
+		rest = append(rest, seg{" ", s.Normal})
+		rest = append(rest, d.depCell(d.blockers[r.t.ID], depCellWidth))
 	} else {
 		rest = append(rest, d.dueCell(r.t.Due, 6))
 		rest = append(rest, seg{" ", s.Normal})
 		rest = append(rest, d.subCell(r.done, r.total, 4))
+		rest = append(rest, seg{" ", s.Normal})
+		rest = append(rest, d.depCell(d.blockers[r.t.ID], depCellWidth))
 	}
 	if r.depth > 0 {
 		return append(meta, seg{strings.Repeat(" ", segWidth(rest)), s.Normal})
@@ -745,6 +755,34 @@ func (d taskDelegate) subCell(done, total int64, w int) seg {
 		style = d.styles.SubFull
 	}
 	return seg{padLeft(fmt.Sprintf("%d/%d", done, total), w), style}
+}
+
+// depCellWidth is the fixed width of the dependency column: the blocked
+// glyph plus a two-digit open count.
+const depCellWidth = 3
+
+// depCell is the right-aligned dependency column. Blank for a task that
+// waits on nothing; `⊘N` in the blocked colour while N blockers are still
+// open; and once every blocker is done, the glyph followed by the done
+// glyph in complete-green, so a task that has just come free stands out
+// from one that never waited. The done glyph doubles as the check because
+// it is one cell in both glyph sets (`⊘✓` / `!x`), which the row's fixed
+// columns depend on.
+func (d taskDelegate) depCell(c task.BlockerCount, w int) seg {
+	g := d.styles.Glyphs
+	switch {
+	case c.Total == 0:
+		return seg{strings.Repeat(" ", w), d.styles.Normal}
+	case c.Open == 0:
+		return seg{padLeft(g.State[task.StateBlocked]+g.State[task.StateDone], w), d.styles.SubFull}
+	}
+	text := fmt.Sprintf("%s%d", g.State[task.StateBlocked], c.Open)
+	if runeWidth(text) > w {
+		// A count too wide for the column would push every column after
+		// it; say "many" rather than break the row's alignment.
+		text = g.State[task.StateBlocked] + "+"
+	}
+	return seg{padLeft(text, w), d.styles.State[task.StateBlocked]}
 }
 
 // --- cell helpers (rune-width math on plain text, styled afterwards) ---
