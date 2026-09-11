@@ -329,6 +329,36 @@ func TestUpdateWorkflowStepChangesOnlyGivenFields(t *testing.T) {
 	}
 }
 
+// Kind, model and permission mode are written per column, so an edit
+// through the tool cannot clobber a prompt the user saved in the TUI in
+// between the tool's read and its write.
+func TestUpdateWorkflowStepDoesNotClobberAConcurrentPromptSave(t *testing.T) {
+	store := newFakeStore(task.Task{ID: 1, Title: "bound"})
+	seedStepRun(store)
+	st := store.steps[11]
+	st.PromptMD = "old prompt"
+	store.steps[11] = st
+	cs := dial(t, store, 1)
+
+	// The fake's GetStep hook stands in for the TUI saving between the
+	// tool's read and its writes.
+	store.onGetStep = func(id int64) {
+		if id == 11 {
+			cur := store.steps[11]
+			cur.PromptMD = "prompt saved in $EDITOR meanwhile"
+			store.steps[11] = cur
+		}
+	}
+	g := callTool[workflowGraphOut](t, cs, "update_workflow_step", map[string]any{
+		"step_id": 11, "model": "haiku", "permission_mode": "plan", "kind": "agent",
+	})
+	store.onGetStep = nil
+	got := stepNamed(t, g, "review")
+	if got.Model != "haiku" || got.PermissionMode != "plan" || got.PromptMD != "prompt saved in $EDITOR meanwhile" {
+		t.Errorf("after a model/mode edit racing a prompt save: %+v, want the saved prompt kept", got)
+	}
+}
+
 func TestUpdateWorkflowRenamesAndDescribes(t *testing.T) {
 	store := newFakeStore(task.Task{ID: 1, Title: "bound"})
 	seedStepRun(store)
@@ -426,6 +456,12 @@ func TestReorderWorkflowSteps(t *testing.T) {
 		"workflow_id": 1, "step_ids": []int64{10, 11, 11},
 	}); !strings.Contains(msg, "11") {
 		t.Errorf("duplicate id error = %q", msg)
+	}
+	// An unknown workflow reads as not found, not as "got 0 ids for 0 steps".
+	if msg := callToolErr(t, cs, "reorder_workflow_steps", map[string]any{
+		"workflow_id": 404, "step_ids": []int64{},
+	}); !strings.Contains(msg, "not found") {
+		t.Errorf("reorder of an unknown workflow = %q, want not found", msg)
 	}
 	for _, id := range []int64{10, 11, 12} {
 		if store.steps[id].SortOrder != 0 {

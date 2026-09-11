@@ -32,6 +32,11 @@ type fakeStore struct {
 	steps     map[int64]workflow.Step
 	edges     []workflow.Edge
 	stepRuns  map[int64]workflow.StepRun
+
+	// onGetStep, when set, runs after GetStep has taken its copy and
+	// before it returns, so a test can stand in for another writer
+	// landing between a tool's read and its write.
+	onGetStep func(id int64)
 }
 
 func newFakeStore(seed ...task.Task) *fakeStore {
@@ -261,6 +266,9 @@ func (s *fakeStore) GetStep(_ context.Context, id int64) (workflow.Step, error) 
 	if !ok {
 		return workflow.Step{}, workflow.ErrStepNotFound
 	}
+	if s.onGetStep != nil {
+		s.onGetStep(id)
+	}
 	return st, nil
 }
 
@@ -461,6 +469,39 @@ func (s *fakeStore) UpdateStep(_ context.Context, st workflow.Step) error {
 	}
 	cur.Name, cur.Kind, cur.PromptMD, cur.Model, cur.PermissionMode = n, st.Kind, st.PromptMD, st.Model, st.PermissionMode
 	s.steps[st.ID] = cur
+	return nil
+}
+
+func (s *fakeStore) SetStepKind(_ context.Context, id int64, kind workflow.StepKind) error {
+	if !kind.Valid() {
+		return fmt.Errorf("unknown step kind %q", kind)
+	}
+	st, ok := s.steps[id]
+	if !ok {
+		return fmt.Errorf("step %d: %w", id, workflow.ErrStepNotFound)
+	}
+	st.Kind = kind
+	s.steps[id] = st
+	return nil
+}
+
+func (s *fakeStore) SetStepModel(_ context.Context, id int64, model string) error {
+	st, ok := s.steps[id]
+	if !ok {
+		return fmt.Errorf("step %d: %w", id, workflow.ErrStepNotFound)
+	}
+	st.Model = model
+	s.steps[id] = st
+	return nil
+}
+
+func (s *fakeStore) SetStepPermissionMode(_ context.Context, id int64, mode string) error {
+	st, ok := s.steps[id]
+	if !ok {
+		return fmt.Errorf("step %d: %w", id, workflow.ErrStepNotFound)
+	}
+	st.PermissionMode = mode
+	s.steps[id] = st
 	return nil
 }
 

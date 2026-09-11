@@ -201,6 +201,11 @@ func registerWorkflowTools(srv *mcp.Server, store Store) {
 			}
 		}
 
+		// Checked up front so an unknown workflow reads as "not found"
+		// rather than the FOREIGN KEY error AddStep would surface.
+		if _, err := store.GetWorkflow(ctx, in.WorkflowID); err != nil {
+			return nil, workflowGraphOut{}, err
+		}
 		// The previous step is read before the append so "previous" is
 		// unambiguous even if two sessions author at once.
 		before, err := store.ListSteps(ctx, in.WorkflowID)
@@ -244,31 +249,56 @@ func registerWorkflowTools(srv *mcp.Server, store Store) {
 		Model          *string `json:"model,omitempty" jsonschema:"opus, sonnet, haiku, or inherit"`
 		PermissionMode *string `json:"permission_mode,omitempty" jsonschema:"default, acceptEdits, bypassPermissions, plan, or inherit"`
 	}) (*mcp.CallToolResult, workflowGraphOut, error) {
-		st, err := store.GetStep(ctx, in.StepID)
-		if err != nil {
-			return nil, workflowGraphOut{}, err
-		}
-		if in.Name != nil {
-			st.Name = *in.Name
-		}
+		// Every field is checked before anything is written, so a refused
+		// call changes nothing even though the writes below are separate.
+		var kind workflow.StepKind
 		if in.Kind != nil {
-			st.Kind = workflow.StepKind(strings.TrimSpace(*in.Kind))
-			if !st.Kind.Valid() {
+			kind = workflow.StepKind(strings.TrimSpace(*in.Kind))
+			if !kind.Valid() {
 				return nil, workflowGraphOut{}, fmt.Errorf("unknown step kind %q; use agent or gate", *in.Kind)
 			}
 		}
+		var model, mode string
+		var err error
 		if in.Model != nil {
-			if st.Model, err = normalizeModel(*in.Model); err != nil {
+			if model, err = normalizeModel(*in.Model); err != nil {
 				return nil, workflowGraphOut{}, err
 			}
 		}
 		if in.PermissionMode != nil {
-			if st.PermissionMode, err = normalizePermissionMode(*in.PermissionMode); err != nil {
+			if mode, err = normalizePermissionMode(*in.PermissionMode); err != nil {
 				return nil, workflowGraphOut{}, err
 			}
 		}
-		if err := store.UpdateStep(ctx, st); err != nil {
+		st, err := store.GetStep(ctx, in.StepID)
+		if err != nil {
 			return nil, workflowGraphOut{}, err
+		}
+		// Kind, model and permission mode go through the per-column
+		// setters the TUI uses, so this call cannot clobber a prompt the
+		// user saved in between (UpdateStep rewrites every editable
+		// column). Only the name has no setter, so a rename alone takes
+		// the whole-row write.
+		if in.Name != nil {
+			st.Name = *in.Name
+			if err := store.UpdateStep(ctx, st); err != nil {
+				return nil, workflowGraphOut{}, err
+			}
+		}
+		if in.Kind != nil {
+			if err := store.SetStepKind(ctx, in.StepID, kind); err != nil {
+				return nil, workflowGraphOut{}, err
+			}
+		}
+		if in.Model != nil {
+			if err := store.SetStepModel(ctx, in.StepID, model); err != nil {
+				return nil, workflowGraphOut{}, err
+			}
+		}
+		if in.PermissionMode != nil {
+			if err := store.SetStepPermissionMode(ctx, in.StepID, mode); err != nil {
+				return nil, workflowGraphOut{}, err
+			}
 		}
 		return fetchGraph(ctx, store, st.WorkflowID)
 	})
@@ -305,6 +335,11 @@ func registerWorkflowTools(srv *mcp.Server, store Store) {
 		WorkflowID int64   `json:"workflow_id" jsonschema:"the workflow id"`
 		StepIDs    []int64 `json:"step_ids" jsonschema:"every step of the workflow, in the new order"`
 	}) (*mcp.CallToolResult, workflowGraphOut, error) {
+		// Checked up front so an unknown workflow reads as "not found"
+		// rather than ReorderSteps's "got N ids for 0 steps".
+		if _, err := store.GetWorkflow(ctx, in.WorkflowID); err != nil {
+			return nil, workflowGraphOut{}, err
+		}
 		if err := store.ReorderSteps(ctx, in.WorkflowID, in.StepIDs); err != nil {
 			return nil, workflowGraphOut{}, err
 		}
@@ -332,7 +367,10 @@ func registerWorkflowTools(srv *mcp.Server, store Store) {
 		Name: "add_workflow_edge",
 		Description: "Route an outcome of one step to another step, creating the edge or " +
 			"re-pointing the one that already routes that outcome. The edges leaving a step " +
-			"are its allowed outcomes; an outcome with no edge ends the run. Both steps must " +
+			"are the only outcomes finish_step accepts from it; an outcome no edge routes is " +
+			"refused at hand-off, not treated as the end of the run. A step with no edges " +
+			"accepts only done, which ends the run. To end the run on any other outcome, " +
+			"route it to a final step. Both steps must " +
 			"be in the same workflow. An edge that leads back to an earlier step is a loop " +
 			"(a review's reject -> implement); give it max_iterations so the run cannot cycle " +
 			"forever -- the validator flags an agent step's unbounded loop-back.",
@@ -358,8 +396,10 @@ func registerWorkflowTools(srv *mcp.Server, store Store) {
 	// on, rather than by an edge id it would have to look up first.
 	mcp.AddTool(srv, &mcp.Tool{
 		Name: "delete_workflow_edge",
-		Description: "Remove the edge that routes an outcome from a step; that outcome then " +
-			"ends the run.",
+		Description: "Remove the edge that routes an outcome from a step. The step then no " +
+			"longer routes that outcome and finish_step refuses it (the validator flags it if " +
+			"the prompt still names it). When it was the step's last edge, the step accepts " +
+			"only done, which ends the run.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in struct {
 		FromStepID int64  `json:"from_step_id" jsonschema:"the step the edge leaves"`
 		Outcome    string `json:"outcome" jsonschema:"the outcome the edge routes"`
