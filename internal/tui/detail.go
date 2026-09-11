@@ -32,11 +32,14 @@ func newBodyRenderer(width int) (*glamour.TermRenderer, error) {
 
 // renderDetail builds the full detail pane content: a compact metadata
 // header, the glamour-rendered body, the sub-task checklist with progress,
-// the URLs detected in the body, and the task's note log. It is agnostic
-// to where t sits in the tree: a sub-task renders exactly like a top-level
-// task. width wraps the log entries to the pane.
-func renderDetail(t task.Task, children []task.Task, log []task.LogEntry, sessions []task.Session,
-	runs []runSummary, tags []string, renderer *glamour.TermRenderer, styles Styles, width int) string {
+// the URLs detected in the body, the task's dependencies in both
+// directions, and the task's note log. It is agnostic to where t sits in
+// the tree: a sub-task renders exactly like a top-level task. blockers
+// are the tasks t waits on, blocking the ones waiting on t. width wraps
+// the log entries to the pane.
+func renderDetail(t task.Task, children, blockers, blocking []task.Task, log []task.LogEntry,
+	sessions []task.Session, runs []runSummary, tags []string, renderer *glamour.TermRenderer,
+	styles Styles, width int) string {
 	g := styles.Glyphs
 	var b strings.Builder
 
@@ -122,6 +125,34 @@ func renderDetail(t task.Task, children []task.Task, log []task.LogEntry, sessio
 		}
 	}
 
+	// BLOCKED BY reads like SUB-TASKS, but the count is what is still in
+	// the way: `N open` in the blocked colour, or `all done` in green once
+	// nothing holds the task up any more. A done blocker is checked off;
+	// an open one wears its own state glyph, since "waiting on a task in
+	// review" and "waiting on one still in the inbox" are different waits.
+	if len(blockers) > 0 {
+		open := len(task.OpenBlockers(blockers))
+		count := styles.SubFull.Render("all done")
+		if open > 0 {
+			count = styles.State[task.StateBlocked].Render(fmt.Sprintf("%d open", open))
+		}
+		b.WriteString("\n" + "  " + styles.SubHeader.Render("BLOCKED BY") + "  " + count + "\n")
+		for _, blk := range blockers {
+			b.WriteString("  " + dependencyRowLine(styles, blk) + "\n")
+		}
+		b.WriteString("  " + styles.Muted.Render("press ") + styles.FooterKey.Render("b") +
+			styles.Muted.Render(" to edit dependencies") + "\n")
+	}
+
+	// BLOCKS is the reverse edge: what comes free when this task is done.
+	if len(blocking) > 0 {
+		b.WriteString("\n" + "  " + styles.SubHeader.Render("BLOCKS") + "  " +
+			styles.Muted.Render(fmt.Sprintf("%d", len(blocking))) + "\n")
+		for _, dep := range blocking {
+			b.WriteString("  " + dependencyRowLine(styles, dep) + "\n")
+		}
+	}
+
 	if len(sessions) > 0 {
 		b.WriteString("\n" + "  " + styles.SubHeader.Render("SESSIONS") + "  " +
 			styles.Muted.Render(fmt.Sprintf("%d", len(sessions))) + "\n")
@@ -177,6 +208,21 @@ func renderDetail(t task.Task, children []task.Task, log []task.LogEntry, sessio
 	}
 
 	return b.String()
+}
+
+// dependencyRowLine renders one task in a BLOCKED BY or BLOCKS row: a
+// done task is checked off and struck through like a done sub-task, any
+// other shows its state glyph in its state colour, and the id trails
+// dimmed so a task can be found from here.
+func dependencyRowLine(styles Styles, t task.Task) string {
+	g := styles.Glyphs
+	id := styles.DetailFaint.Render(fmt.Sprintf("#%d", t.ID))
+	if t.State == task.StateDone {
+		return styles.CheckDone.Render(g.BoxChecked) + " " +
+			styles.SubDoneText.Render(t.Title) + "  " + id
+	}
+	return styles.State[t.State].Render(g.State[t.State]) + " " +
+		styles.Title.Render(t.Title) + "  " + id
 }
 
 // relTime renders an update timestamp as a short relative age, falling

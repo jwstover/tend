@@ -62,6 +62,15 @@ func (a app) paletteCommands() []paletteCommand {
 				}
 				return a, a.loadParentCandidates(t)
 			}},
+		{icon: "⊘", label: "Edit dependencies (blocked by)", hint: "b", aliases: []string{"dependencies", "depends", "blockers", "blockedby"},
+			act: func(a app) (tea.Model, tea.Cmd) {
+				t, ok := a.selected()
+				if !ok {
+					a.status = flash{text: "nothing selected"}
+					return a, nil
+				}
+				return a, a.loadDependencyCandidates(t)
+			}},
 		{icon: "≡", label: "Group by state", hint: "gs", aliases: []string{"group", "groupstate"},
 			act: func(a app) (tea.Model, tea.Cmd) { return a.setGroupBy(groupByState) }},
 		{icon: "⚑", label: "Group by priority", hint: "gp", aliases: []string{"grouppriority"},

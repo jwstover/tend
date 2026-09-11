@@ -41,6 +41,16 @@ type Store interface {
 	ListProjectTasks(ctx context.Context, projectID int64) ([]task.Task, error)
 	SetParent(ctx context.Context, taskID int64, parentID *int64) error
 	ChildCounts(ctx context.Context) (map[int64]task.ChildCount, error)
+	// Task dependencies: the per-row blocker counts for the list, the two
+	// edge directions for the detail pane's BLOCKED BY / BLOCKS sections,
+	// and the dependency picker (dependencypicker.go), which offers every
+	// open task in any project and toggles one edge at a time.
+	BlockerCounts(ctx context.Context) (map[int64]task.BlockerCount, error)
+	Blockers(ctx context.Context, taskID int64) ([]task.Task, error)
+	Blocking(ctx context.Context, taskID int64) ([]task.Task, error)
+	ListOpenTasks(ctx context.Context) ([]task.Task, error)
+	AddDependency(ctx context.Context, taskID, dependsOnID int64) error
+	RemoveDependency(ctx context.Context, taskID, dependsOnID int64) error
 	SessionStatuses(ctx context.Context) (map[int64]task.SessionStatus, error)
 	CountInbox(ctx context.Context, projectID *int64) (int64, error)
 	SetState(ctx context.Context, id int64, st task.State) error
@@ -300,6 +310,7 @@ type (
 		mode     viewMode
 		tasks    []task.Task
 		counts   map[int64]task.ChildCount
+		blockers map[int64]task.BlockerCount
 		tags     map[int64][]string
 		sessions map[int64]task.SessionStatus
 		inbox    int64
@@ -310,6 +321,8 @@ type (
 		log      []task.LogEntry
 		sessions []task.Session
 		runs     []runSummary // the task's workflow runs, for WORKFLOWS
+		blockers []task.Task  // what the task waits on, for BLOCKED BY
+		blocking []task.Task  // what waits on the task, for BLOCKS
 	}
 	standupLoadedMsg struct {
 		notes  []task.LogEntry
@@ -526,6 +539,7 @@ type app struct {
 	// rebuilt from these whenever any of them changes.
 	tasks         []task.Task
 	counts        map[int64]task.ChildCount
+	blockers      map[int64]task.BlockerCount  // open/total blockers per task, for the list row's dependency cell
 	tags          map[int64][]string           // tags per task, for the list row's #tag cell
 	sessionStatus map[int64]task.SessionStatus // latest session status per task, for the list row
 
@@ -547,6 +561,8 @@ type app struct {
 	childCache      map[int64][]task.Task     // loaded children per parent
 	logCache        map[int64][]task.LogEntry // loaded task notes, for the detail pane
 	sessionsCache   map[int64][]task.Session  // loaded claude sessions per task, for the detail pane
+	blockersCache   map[int64][]task.Task     // loaded blockers per task (BLOCKED BY), for the detail pane
+	blockingCache   map[int64][]task.Task     // loaded dependents per task (BLOCKS), for the detail pane
 
 	startCwd string // tend's own working directory at startup; the launch-prompt fallback
 
@@ -710,6 +726,18 @@ type app struct {
 	// Cleared once selectByID actually finds the row.
 	pendingSelectID int64
 
+	// Dependency picker overlay (dependencypicker.go): which open tasks the
+	// selected one waits on. A multi-select that stays open across toggles,
+	// so checked tracks the edges as the store confirms them.
+	depPickerOpen    bool
+	depPickerTaskID  int64
+	depPickerProject int64 // the task's project; rows elsewhere show their project name
+	depPickerLabel   string
+	depPickerQuery   string
+	depPickerSel     int
+	depPickerRows    []dependencyRow
+	depPickerChecked map[int64]bool
+
 	urlPickerOpen bool
 	urlPickerURLs []link
 	urlPickerSel  int
@@ -768,6 +796,8 @@ func newApp(ctx context.Context, s Store, dbPath string) app {
 		childCache:      make(map[int64][]task.Task),
 		logCache:        make(map[int64][]task.LogEntry),
 		sessionsCache:   make(map[int64][]task.Session),
+		blockersCache:   make(map[int64][]task.Task),
+		blockingCache:   make(map[int64][]task.Task),
 		runsCache:       make(map[int64][]runSummary),
 		startCwd:        wd,
 		detail:          viewport.New(),
@@ -819,7 +849,7 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// that has gone (deleted, or filtered out by its new state) falls
 		// back to the same index, i.e. the row that slid into its place.
 		sel, hadSel := a.selectedNode()
-		a.tasks, a.counts, a.sessionStatus = msg.tasks, msg.counts, msg.sessions
+		a.tasks, a.counts, a.blockers, a.sessionStatus = msg.tasks, msg.counts, msg.blockers, msg.sessions
 		// Stale-while-revalidate: rebuild from the cached children now,
 		// then re-fetch every expanded branch.
 		cmd := tea.Batch(a.rebuildList(), a.reloadExpanded())
@@ -855,6 +885,8 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.logCache[msg.parentID] = msg.log
 		a.sessionsCache[msg.parentID] = msg.sessions
 		a.runsCache[msg.parentID] = msg.runs
+		a.blockersCache[msg.parentID] = msg.blockers
+		a.blockingCache[msg.parentID] = msg.blocking
 		var cmd tea.Cmd
 		if a.mode == modeList {
 			sel, hadSel := a.selectedNode()
@@ -1109,6 +1141,13 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.openParentPicker(msg)
 		return a, nil
 
+	case dependencyCandidatesMsg:
+		a.openDependencyPicker(msg)
+		return a, nil
+
+	case dependencyToggledMsg:
+		return a, a.applyDependencyToggle(msg)
+
 	case refreshMsg:
 		a.status = msg.status
 		// A full reload supersedes any live update still waiting its turn.
@@ -1185,6 +1224,11 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// And the parent picker.
 	if a.parentPickerOpen {
 		return a.handleParentPickerKey(msg)
+	}
+
+	// And the dependency picker.
+	if a.depPickerOpen {
+		return a.handleDependencyPickerKey(msg)
 	}
 
 	// And a step attribute picker (workflows view).
@@ -1618,6 +1662,12 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		return a, nil
 
+	case key.Matches(msg, a.keys.Dependencies) && a.mode == modeList:
+		if t, ok := a.selected(); ok {
+			return a, a.loadDependencyCandidates(t)
+		}
+		return a, nil
+
 	case key.Matches(msg, a.keys.SetTags):
 		if t, ok := a.selected(); ok {
 			// Seeded with the current tags so editing one doesn't mean
@@ -1993,7 +2043,7 @@ func (a *app) rebuildList() tea.Cmd {
 	// way counts does: counts drives disclosure logic as well as
 	// rendering, whereas a session marker is purely visual, so the
 	// renderer is the one thing that needs it.
-	a.list.SetDelegate(taskDelegate{styles: a.styles, sessions: a.sessionStatus, tags: a.tags})
+	a.list.SetDelegate(taskDelegate{styles: a.styles, sessions: a.sessionStatus, tags: a.tags, blockers: a.blockers})
 	sections := groupTasks(a.groupBy, a.tasks, a.sessionStatus, a.styles)
 	cmds := []tea.Cmd{a.list.SetItems(toGroupedItems(sections, a.counts, a.expanded, a.childCache, a.tags))}
 	for id := range a.expanded {
@@ -2069,8 +2119,8 @@ func (a *app) syncDetail(force bool) tea.Cmd {
 // may sit at any depth; a sub-task gets the same pane as a top-level task.
 func (a *app) renderDetailFor(t task.Task) {
 	_, _, detailW, _ := a.paneWidths()
-	a.detail.SetContent(renderDetail(t, a.childCache[t.ID], a.logCache[t.ID],
-		a.sessionsCache[t.ID], a.runsCache[t.ID], a.tags[t.ID], a.renderer, a.styles, detailW))
+	a.detail.SetContent(renderDetail(t, a.childCache[t.ID], a.blockersCache[t.ID], a.blockingCache[t.ID],
+		a.logCache[t.ID], a.sessionsCache[t.ID], a.runsCache[t.ID], a.tags[t.ID], a.renderer, a.styles, detailW))
 }
 
 // Projects-column geometry. The width is fixed: a project name plus its
@@ -2468,6 +2518,10 @@ func (a app) loadTasks(mode viewMode) tea.Cmd {
 		if err != nil {
 			return errMsg{err}
 		}
+		blockers, err := a.store.BlockerCounts(a.ctx)
+		if err != nil {
+			return errMsg{err}
+		}
 		// The inbox nudge counts the same population the triage view would
 		// process, so it follows the project filter too.
 		inbox, err := a.store.CountInbox(a.ctx, a.projectFilter)
@@ -2485,7 +2539,7 @@ func (a app) loadTasks(mode viewMode) tea.Cmd {
 		if err != nil {
 			statuses = nil
 		}
-		return tasksLoadedMsg{mode: mode, tasks: tasks, counts: counts, tags: tags,
+		return tasksLoadedMsg{mode: mode, tasks: tasks, counts: counts, blockers: blockers, tags: tags,
 			sessions: statuses, inbox: inbox}
 	}
 }
@@ -2521,8 +2575,16 @@ func (a app) loadChildren(parentID int64) tea.Cmd {
 		if err != nil {
 			return errMsg{err}
 		}
+		blockers, err := a.store.Blockers(a.ctx, parentID)
+		if err != nil {
+			return errMsg{err}
+		}
+		blocking, err := a.store.Blocking(a.ctx, parentID)
+		if err != nil {
+			return errMsg{err}
+		}
 		return childrenLoadedMsg{parentID: parentID, children: children, log: log, sessions: sessions,
-			runs: a.summarizeRuns(a.ctx, runs)}
+			runs: a.summarizeRuns(a.ctx, runs), blockers: blockers, blocking: blocking}
 	}
 }
 
@@ -2642,7 +2704,7 @@ func (a app) View() tea.View {
 	// body rows. A panel taller than the screen loses its top rows, like
 	// the design's splice.
 	if a.paletteOpen || a.helpOpen || a.urlPickerOpen || a.sessionPickerOpen ||
-		a.projectPickerOpen || a.parentPickerOpen || a.wfPickerOpen || a.wfRunPickerOpen ||
+		a.projectPickerOpen || a.parentPickerOpen || a.depPickerOpen || a.wfPickerOpen || a.wfRunPickerOpen ||
 		a.gatePickerOpen || a.takeover.open {
 		box := a.paletteView()
 		switch {
@@ -2656,6 +2718,8 @@ func (a app) View() tea.View {
 			box = a.projectPickerView()
 		case a.parentPickerOpen:
 			box = a.parentPickerView()
+		case a.depPickerOpen:
+			box = a.dependencyPickerView()
 		case a.wfPickerOpen:
 			box = a.wfPickerView()
 		case a.wfRunPickerOpen:

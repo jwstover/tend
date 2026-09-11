@@ -33,6 +33,7 @@ type keyMap struct {
 	Delete         key.Binding // first `d` of the `dd` delete chord
 	MoveProject    key.Binding // move the selected task to another project
 	MoveParent     key.Binding // move the selected task under another task, or to the top level
+	Dependencies   key.Binding // pick which tasks the selected one waits on (dependencypicker.go)
 	Archive        key.Binding // archive/restore the selected project
 	ProjectCwd     key.Binding // set the selected project's default cwd for new sessions
 
@@ -134,6 +135,9 @@ func defaultKeyMap() keyMap {
 		Delete:       key.NewBinding(key.WithKeys("d"), key.WithHelp("dd", "delete")),
 		MoveProject:  key.NewBinding(key.WithKeys("P"), key.WithHelp("P", "move to project")),
 		MoveParent:   key.NewBinding(key.WithKeys("m"), key.WithHelp("m", "move to parent")),
+		// `b` is free in the list: SetBlocked's `b` only fires inside the
+		// `c` chord and in triage, neither of which reaches this binding.
+		Dependencies: key.NewBinding(key.WithKeys("b"), key.WithHelp("b", "blocked by")),
 		Archive:      key.NewBinding(key.WithKeys("A"), key.WithHelp("A", "archive")),
 		ProjectCwd:   key.NewBinding(key.WithKeys("w"), key.WithHelp("w", "default cwd")),
 
