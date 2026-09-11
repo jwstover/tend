@@ -28,6 +28,7 @@ type Store interface {
 	SetTags(ctx context.Context, taskID int64, tags []string) error
 	TagsForTask(ctx context.Context, taskID int64) ([]string, error)
 	SetProject(ctx context.Context, taskID, projectID int64) error
+	SetParent(ctx context.Context, taskID int64, parentID *int64) error
 	GetProject(ctx context.Context, id int64) (task.Project, error)
 	ProjectByName(ctx context.Context, name string) (task.Project, error)
 	ListProjects(ctx context.Context) ([]task.Project, error)

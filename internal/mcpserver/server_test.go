@@ -155,6 +155,52 @@ func (s *fakeStore) SetProject(_ context.Context, taskID, projectID int64) error
 	return nil
 }
 
+// SetParent mirrors the store: no self-parenting, no moving under a
+// descendant, the parent must exist, and a parent in another project
+// drags the sub-tree into that project.
+func (s *fakeStore) SetParent(_ context.Context, taskID int64, parentID *int64) error {
+	t, ok := s.tasks[taskID]
+	if !ok {
+		return errors.New("no such task")
+	}
+	if parentID != nil {
+		if *parentID == taskID {
+			return errors.New("a task cannot be its own parent")
+		}
+		if s.isDescendant(*parentID, taskID) {
+			return errors.New("a task cannot move under its own sub-task")
+		}
+		parent, ok := s.tasks[*parentID]
+		if !ok {
+			return errors.New("no such parent task")
+		}
+		if parent.ProjectID != t.ProjectID {
+			if err := s.SetProject(context.Background(), taskID, parent.ProjectID); err != nil {
+				return err
+			}
+			t = s.tasks[taskID]
+		}
+	}
+	t.ParentID = parentID
+	s.tasks[taskID] = t
+	return nil
+}
+
+// isDescendant reports whether id sits somewhere below ancestorID,
+// walking parent links up from id.
+func (s *fakeStore) isDescendant(id, ancestorID int64) bool {
+	for {
+		t, ok := s.tasks[id]
+		if !ok || t.ParentID == nil {
+			return false
+		}
+		if *t.ParentID == ancestorID {
+			return true
+		}
+		id = *t.ParentID
+	}
+}
+
 func (s *fakeStore) GetProject(_ context.Context, id int64) (task.Project, error) {
 	for _, p := range s.projects {
 		if p.ID == id {
@@ -560,6 +606,97 @@ func TestSetTaskProjectMovesSubtree(t *testing.T) {
 	}
 	if child := store.tasks[2]; child.ProjectID != 2 {
 		t.Errorf("child ProjectID = %d, want tend (2): the sub-tree moves too", child.ProjectID)
+	}
+}
+
+// parent_id 0 is the wire form of "top level": a pointer could not tell
+// an explicit null from an omitted field over MCP.
+func TestMoveTaskPromotesToTopLevel(t *testing.T) {
+	parentID := int64(1)
+	store := newFakeStore(
+		task.Task{ID: 1, Title: "parent"},
+		task.Task{ID: 2, Title: "child", ParentID: &parentID},
+	)
+	cs := dial(t, store, 2)
+
+	got := callTool[taskOut](t, cs, "move_task", map[string]any{"parent_id": 0})
+	if got.ID != 2 {
+		t.Fatalf("move_task returned task %d, want the bound task 2", got.ID)
+	}
+	if got.ParentID != nil {
+		t.Errorf("move_task parent_id = %v, want nil (promoted to the top level)", *got.ParentID)
+	}
+}
+
+func TestMoveTaskDemotesUnderAnotherTask(t *testing.T) {
+	store := newFakeStore(
+		task.Task{ID: 1, Title: "bound"},
+		task.Task{ID: 2, Title: "will become a sub-task"},
+		task.Task{ID: 3, Title: "new parent"},
+	)
+	cs := dial(t, store, 1)
+
+	got := callTool[taskOut](t, cs, "move_task", map[string]any{"task_id": 2, "parent_id": 3})
+	if got.ID != 2 {
+		t.Fatalf("move_task returned task %d, want the explicit override 2", got.ID)
+	}
+	if got.ParentID == nil || *got.ParentID != 3 {
+		t.Errorf("move_task parent_id = %v, want 3", got.ParentID)
+	}
+	if store.tasks[1].ParentID != nil {
+		t.Errorf("bound task re-parented to %v; the override must not touch it", *store.tasks[1].ParentID)
+	}
+}
+
+// Moving a task under its own sub-task would orphan the whole chain
+// from the tree; the store refuses, and the tool surfaces that as an
+// error result rather than a success.
+func TestMoveTaskRejectsCycle(t *testing.T) {
+	parentID := int64(1)
+	store := newFakeStore(
+		task.Task{ID: 1, Title: "parent"},
+		task.Task{ID: 2, Title: "child", ParentID: &parentID},
+	)
+	cs := dial(t, store, 1)
+
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "move_task",
+		Arguments: map[string]any{"task_id": 1, "parent_id": 2},
+	})
+	if err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	if !res.IsError {
+		t.Error("move_task under the task's own sub-task should return an error result, not succeed")
+	}
+	if got := store.tasks[1].ParentID; got != nil {
+		t.Errorf("a refused move still re-parented the task to %d", *got)
+	}
+}
+
+// A parent in another project pulls the moved task and its children into
+// that project: a child in a different project from its parent is
+// incoherent, the same guarantee set_task_project makes.
+func TestMoveTaskSubtreeFollowsParentProject(t *testing.T) {
+	movedID := int64(2)
+	store := newFakeStore(
+		task.Task{ID: 1, Title: "new parent", ProjectID: 2},
+		task.Task{ID: 2, Title: "moved", ProjectID: task.DefaultProjectID},
+		task.Task{ID: 3, Title: "grandchild", ProjectID: task.DefaultProjectID, ParentID: &movedID},
+	)
+	store.projects = append(store.projects, task.Project{ID: 2, Name: "tend"})
+	cs := dial(t, store, 2)
+
+	got := callTool[taskOut](t, cs, "move_task", map[string]any{"parent_id": 1})
+	if got.ParentID == nil || *got.ParentID != 1 {
+		t.Errorf("move_task parent_id = %v, want 1", got.ParentID)
+	}
+	if got.ProjectID != 2 {
+		t.Errorf("moved task ProjectID = %d, want the parent's project (2)", got.ProjectID)
+	}
+	child := callTool[taskOut](t, cs, "get_task", map[string]any{"task_id": 3})
+	if child.ProjectID != 2 {
+		t.Errorf("grandchild ProjectID = %d, want 2: the sub-tree follows the new parent's project", child.ProjectID)
 	}
 }
 

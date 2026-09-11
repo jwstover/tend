@@ -36,6 +36,10 @@ type Store interface {
 	ListLiveWithCompleted(ctx context.Context, projectID *int64) ([]task.Task, error)
 	ListInbox(ctx context.Context, projectID *int64) ([]task.Task, error)
 	ListChildren(ctx context.Context, parentID int64) ([]task.Task, error)
+	// The parent picker (parentpicker.go): every task in a project so the
+	// chooser can rule out the moving sub-tree, and the re-parent itself.
+	ListProjectTasks(ctx context.Context, projectID int64) ([]task.Task, error)
+	SetParent(ctx context.Context, taskID int64, parentID *int64) error
 	ChildCounts(ctx context.Context) (map[int64]task.ChildCount, error)
 	SessionStatuses(ctx context.Context) (map[int64]task.SessionStatus, error)
 	CountInbox(ctx context.Context, projectID *int64) (int64, error)
@@ -685,6 +689,25 @@ type app struct {
 	projectPickerLabel  string
 	projectPickerSel    int
 
+	// Parent picker overlay (parentpicker.go): choose which task, or the
+	// top level, a task hangs under. Rows are the project's other tasks as
+	// breadcrumb paths; the query narrows them like the palette's.
+	parentPickerOpen   bool
+	parentPickerTaskID int64
+	parentPickerFrom   *int64 // the task's parent when the picker opened; nil = top level
+	parentPickerLabel  string
+	parentPickerQuery  string
+	parentPickerSel    int
+	parentPickerRows   []parentRow
+	// A confirmed move, until its refreshMsg lands: the reload then drops
+	// the stale child caches on both ends and expands the new parent.
+	pendingMove *parentMove
+	// The task the next rebuild should land the cursor on, when a move has
+	// taken it somewhere the reload's index-or-id fallback would not find
+	// it (a freshly expanded branch whose children load a message later).
+	// Cleared once selectByID actually finds the row.
+	pendingSelectID int64
+
 	urlPickerOpen bool
 	urlPickerURLs []link
 	urlPickerSel  int
@@ -801,6 +824,7 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if hadSel {
 			a.selectByID(sel.t.ID)
 		}
+		a.selectPending()
 		moveOffHeading(&a.list, 1)
 		// syncDetail(true) re-renders the pane for the same task without
 		// GotoTop, so an agent appending to the body being read doesn't
@@ -836,6 +860,7 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if hadSel {
 				a.selectByID(sel.t.ID)
 			}
+			a.selectPending()
 		}
 		if a.showDetail && msg.parentID == a.detailID {
 			if n, ok := a.selectedNode(); ok && n.t.ID == a.detailID {
@@ -1078,10 +1103,17 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return a, settle
 
+	case parentCandidatesMsg:
+		a.openParentPicker(msg)
+		return a, nil
+
 	case refreshMsg:
 		a.status = msg.status
 		// A full reload supersedes any live update still waiting its turn.
 		a.liveReloadDeferred = false
+		// A confirmed re-parent has landed: fix the tree caches up before
+		// the reload rebuilds from them.
+		a.settlePendingMove()
 		// Every mutation passes through here, including the one that
 		// records a just-backgrounded session — so returning from a
 		// session is also the moment a previously-owed recap gets
@@ -1096,6 +1128,9 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case errMsg:
 		a.loaded = true // an initial load failure shouldn't strand the loading frame
 		a.status = flash{text: msg.err.Error(), isErr: true}
+		// A re-parent the store refused never happened; forget it rather
+		// than fix caches up for a move the next reload won't show.
+		a.pendingMove, a.pendingSelectID = nil, 0
 		// A failed load is still a settled one; don't strand a deferred
 		// live update behind it.
 		return a, a.liveReloadSettled()
@@ -1130,6 +1165,10 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	a.status = flash{}
+	// A keypress means the user has moved on from a re-parent whose row
+	// never showed up (moved into a hidden section, say); don't let a
+	// later reload yank the cursor onto it.
+	a.pendingSelectID = 0
 
 	// An open URL picker swallows all keys.
 	if a.urlPickerOpen {
@@ -1139,6 +1178,11 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// So does an open project picker.
 	if a.projectPickerOpen {
 		return a.handleProjectPickerKey(msg)
+	}
+
+	// And the parent picker.
+	if a.parentPickerOpen {
+		return a.handleParentPickerKey(msg)
 	}
 
 	// And a step attribute picker (workflows view).
@@ -1566,6 +1610,12 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		return a, nil
 
+	case key.Matches(msg, a.keys.MoveParent) && a.mode == modeList:
+		if t, ok := a.selected(); ok {
+			return a, a.loadParentCandidates(t)
+		}
+		return a, nil
+
 	case key.Matches(msg, a.keys.SetTags):
 		if t, ok := a.selected(); ok {
 			// Seeded with the current tags so editing one doesn't mean
@@ -1963,13 +2013,25 @@ func (a app) reloadExpanded() tea.Cmd {
 }
 
 // selectByID moves the cursor onto the row holding the given task, if
-// it's visible.
-func (a *app) selectByID(id int64) {
+// it's visible, and reports whether it was.
+func (a *app) selectByID(id int64) bool {
 	for i, it := range a.list.VisibleItems() {
 		if r, ok := it.(rowItem); ok && r.rowTask().ID == id {
 			a.list.Select(i)
-			return
+			return true
 		}
+	}
+	return false
+}
+
+// selectPending lands the cursor on the task a re-parent moved, once the
+// rebuild that made its new row visible has run. It runs after the
+// usual follow-the-selection reselect so the moved task wins over the
+// row that slid into its old place, and keeps waiting while the new
+// parent's children are still loading.
+func (a *app) selectPending() {
+	if a.pendingSelectID != 0 && a.selectByID(a.pendingSelectID) {
+		a.pendingSelectID = 0
 	}
 }
 
@@ -2578,7 +2640,8 @@ func (a app) View() tea.View {
 	// body rows. A panel taller than the screen loses its top rows, like
 	// the design's splice.
 	if a.paletteOpen || a.helpOpen || a.urlPickerOpen || a.sessionPickerOpen ||
-		a.projectPickerOpen || a.wfPickerOpen || a.wfRunPickerOpen || a.gatePickerOpen || a.takeover.open {
+		a.projectPickerOpen || a.parentPickerOpen || a.wfPickerOpen || a.wfRunPickerOpen ||
+		a.gatePickerOpen || a.takeover.open {
 		box := a.paletteView()
 		switch {
 		case a.helpOpen:
@@ -2589,6 +2652,8 @@ func (a app) View() tea.View {
 			box = a.sessionPickerView()
 		case a.projectPickerOpen:
 			box = a.projectPickerView()
+		case a.parentPickerOpen:
+			box = a.parentPickerView()
 		case a.wfPickerOpen:
 			box = a.wfPickerView()
 		case a.wfRunPickerOpen:

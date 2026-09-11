@@ -100,6 +100,24 @@ SELECT id
 FROM tasks
 WHERE parent_id = ?;
 
+-- name: SetTaskParent :exec
+-- Reparents one task; NULL promotes it to the top level. Cycle checks
+-- and the sub-tree's project follow-along live in Store.SetParent, for
+-- the same sqlc reason as SetTasksProject.
+UPDATE tasks
+SET parent_id  = sqlc.narg(parent_id),
+    updated_at = datetime('now')
+WHERE id = sqlc.arg(id);
+
+-- name: ListProjectTasks :many
+-- Every task in a project at any depth and in any state: the candidate
+-- list for the TUI's move-to-parent picker, which the scoped live list
+-- and per-branch child cache cannot supply.
+SELECT *
+FROM tasks
+WHERE project_id = ?
+ORDER BY id;
+
 -- name: SetTaskPriority :exec
 UPDATE tasks
 SET priority   = ?,

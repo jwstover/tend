@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -213,6 +214,17 @@ func (s *Store) ListChildren(ctx context.Context, parentID int64) ([]task.Task, 
 	return toDomainSlice(rows)
 }
 
+// ListProjectTasks returns every task in a project, at any depth and in
+// any state, oldest first. It feeds the move-to-parent picker, which
+// needs the whole tree rather than the scoped live view.
+func (s *Store) ListProjectTasks(ctx context.Context, projectID int64) ([]task.Task, error) {
+	rows, err := s.q.ListProjectTasks(ctx, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("listing tasks in project %d: %w", projectID, err)
+	}
+	return toDomainSlice(rows)
+}
+
 // ChildCounts returns per-parent sub-task done/total counts for every
 // task that has children. Done children are filtered out of the live
 // view, so the list derives its N/M progress from this instead.
@@ -366,11 +378,107 @@ func projectName(ctx context.Context, q *gen.Queries, id int64) (string, error) 
 	return p.Name, nil
 }
 
+// SetParent moves a task, and its whole sub-tree, under a new parent; a
+// nil parentID promotes it to the top level. The sub-tree follows the
+// task's project too: when the new parent sits in a different project,
+// every descendant is re-projected in the same transaction, preserving
+// the invariant CreateChildTask establishes that a child never sits in a
+// different project from its parent.
+//
+// Cycles are refused here rather than by a constraint: a task cannot
+// become its own parent, nor a child of one of its own descendants. The
+// check walks subtreeIDs in Go for the same sqlc reason SetProject does.
+func (s *Store) SetParent(ctx context.Context, taskID int64, parentID *int64) error {
+	return s.inTx(ctx, func(q *gen.Queries) error {
+		before, err := q.GetTask(ctx, taskID)
+		if err != nil {
+			return fmt.Errorf("loading task %d: %w", taskID, err)
+		}
+		// Same place as before: write nothing and log nothing, mirroring
+		// SetProject and the state trigger's OLD <> NEW guard.
+		if sameParent(before.ParentID, parentID) {
+			return nil
+		}
+
+		ids, err := subtreeIDs(ctx, q, taskID)
+		if err != nil {
+			return err
+		}
+
+		var (
+			newParent gen.Task
+			toLabel   = task.TopLevelLabel
+			projectID = before.ProjectID
+		)
+		if parentID != nil {
+			if *parentID == taskID {
+				return fmt.Errorf("task %d cannot be its own parent", taskID)
+			}
+			if slices.Contains(ids, *parentID) {
+				return fmt.Errorf("task %d cannot move under its own sub-task %d", taskID, *parentID)
+			}
+			newParent, err = q.GetTask(ctx, *parentID)
+			if err != nil {
+				return fmt.Errorf("loading parent task %d: %w", *parentID, err)
+			}
+			toLabel = newParent.Title
+			projectID = newParent.ProjectID
+		}
+
+		if err := q.SetTaskParent(ctx, gen.SetTaskParentParams{
+			ParentID: toNullInt64(parentID),
+			ID:       taskID,
+		}); err != nil {
+			return fmt.Errorf("moving task %d under %s: %w", taskID, toLabel, err)
+		}
+		if projectID != before.ProjectID {
+			if err := q.SetTasksProject(ctx, gen.SetTasksProjectParams{
+				ProjectID: projectID,
+				Ids:       ids,
+			}); err != nil {
+				return fmt.Errorf("moving task %d to project %d: %w", taskID, projectID, err)
+			}
+		}
+
+		// One event for the one task the user moved, written here for the
+		// same reason SetProject writes its own. Parent *titles* are
+		// snapshotted so the log reads after either parent is renamed or
+		// deleted.
+		fromLabel := task.TopLevelLabel
+		if before.ParentID.Valid {
+			old, err := q.GetTask(ctx, before.ParentID.Int64)
+			if err != nil {
+				return fmt.Errorf("loading previous parent %d: %w", before.ParentID.Int64, err)
+			}
+			fromLabel = old.Title
+		}
+		if err := q.CreateTaskEvent(ctx, gen.CreateTaskEventParams{
+			TaskID:    taskID,
+			TaskTitle: before.Title,
+			Kind:      string(task.EventParent),
+			OldValue:  sql.NullString{String: fromLabel, Valid: true},
+			NewValue:  sql.NullString{String: toLabel, Valid: true},
+		}); err != nil {
+			return fmt.Errorf("logging the move of task %d: %w", taskID, err)
+		}
+		return nil
+	})
+}
+
+// sameParent reports whether a stored parent and a requested one agree,
+// treating NULL and nil as the same "top level".
+func sameParent(have sql.NullInt64, want *int64) bool {
+	if want == nil {
+		return !have.Valid
+	}
+	return have.Valid && have.Int64 == *want
+}
+
 // subtreeIDs collects a task and every descendant, breadth-first. It
 // stands in for the recursive CTE sqlc v1.31.1 cannot parse (see
-// queries/tasks.sql). The seen set is a cheap guard: parent_id cannot
-// cycle in practice, but this walks database rows, and a cycle would
-// otherwise loop forever.
+// queries/tasks.sql). The seen set is a cheap guard: SetParent refuses
+// the moves that would create a cycle, but this walks database rows,
+// and a cycle from any other source would otherwise loop forever.
 func subtreeIDs(ctx context.Context, q *gen.Queries, root int64) ([]int64, error) {
 	ids := []int64{root}
 	seen := map[int64]bool{root: true}

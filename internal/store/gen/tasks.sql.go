@@ -436,6 +436,52 @@ func (q *Queries) ListLiveWithCompletedTasks(ctx context.Context, projectID inte
 	return items, nil
 }
 
+const listProjectTasks = `-- name: ListProjectTasks :many
+SELECT id, title, body_md, state, parent_id, priority, due, snooze_until, created_at, updated_at, completed_at, project_id
+FROM tasks
+WHERE project_id = ?
+ORDER BY id
+`
+
+// Every task in a project at any depth and in any state: the candidate
+// list for the TUI's move-to-parent picker, which the scoped live list
+// and per-branch child cache cannot supply.
+func (q *Queries) ListProjectTasks(ctx context.Context, projectID int64) ([]Task, error) {
+	rows, err := q.db.QueryContext(ctx, listProjectTasks, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Task{}
+	for rows.Next() {
+		var i Task
+		if err := rows.Scan(
+			&i.ID,
+			&i.Title,
+			&i.BodyMd,
+			&i.State,
+			&i.ParentID,
+			&i.Priority,
+			&i.Due,
+			&i.SnoozeUntil,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.CompletedAt,
+			&i.ProjectID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const setTaskBody = `-- name: SetTaskBody :exec
 UPDATE tasks
 SET body_md    = ?,
@@ -467,6 +513,26 @@ type SetTaskDueParams struct {
 
 func (q *Queries) SetTaskDue(ctx context.Context, arg SetTaskDueParams) error {
 	_, err := q.db.ExecContext(ctx, setTaskDue, arg.Due, arg.ID)
+	return err
+}
+
+const setTaskParent = `-- name: SetTaskParent :exec
+UPDATE tasks
+SET parent_id  = ?1,
+    updated_at = datetime('now')
+WHERE id = ?2
+`
+
+type SetTaskParentParams struct {
+	ParentID sql.NullInt64
+	ID       int64
+}
+
+// Reparents one task; NULL promotes it to the top level. Cycle checks
+// and the sub-tree's project follow-along live in Store.SetParent, for
+// the same sqlc reason as SetTasksProject.
+func (q *Queries) SetTaskParent(ctx context.Context, arg SetTaskParentParams) error {
+	_, err := q.db.ExecContext(ctx, setTaskParent, arg.ParentID, arg.ID)
 	return err
 }
 

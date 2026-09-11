@@ -113,6 +113,10 @@ type Querier interface {
 	// non-null when the note is freestanding or its task was deleted.
 	ListLogEntriesBetween(ctx context.Context, arg ListLogEntriesBetweenParams) ([]ListLogEntriesBetweenRow, error)
 	ListLogEntriesForTask(ctx context.Context, taskID sql.NullInt64) ([]LogEntry, error)
+	// Every task in a project at any depth and in any state: the candidate
+	// list for the TUI's move-to-parent picker, which the scoped live list
+	// and per-branch child cache cannot supply.
+	ListProjectTasks(ctx context.Context, projectID int64) ([]Task, error)
 	// live_count is live TOP-LEVEL tasks, matching the population the list view
 	// renders as rows, so the number beside a project is what selecting it
 	// produces, not a larger figure that counts sub-tasks the list hides.
@@ -209,6 +213,10 @@ type Querier interface {
 	SetStepSortOrder(ctx context.Context, arg SetStepSortOrderParams) error
 	SetTaskBody(ctx context.Context, arg SetTaskBodyParams) error
 	SetTaskDue(ctx context.Context, arg SetTaskDueParams) error
+	// Reparents one task; NULL promotes it to the top level. Cycle checks
+	// and the sub-tree's project follow-along live in Store.SetParent, for
+	// the same sqlc reason as SetTasksProject.
+	SetTaskParent(ctx context.Context, arg SetTaskParentParams) error
 	SetTaskPriority(ctx context.Context, arg SetTaskPriorityParams) error
 	SetTaskState(ctx context.Context, arg SetTaskStateParams) error
 	SetTaskTitle(ctx context.Context, arg SetTaskTitleParams) error
