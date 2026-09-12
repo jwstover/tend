@@ -224,7 +224,13 @@ func (a *app) handleProjectsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) 
 
 	case key.Matches(msg, a.keys.Archive):
 		if p, ok := a.selectedProject(); ok {
-			return *a, a.setProjectArchived(p, !p.Archived()), true
+			// Restoring is the undo, so it is immediate; archiving asks
+			// first, since `A` sits one shift away from `a` and takes the
+			// project (and the view of its tasks) off the screen.
+			if p.Archived() {
+				return *a, a.setProjectArchived(p, false), true
+			}
+			a.armProjectArchive(p)
 		}
 		return *a, nil, true
 
@@ -287,14 +293,86 @@ func (a *app) toggleArchivedProjects() tea.Cmd {
 	return nil
 }
 
-// deleteSelectedProject removes the project under the cursor. Its tasks
-// are reassigned to the default project by the store, not deleted -- a
-// project is a grouping, and dropping one must never drop work.
-func (a app) deleteSelectedProject() tea.Cmd {
+// projectConfirm is a project operation waiting on a `y`: archiving the
+// project or deleting it. Both act on a whole project at once -- every
+// task in it leaves the column with an archive, or moves to Unsorted with
+// a delete -- and both are reached by keys that are easy to hit by
+// accident (`A` is shift-`a`, `dd` is muscle memory from the task list),
+// so neither runs until a panel has named the project and `y` has agreed.
+type projectConfirm struct {
+	title string  // panel title, naming the project
+	desc  string  // what `y` does, in the panel's key row
+	run   tea.Cmd // the mutation `y` fires
+}
+
+// armProjectArchive asks before archiving p. `y` in the panel archives;
+// anything else leaves the project alone.
+func (a *app) armProjectArchive(p task.Project) {
+	a.projectConfirm = &projectConfirm{
+		title: fmt.Sprintf("archive project %s?", p.Name),
+		desc:  "archive; hidden until C shows it, A restores",
+		run:   a.setProjectArchived(p, true),
+	}
+	a.resize()
+}
+
+// armProjectDelete asks before deleting the project under the cursor. The
+// panel says how much live work moves, so a `dd` that landed on the wrong
+// row is caught before the store reassigns anything.
+func (a *app) armProjectDelete() {
 	p, ok := a.selectedProject()
 	if !ok {
-		return nil
+		return
 	}
+	desc := "delete; its tasks move to Unsorted"
+	switch p.LiveCount {
+	case 0:
+	case 1:
+		desc = "delete; its 1 live task moves to Unsorted"
+	default:
+		desc = fmt.Sprintf("delete; its %d live tasks move to Unsorted", p.LiveCount)
+	}
+	a.projectConfirm = &projectConfirm{
+		title: fmt.Sprintf("delete project %s?", p.Name),
+		desc:  desc,
+		run:   a.deleteProject(p),
+	}
+	a.resize()
+}
+
+// handleProjectConfirmKey consumes the key after a project confirmation
+// was armed: `y` runs the archive or delete it names, anything else
+// cancels. Reports false when no confirmation is pending.
+func (a *app) handleProjectConfirmKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
+	if a.projectConfirm == nil {
+		return nil, false
+	}
+	c := *a.projectConfirm
+	a.projectConfirm = nil
+	a.resize()
+	if msg.String() == "y" {
+		return c.run, true
+	}
+	return nil, true
+}
+
+// projectConfirmPanel renders the which-key panel for a pending project
+// confirmation: `y` goes ahead, anything else cancels.
+func (a app) projectConfirmPanel() string {
+	if a.projectConfirm == nil {
+		return ""
+	}
+	entries := []panelEntry{
+		{key: "y", desc: a.projectConfirm.desc, keyStyle: a.styles.Error},
+		{key: "esc", desc: "cancel", keyStyle: a.styles.Dimmed},
+	}
+	return renderKeyPanel(a.styles, a.width, a.projectConfirm.title, entries)
+}
+
+// deleteProject removes p. Its tasks are reassigned to the default
+// project by the store, not deleted -- a project is a grouping, and
+// dropping one must never drop work.
+func (a app) deleteProject(p task.Project) tea.Cmd {
 	return a.mutate(flash{kind: flashDone,
 		text: fmt.Sprintf("deleted %s; its tasks moved to Unsorted", p.Name)}, func() error {
 		return a.store.DeleteProject(a.ctx, p.ID)
