@@ -258,6 +258,86 @@ func TestRunTwoStepLinearWorkflow(t *testing.T) {
 	}
 }
 
+// The task's sub-tasks reach the prompt as {{.Subtasks}}, each with its
+// state, whether it is blocked and what it waits on, so a Dispatch-style
+// step's ready set is in the rendered prompt (recorded on the step run)
+// instead of hidden inside a list_subtasks call. Read per step, so the
+// second step sees what changed in between.
+func TestRunPromptSeesSubtasks(t *testing.T) {
+	f := newFixture(t)
+	const tpl = "{{range .Subtasks}}#{{.ID}} {{.Title}} [{{.State}}] blocked={{.IsBlocked}} deps={{.DependsOn}}\n{{end}}"
+	for _, name := range []string{"dispatch", "again"} {
+		st := f.step(name, workflow.StepAgent)
+		if err := f.s.SetStepPrompt(f.ctx, st.ID, tpl); err != nil {
+			t.Fatalf("SetStepPrompt: %v", err)
+		}
+	}
+	f.edge("dispatch", "done", "again", nil)
+
+	migration, err := f.s.AddChild(f.ctx, f.tk.ID, "write the migration")
+	if err != nil {
+		t.Fatalf("AddChild: %v", err)
+	}
+	wire, err := f.s.AddChild(f.ctx, f.tk.ID, "wire the store")
+	if err != nil {
+		t.Fatalf("AddChild: %v", err)
+	}
+	if err := f.s.AddDependency(f.ctx, wire.ID, migration.ID); err != nil {
+		t.Fatalf("AddDependency: %v", err)
+	}
+	// A grandchild is not a direct sub-task and must not appear.
+	if _, err := f.s.AddChild(f.ctx, wire.ID, "a grandchild"); err != nil {
+		t.Fatalf("AddChild(grandchild): %v", err)
+	}
+	// The first step finishes the blocker, so the second step sees the
+	// dependent one unblocked and the blocker done.
+	f.exec.handle = func(_ context.Context, req StepExec) (agent.HeadlessResult, error) {
+		if err := f.s.SetState(f.ctx, migration.ID, task.StateDone); err != nil {
+			t.Errorf("SetState: %v", err)
+		}
+		return success("dispatched"), nil
+	}
+	run := f.run()
+
+	if err := f.runner().Run(f.ctx, run.ID, false); err != nil {
+		t.Fatalf("Run: %v\n%s", err, f.log)
+	}
+
+	reqs := f.exec.requests()
+	srs := f.stepRuns(run.ID)
+	if len(reqs) != 2 || len(srs) != 2 {
+		t.Fatalf("exec calls = %d, step runs = %d, want 2 and 2", len(reqs), len(srs))
+	}
+	wantFirst := "#" + itoa(migration.ID) + " write the migration [inbox] blocked=false deps=[]\n" +
+		"#" + itoa(wire.ID) + " wire the store [inbox] blocked=true deps=[" + itoa(migration.ID) + "]\n"
+	if reqs[0].Prompt != wantFirst || srs[0].PromptRendered != wantFirst {
+		t.Errorf("dispatch prompt = %q (recorded %q), want %q", reqs[0].Prompt, srs[0].PromptRendered, wantFirst)
+	}
+	wantSecond := "#" + itoa(migration.ID) + " write the migration [done] blocked=false deps=[]\n" +
+		"#" + itoa(wire.ID) + " wire the store [inbox] blocked=false deps=[" + itoa(migration.ID) + "]\n"
+	if reqs[1].Prompt != wantSecond {
+		t.Errorf("second prompt = %q, want %q (re-read after the blocker was done)", reqs[1].Prompt, wantSecond)
+	}
+}
+
+// A task with no sub-tasks renders {{.Subtasks}} as an empty list and a
+// range over it as nothing; neither is an error.
+func TestRunPromptWithoutSubtasks(t *testing.T) {
+	f := newFixture(t)
+	st := f.step("solo", workflow.StepAgent)
+	if err := f.s.SetStepPrompt(f.ctx, st.ID, "[{{.Subtasks}}]({{range .Subtasks}}x{{end}}) n={{len .Subtasks}}"); err != nil {
+		t.Fatalf("SetStepPrompt: %v", err)
+	}
+	run := f.run()
+
+	if err := f.runner().Run(f.ctx, run.ID, false); err != nil {
+		t.Fatalf("Run: %v\n%s", err, f.log)
+	}
+	if reqs := f.exec.requests(); len(reqs) != 1 || reqs[0].Prompt != "[[]]() n=0" {
+		t.Errorf("prompt = %+v, want one call with prompt \"[[]]() n=0\"", reqs)
+	}
+}
+
 // While claude runs, the step's session row reads 'working': it has no
 // tmux pane for the TUI's poller to classify, so the runner is the only
 // thing that can say so. After the step it reads 'ended' as before.

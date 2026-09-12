@@ -64,6 +64,8 @@ type Store interface {
 	GetStep(ctx context.Context, id int64) (workflow.Step, error)
 	OutgoingEdges(ctx context.Context, stepID int64) ([]workflow.Edge, error)
 	GetTask(ctx context.Context, id int64) (task.Task, error)
+	ListChildren(ctx context.Context, parentID int64) ([]task.Task, error)
+	Blockers(ctx context.Context, taskID int64) ([]task.Task, error)
 
 	CreateStepRun(ctx context.Context, sr workflow.StepRun) (workflow.StepRun, error)
 	GetStepRun(ctx context.Context, id int64) (workflow.StepRun, error)
@@ -299,6 +301,40 @@ func (r *Runner) nextStep(ctx context.Context, run workflow.Run, wf workflow.Wor
 	return &next, carry, "", nil
 }
 
+// promptSubtasks reads the task's direct sub-tasks and each one's blockers
+// into the shape a prompt template sees ({{.Subtasks}}), read fresh per
+// step so a Dispatch-style step that runs again sees what the previous
+// step finished. A task with no sub-tasks yields nil, which a template
+// ranges over as nothing. IsBlocked is derived the way the MCP get_task
+// output is: any blocker not yet done.
+func (r *Runner) promptSubtasks(ctx context.Context, taskID int64) ([]workflow.PromptSubtask, error) {
+	children, err := r.Store.ListChildren(ctx, taskID)
+	if err != nil {
+		return nil, fmt.Errorf("listing sub-tasks of task %d: %w", taskID, err)
+	}
+	if len(children) == 0 {
+		return nil, nil
+	}
+	out := make([]workflow.PromptSubtask, 0, len(children))
+	for _, c := range children {
+		blockers, err := r.Store.Blockers(ctx, c.ID)
+		if err != nil {
+			return nil, fmt.Errorf("listing blockers of sub-task %d: %w", c.ID, err)
+		}
+		ps := workflow.PromptSubtask{
+			ID:        c.ID,
+			Title:     c.Title,
+			State:     string(c.State),
+			IsBlocked: len(task.OpenBlockers(blockers)) > 0,
+		}
+		for _, b := range blockers {
+			ps.DependsOn = append(ps.DependsOn, b.ID)
+		}
+		out = append(out, ps)
+	}
+	return out, nil
+}
+
 // startStep creates and runs one step run of step, returning it finished.
 func (r *Runner) startStep(ctx context.Context, run workflow.Run, wf workflow.Workflow, tk task.Task, step workflow.Step, input, feedback string) (workflow.StepRun, error) {
 	prior, err := r.priorRuns(ctx, run.ID, step.ID)
@@ -309,6 +345,10 @@ func (r *Runner) startStep(ctx context.Context, run workflow.Run, wf workflow.Wo
 	if err != nil {
 		return workflow.StepRun{}, err
 	}
+	subtasks, err := r.promptSubtasks(ctx, tk.ID)
+	if err != nil {
+		return workflow.StepRun{}, err
+	}
 	data := workflow.PromptData{
 		Task:      workflow.PromptTask{ID: tk.ID, Title: tk.Title, Body: tk.BodyMD},
 		Cwd:       run.Cwd,
@@ -316,6 +356,7 @@ func (r *Runner) startStep(ctx context.Context, run workflow.Run, wf workflow.Wo
 		Feedback:  feedback,
 		Iteration: int64(len(prior)) + 1,
 		Outcomes:  outcomesOf(edges),
+		Subtasks:  subtasks,
 	}
 	// A gate's prompt is optional reviewer text; an agent's is the whole
 	// step, so it renders even when empty (an empty prompt is claude's

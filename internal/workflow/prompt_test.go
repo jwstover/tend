@@ -13,7 +13,16 @@ var fullData = PromptData{
 	Feedback:  "reviewer said no",
 	Iteration: 3,
 	Outcomes:  []string{"approve", "reject"},
+	Subtasks: []PromptSubtask{
+		{ID: 43, Title: "write the migration", State: "done"},
+		{ID: 44, Title: "wire the store", State: "todo", DependsOn: []int64{43}},
+		{ID: 45, Title: "expose over MCP", State: "todo", IsBlocked: true, DependsOn: []int64{44}},
+	},
 }
+
+// readySetTpl is the Dispatch step's job in template form: the sub-tasks
+// that are neither done nor waiting on an open one.
+const readySetTpl = "{{range .Subtasks}}{{if and (ne .State \"done\") (not .IsBlocked)}}- #{{.ID}} {{.Title}}\n{{end}}{{end}}"
 
 func TestRenderPrompt(t *testing.T) {
 	cases := []struct {
@@ -56,6 +65,44 @@ func TestRenderPrompt(t *testing.T) {
 			prompt: "Do it.{{if .Feedback}} Address this feedback: {{.Feedback}}{{end}}",
 			data:   PromptData{Feedback: "make it faster"},
 			want:   "Do it. Address this feedback: make it faster",
+		},
+		{
+			name:   "range over sub-tasks with every field",
+			prompt: "{{range .Subtasks}}#{{.ID}} {{.Title}} [{{.State}}] blocked={{.IsBlocked}} deps={{.DependsOn}}\n{{end}}",
+			data:   fullData,
+			want: "#43 write the migration [done] blocked=false deps=[]\n" +
+				"#44 wire the store [todo] blocked=false deps=[43]\n" +
+				"#45 expose over MCP [todo] blocked=true deps=[44]\n",
+		},
+		{
+			name:   "ready set: not done and not blocked",
+			prompt: readySetTpl,
+			data:   fullData,
+			want:   "- #44 wire the store\n",
+		},
+		{
+			name:   "no sub-tasks: range renders nothing, not an error",
+			prompt: "sub-tasks:{{range .Subtasks}} {{.Title}}{{end}}",
+			data:   PromptData{Task: PromptTask{ID: 1}},
+			want:   "sub-tasks:",
+		},
+		{
+			name:   "no sub-tasks: bare {{.Subtasks}} renders as an empty list",
+			prompt: "{{.Subtasks}}",
+			data:   PromptData{},
+			want:   "[]",
+		},
+		{
+			name:   "sub-task count with len",
+			prompt: "{{len .Subtasks}} sub-tasks",
+			data:   fullData,
+			want:   "3 sub-tasks",
+		},
+		{
+			name:   "unknown sub-task field is an error",
+			prompt: "{{range .Subtasks}}{{.Body}}{{end}}",
+			data:   fullData,
+			err:    ErrInvalidPrompt,
 		},
 		{
 			name:   "unknown top-level variable is an error",
@@ -105,6 +152,13 @@ func TestValidatePrompt(t *testing.T) {
 		{"plain text", "Just do the thing.", nil},
 		{"every variable", "{{.Task.ID}}{{.Task.Title}}{{.Task.Body}}{{.Cwd}}{{.Input}}{{.Feedback}}{{.Iteration}}{{.Outcomes}}", nil},
 		{"range over outcomes", "{{range .Outcomes}}- {{.}}\n{{end}}", nil},
+		{"bare subtasks", "{{.Subtasks}}", nil},
+		{"range over sub-tasks with every field", "{{range .Subtasks}}{{.ID}}{{.Title}}{{.State}}{{.IsBlocked}}{{.DependsOn}}{{end}}", nil},
+		{"ready-set template", readySetTpl, nil},
+		{"range over each sub-task's dependencies", "{{range .Subtasks}}{{range .DependsOn}}#{{.}} {{end}}{{end}}", nil},
+		{"unknown sub-task field", "{{range .Subtasks}}{{.Body}}{{end}}", ErrInvalidPrompt},
+		{"unknown field inside blocked branch", "{{range .Subtasks}}{{if .IsBlocked}}{{.Blockers}}{{end}}{{end}}", ErrInvalidPrompt},
+		{"unknown field inside unblocked branch", "{{range .Subtasks}}{{if .IsBlocked}}ok{{else}}{{.Blockers}}{{end}}{{end}}", ErrInvalidPrompt},
 		{"unknown variable", "{{.Cwdd}}", ErrInvalidPrompt},
 		{"unknown variable inside truthy branch", "{{if .Feedback}}{{.Bogus}}{{end}}", ErrInvalidPrompt},
 		{"unknown variable inside falsy branch", "{{if .Feedback}}ok{{else}}{{.Bogus}}{{end}}", ErrInvalidPrompt},

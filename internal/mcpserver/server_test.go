@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -30,6 +32,11 @@ type fakeStore struct {
 	steps     map[int64]workflow.Step
 	edges     []workflow.Edge
 	stepRuns  map[int64]workflow.StepRun
+
+	// onGetStep, when set, runs after GetStep has taken its copy and
+	// before it returns, so a test can stand in for another writer
+	// landing between a tool's read and its write.
+	onGetStep func(id int64)
 }
 
 func newFakeStore(seed ...task.Task) *fakeStore {
@@ -259,6 +266,9 @@ func (s *fakeStore) GetStep(_ context.Context, id int64) (workflow.Step, error) 
 	if !ok {
 		return workflow.Step{}, workflow.ErrStepNotFound
 	}
+	if s.onGetStep != nil {
+		s.onGetStep(id)
+	}
 	return st, nil
 }
 
@@ -300,6 +310,318 @@ func (s *fakeStore) FinishStepRun(_ context.Context, id int64, outcome, delivera
 	return nil
 }
 
+// ---- workflow authoring ----------------------------------------------------
+//
+// The fake mirrors internal/store's workflow semantics closely enough for
+// the authoring tools: normalized names, case-insensitive uniqueness,
+// append-at-end steps, the (from, outcome) upsert on edges, and the same
+// ordering the SQL gives ListSteps and ListEdges.
+
+// allocID hands out an id above every workflow, step and edge the fake
+// holds, so ids the tools allocate never collide with the ones a seed
+// helper (seedStepRun) sets directly.
+func (s *fakeStore) allocID() int64 {
+	var top int64
+	for id := range s.workflows {
+		top = max(top, id)
+	}
+	for id := range s.steps {
+		top = max(top, id)
+	}
+	for _, e := range s.edges {
+		top = max(top, e.ID)
+	}
+	return top + 1
+}
+
+// workflowNameTaken mirrors the schema's NOCASE unique index on name,
+// ignoring the workflow with id except (0 for none).
+func (s *fakeStore) workflowNameTaken(name string, except int64) bool {
+	for _, w := range s.workflows {
+		if w.ID != except && strings.EqualFold(w.Name, name) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *fakeStore) ListWorkflows(context.Context) ([]workflow.Workflow, error) {
+	out := make([]workflow.Workflow, 0, len(s.workflows))
+	for _, w := range s.workflows {
+		w.StepCount = 0
+		for _, st := range s.steps {
+			if st.WorkflowID == w.ID {
+				w.StepCount++
+			}
+		}
+		out = append(out, w)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return strings.ToLower(out[i].Name) < strings.ToLower(out[j].Name)
+	})
+	return out, nil
+}
+
+func (s *fakeStore) WorkflowByName(_ context.Context, name string) (workflow.Workflow, error) {
+	n, err := workflow.NormalizeName(name)
+	if err != nil {
+		return workflow.Workflow{}, err
+	}
+	for _, w := range s.workflows {
+		if strings.EqualFold(w.Name, n) {
+			return w, nil
+		}
+	}
+	return workflow.Workflow{}, fmt.Errorf("workflow %q: %w", n, workflow.ErrWorkflowNotFound)
+}
+
+func (s *fakeStore) CreateWorkflow(_ context.Context, name, description string) (workflow.Workflow, error) {
+	n, err := workflow.NormalizeName(name)
+	if err != nil {
+		return workflow.Workflow{}, err
+	}
+	if s.workflowNameTaken(n, 0) {
+		return workflow.Workflow{}, fmt.Errorf("creating workflow %q: UNIQUE constraint failed: workflows.name", n)
+	}
+	w := workflow.Workflow{ID: s.allocID(), Name: n, Description: description}
+	s.workflows[w.ID] = w
+	return w, nil
+}
+
+func (s *fakeStore) RenameWorkflow(_ context.Context, id int64, name string) error {
+	n, err := workflow.NormalizeName(name)
+	if err != nil {
+		return err
+	}
+	w, ok := s.workflows[id]
+	if !ok {
+		return fmt.Errorf("workflow %d: %w", id, workflow.ErrWorkflowNotFound)
+	}
+	if s.workflowNameTaken(n, id) {
+		return fmt.Errorf("renaming workflow %d: UNIQUE constraint failed: workflows.name", id)
+	}
+	w.Name = n
+	s.workflows[id] = w
+	return nil
+}
+
+func (s *fakeStore) SetWorkflowDescription(_ context.Context, id int64, description string) error {
+	w, ok := s.workflows[id]
+	if !ok {
+		return fmt.Errorf("workflow %d: %w", id, workflow.ErrWorkflowNotFound)
+	}
+	w.Description = description
+	s.workflows[id] = w
+	return nil
+}
+
+// ListSteps returns the workflow's steps by sort order then id, as the
+// SQL does.
+func (s *fakeStore) ListSteps(_ context.Context, workflowID int64) ([]workflow.Step, error) {
+	var out []workflow.Step
+	for _, st := range s.steps {
+		if st.WorkflowID == workflowID {
+			out = append(out, st)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].SortOrder != out[j].SortOrder {
+			return out[i].SortOrder < out[j].SortOrder
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out, nil
+}
+
+func (s *fakeStore) AddStep(_ context.Context, workflowID int64, name string, kind workflow.StepKind) (workflow.Step, error) {
+	n, err := workflow.NormalizeName(name)
+	if err != nil {
+		return workflow.Step{}, err
+	}
+	if !kind.Valid() {
+		return workflow.Step{}, fmt.Errorf("unknown step kind %q", kind)
+	}
+	if _, ok := s.workflows[workflowID]; !ok {
+		return workflow.Step{}, fmt.Errorf("workflow %d: %w", workflowID, workflow.ErrWorkflowNotFound)
+	}
+	var order int64
+	for _, st := range s.steps {
+		if st.WorkflowID == workflowID {
+			order = max(order, st.SortOrder+1)
+		}
+	}
+	st := workflow.Step{ID: s.allocID(), WorkflowID: workflowID, Name: n, Kind: kind, SortOrder: order}
+	s.steps[st.ID] = st
+	return st, nil
+}
+
+func (s *fakeStore) UpdateStep(_ context.Context, st workflow.Step) error {
+	n, err := workflow.NormalizeName(st.Name)
+	if err != nil {
+		return err
+	}
+	if !st.Kind.Valid() {
+		return fmt.Errorf("unknown step kind %q", st.Kind)
+	}
+	cur, ok := s.steps[st.ID]
+	if !ok {
+		return fmt.Errorf("step %d: %w", st.ID, workflow.ErrStepNotFound)
+	}
+	cur.Name, cur.Kind, cur.PromptMD, cur.Model, cur.PermissionMode = n, st.Kind, st.PromptMD, st.Model, st.PermissionMode
+	s.steps[st.ID] = cur
+	return nil
+}
+
+func (s *fakeStore) SetStepKind(_ context.Context, id int64, kind workflow.StepKind) error {
+	if !kind.Valid() {
+		return fmt.Errorf("unknown step kind %q", kind)
+	}
+	st, ok := s.steps[id]
+	if !ok {
+		return fmt.Errorf("step %d: %w", id, workflow.ErrStepNotFound)
+	}
+	st.Kind = kind
+	s.steps[id] = st
+	return nil
+}
+
+func (s *fakeStore) SetStepModel(_ context.Context, id int64, model string) error {
+	st, ok := s.steps[id]
+	if !ok {
+		return fmt.Errorf("step %d: %w", id, workflow.ErrStepNotFound)
+	}
+	st.Model = model
+	s.steps[id] = st
+	return nil
+}
+
+func (s *fakeStore) SetStepPermissionMode(_ context.Context, id int64, mode string) error {
+	st, ok := s.steps[id]
+	if !ok {
+		return fmt.Errorf("step %d: %w", id, workflow.ErrStepNotFound)
+	}
+	st.PermissionMode = mode
+	s.steps[id] = st
+	return nil
+}
+
+func (s *fakeStore) SetStepPrompt(_ context.Context, id int64, prompt string) error {
+	st, ok := s.steps[id]
+	if !ok {
+		return fmt.Errorf("step %d: %w", id, workflow.ErrStepNotFound)
+	}
+	st.PromptMD = prompt
+	s.steps[id] = st
+	return nil
+}
+
+// ReorderSteps refuses anything but exactly the workflow's step ids, the
+// same way the store does, and applies nothing on refusal.
+func (s *fakeStore) ReorderSteps(ctx context.Context, workflowID int64, ids []int64) error {
+	current, _ := s.ListSteps(ctx, workflowID)
+	if len(current) != len(ids) {
+		return fmt.Errorf("reordering workflow %d: got %d ids for %d steps", workflowID, len(ids), len(current))
+	}
+	known := make(map[int64]bool, len(current))
+	for _, st := range current {
+		known[st.ID] = true
+	}
+	for _, id := range ids {
+		if !known[id] {
+			return fmt.Errorf("reordering workflow %d: step %d is not in it", workflowID, id)
+		}
+		delete(known, id)
+	}
+	for i, id := range ids {
+		st := s.steps[id]
+		st.SortOrder = int64(i)
+		s.steps[id] = st
+	}
+	return nil
+}
+
+// DeleteStep removes the step and every edge touching it; the fake has
+// no runs, so the store's active-run check has nothing to refuse.
+func (s *fakeStore) DeleteStep(_ context.Context, id int64) error {
+	if _, ok := s.steps[id]; !ok {
+		return fmt.Errorf("step %d: %w", id, workflow.ErrStepNotFound)
+	}
+	delete(s.steps, id)
+	kept := s.edges[:0]
+	for _, e := range s.edges {
+		if e.FromStepID != id && e.ToStepID != id {
+			kept = append(kept, e)
+		}
+	}
+	s.edges = kept
+	return nil
+}
+
+// ListEdges returns the edges leaving the workflow's steps, by the source
+// step's sort order then outcome, as the SQL does.
+func (s *fakeStore) ListEdges(ctx context.Context, workflowID int64) ([]workflow.Edge, error) {
+	steps, _ := s.ListSteps(ctx, workflowID)
+	position := make(map[int64]int, len(steps))
+	for i, st := range steps {
+		position[st.ID] = i
+	}
+	out := make([]workflow.Edge, 0, len(s.edges))
+	for _, e := range s.edges {
+		if _, ok := position[e.FromStepID]; ok {
+			out = append(out, e)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if position[out[i].FromStepID] != position[out[j].FromStepID] {
+			return position[out[i].FromStepID] < position[out[j].FromStepID]
+		}
+		return out[i].Outcome < out[j].Outcome
+	})
+	return out, nil
+}
+
+// SetEdge upserts on (from step, outcome), re-pointing the existing edge
+// or adding one, with the store's checks in front.
+func (s *fakeStore) SetEdge(ctx context.Context, fromStepID int64, outcome string, toStepID int64, maxIterations *int64) (workflow.Edge, error) {
+	o, err := workflow.NormalizeOutcome(outcome)
+	if err != nil {
+		return workflow.Edge{}, err
+	}
+	if maxIterations != nil && *maxIterations < 1 {
+		return workflow.Edge{}, fmt.Errorf("max iterations %d must be at least 1", *maxIterations)
+	}
+	from, err := s.GetStep(ctx, fromStepID)
+	if err != nil {
+		return workflow.Edge{}, err
+	}
+	to, err := s.GetStep(ctx, toStepID)
+	if err != nil {
+		return workflow.Edge{}, err
+	}
+	if from.WorkflowID != to.WorkflowID {
+		return workflow.Edge{}, fmt.Errorf("edge %d -> %d: %w", fromStepID, toStepID, workflow.ErrCrossWorkflowEdge)
+	}
+	for i, e := range s.edges {
+		if e.FromStepID == fromStepID && e.Outcome == o {
+			s.edges[i].ToStepID, s.edges[i].MaxIterations = toStepID, maxIterations
+			return s.edges[i], nil
+		}
+	}
+	e := workflow.Edge{ID: s.allocID(), FromStepID: fromStepID, Outcome: o, ToStepID: toStepID, MaxIterations: maxIterations}
+	s.edges = append(s.edges, e)
+	return e, nil
+}
+
+func (s *fakeStore) DeleteEdge(_ context.Context, id int64) error {
+	for i, e := range s.edges {
+		if e.ID == id {
+			s.edges = append(s.edges[:i], s.edges[i+1:]...)
+			return nil
+		}
+	}
+	return fmt.Errorf("deleting edge %d: no such edge", id)
+}
+
 func (s *fakeStore) Close() error { return nil }
 
 // dial spins up a Server backed by store, bound to taskID and to no step
@@ -311,11 +633,13 @@ func dial(t *testing.T, store Store, taskID int64) *mcp.ClientSession {
 }
 
 // dialStep is dial for a workflow step's session: a non-zero stepRunID
-// adds the step tools, exactly as Server.Run does.
+// adds the step tools, exactly as Server.Run does. The workflow authoring
+// tools are registered for every session, also as Server.Run does.
 func dialStep(t *testing.T, store Store, taskID, stepRunID int64) *mcp.ClientSession {
 	t.Helper()
 	srv := mcp.NewServer(&mcp.Implementation{Name: "tend-test"}, nil)
 	registerTools(srv, store, taskID)
+	registerWorkflowTools(srv, store)
 	if stepRunID != 0 {
 		registerStepTools(srv, store, stepRunID)
 	}

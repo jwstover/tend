@@ -55,5 +55,26 @@ type Store interface {
 	OutgoingEdges(ctx context.Context, stepID int64) ([]workflow.Edge, error)
 	FinishStepRun(ctx context.Context, id int64, outcome, deliverable string) error
 
+	// The workflow authoring tools (workflows.go), available to every
+	// session: the same writes the TUI's workflows view makes, so an
+	// agent can draft a workflow the user then refines there.
+	ListWorkflows(ctx context.Context) ([]workflow.Workflow, error)
+	WorkflowByName(ctx context.Context, name string) (workflow.Workflow, error)
+	CreateWorkflow(ctx context.Context, name, description string) (workflow.Workflow, error)
+	RenameWorkflow(ctx context.Context, id int64, name string) error
+	SetWorkflowDescription(ctx context.Context, id int64, description string) error
+	ListSteps(ctx context.Context, workflowID int64) ([]workflow.Step, error)
+	AddStep(ctx context.Context, workflowID int64, name string, kind workflow.StepKind) (workflow.Step, error)
+	UpdateStep(ctx context.Context, st workflow.Step) error
+	SetStepKind(ctx context.Context, id int64, kind workflow.StepKind) error
+	SetStepModel(ctx context.Context, id int64, model string) error
+	SetStepPermissionMode(ctx context.Context, id int64, mode string) error
+	SetStepPrompt(ctx context.Context, id int64, prompt string) error
+	ReorderSteps(ctx context.Context, workflowID int64, ids []int64) error
+	DeleteStep(ctx context.Context, id int64) error
+	ListEdges(ctx context.Context, workflowID int64) ([]workflow.Edge, error)
+	SetEdge(ctx context.Context, fromStepID int64, outcome string, toStepID int64, maxIterations *int64) (workflow.Edge, error)
+	DeleteEdge(ctx context.Context, id int64) error
+
 	Close() error
 }
