@@ -858,6 +858,33 @@ func TestWorkflowStatusHintMatchesGateOutcomes(t *testing.T) {
 	if strings.Contains(out, "decide") {
 		t.Errorf("status of an approve/reject gate need not hint decide:\n%s", out)
 	}
+
+	// An outcome with a space in it is quoted so the hinted command is one
+	// the shell hands to decide as a single argument.
+	review := s.addWorkflow("review", "implement", "verdict", "address") // steps 6-8
+	s.setKind(7, workflow.StepGate)
+	s.edges = append(s.edges,
+		workflow.Edge{ID: 5, FromStepID: 7, Outcome: "request changes", ToStepID: 8},
+		workflow.Edge{ID: 6, FromStepID: 7, Outcome: "approved", ToStepID: 6},
+	)
+	s.addRun(review.ID, tk.ID, workflow.RunWaitingReview, 6, 7)
+
+	out, err = runWorkflow(t, s, "status", "3")
+	if err != nil {
+		t.Fatalf("status 3: %v", err)
+	}
+	want = `waiting for review: tend workflow decide 3 "request changes" | decide 3 approved [--feedback "..."]`
+	if !strings.Contains(out, want) {
+		t.Errorf("status of a gate routing a multi-word outcome should quote it, want %q in:\n%s", want, out)
+	}
+}
+
+func TestGateHintQuotesWhitespaceOutcomes(t *testing.T) {
+	got := gateHint(59, []string{"request changes", "approved", "ci\tred"})
+	want := `tend workflow decide 59 "request changes" | decide 59 approved | decide 59 "ci\tred" [--feedback "..."]`
+	if got != want {
+		t.Errorf("gateHint = %q, want %q", got, want)
+	}
 }
 
 // A gate decision needs a run waiting at a gate.

@@ -169,7 +169,7 @@ tend/
 │       ├── projects.go                 #   `tend projects` — list/add/rename/rm/archive/unarchive/cwd
 │       ├── auth.go                    #   `tend auth jira {login,status,logout}`
 │       ├── mcp.go                      #   hidden `tend mcp --task-id <id> [--step-run-id <id>]`, spawned by a launched claude session
-│       ├── workflow.go                 #   `tend workflow` group: ls/start/status/approve/reject/pause/resume/cancel; hidden `run <run-id>` (the runner itself)
+│       ├── workflow.go                 #   `tend workflow` group: ls/start/status/approve/reject/decide/pause/resume/cancel; hidden `run <run-id>` (the runner itself)
 │       ├── workflow_logs.go            #   `tend workflow logs <run-id> [--step N] [-f] [--raw] [--runner]` — a step's stream-json log or runner.log, tail-followed
 │       └── agent_hook.go                #   hidden `tend agent-hook <event>`, spawned by Claude Code's own hooks
 │   └── version/                    # String(): ldflags-stamped release version, else runtime/debug build info

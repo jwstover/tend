@@ -452,7 +452,9 @@ func stepRunLiveState(run workflow.Run, current bool) string {
 // gate. It only names commands decideGate would accept for that gate:
 // approve/reject when those are all the gate routes (or it has no edges,
 // when either ends the run), otherwise one `decide` per routed outcome,
-// the shell's counterpart of the run view's `o` picker.
+// the shell's counterpart of the run view's `o` picker. An outcome with
+// whitespace in it (`request changes`, `ci red`) is quoted so the printed
+// command survives shell word splitting as the single argument decide expects.
 func gateHint(runID int64, outcomes []string) string {
 	id := strconv.FormatInt(runID, 10)
 	custom := slices.ContainsFunc(outcomes, func(o string) bool {
@@ -463,9 +465,19 @@ func gateHint(runID int64, outcomes []string) string {
 	}
 	parts := make([]string, 0, len(outcomes))
 	for _, o := range outcomes {
-		parts = append(parts, "decide "+id+" "+o)
+		parts = append(parts, "decide "+id+" "+shellWord(o))
 	}
 	return "tend workflow " + strings.Join(parts, " | ") + " [--feedback \"...\"]"
+}
+
+// shellWord returns s as one shell argument: bare when it has no
+// whitespace, otherwise double-quoted with Go's escaping, which the shell
+// reads the same way for the plain words outcomes are made of.
+func shellWord(s string) string {
+	if !strings.ContainsAny(s, " \t\n") {
+		return s
+	}
+	return strconv.Quote(s)
 }
 
 // runnerNote is the " (runner gone)" suffix for a run whose state says a
