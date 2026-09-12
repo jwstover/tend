@@ -22,7 +22,7 @@ func (a *app) openProjectPicker(t task.Task) {
 	a.projectPickerTaskID = t.ID
 	a.projectPickerLabel = t.Title
 	a.projectPickerSel = 0
-	for i, p := range a.visibleProjects() {
+	for i, p := range a.activeProjects() {
 		if p.ID == t.ProjectID {
 			a.projectPickerSel = i
 			break
@@ -39,7 +39,7 @@ func (a *app) closeProjectPicker() {
 
 // handleProjectPickerKey owns the keyboard while the picker is open.
 func (a app) handleProjectPickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	projects := a.visibleProjects()
+	projects := a.activeProjects()
 
 	switch msg.String() {
 	case "esc":
@@ -104,7 +104,7 @@ func (a app) projectPickerView() string {
 		s.Muted.Render("  to project")))
 	lines = append(lines, "  "+cb.Render(g.TeeRight+hbar+g.TeeLeft))
 
-	projects := a.visibleProjects()
+	projects := a.activeProjects()
 	if len(projects) == 0 {
 		lines = append(lines, row(s.Muted.Render("no projects yet - press [ then n to make one")))
 	}
