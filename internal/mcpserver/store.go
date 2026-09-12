@@ -22,6 +22,7 @@ type Store interface {
 	ListChildren(ctx context.Context, parentID int64) ([]task.Task, error)
 	AddTaskWithBody(ctx context.Context, title, body string) (task.Task, error)
 	AddChild(ctx context.Context, parentID int64, title string) (task.Task, error)
+	SetTitle(ctx context.Context, id int64, title string) error
 	SetBody(ctx context.Context, id int64, body string) error
 	AppendBody(ctx context.Context, id int64, text string) error
 	SetState(ctx context.Context, id int64, st task.State) error

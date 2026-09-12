@@ -233,6 +233,22 @@ func (s *fakeStore) ListProjects(context.Context) ([]task.Project, error) {
 	return s.projects, nil
 }
 
+// SetTitle applies the same normalization as store.Store.SetTitle so the
+// handler tests see the trimmed title and the blank-title refusal.
+func (s *fakeStore) SetTitle(_ context.Context, id int64, title string) error {
+	t, ok := s.tasks[id]
+	if !ok {
+		return errors.New("no such task")
+	}
+	title, err := task.NormalizeTitle(title)
+	if err != nil {
+		return err
+	}
+	t.Title = title
+	s.tasks[id] = t
+	return nil
+}
+
 func (s *fakeStore) SetPriority(_ context.Context, id int64, p *int64) error {
 	t, ok := s.tasks[id]
 	if !ok {
@@ -799,6 +815,56 @@ func TestAppendTaskBodyAcceptsExplicitTaskOverride(t *testing.T) {
 	}
 	if store.tasks[1].BodyMD != "untouched" {
 		t.Errorf("bound task body mutated to %q", store.tasks[1].BodyMD)
+	}
+}
+
+func TestSetTaskTitleDefaultsToBoundTaskAndTrims(t *testing.T) {
+	store := newFakeStore(task.Task{ID: 1, Title: "seven steps"})
+	cs := dial(t, store, 1)
+
+	got := callTool[taskOut](t, cs, "set_task_title", map[string]any{"title": "  eight steps  "})
+	if got.ID != 1 || got.Title != "eight steps" {
+		t.Errorf("set_task_title = %+v, want id=1 title %q", got, "eight steps")
+	}
+	if store.tasks[1].Title != "eight steps" {
+		t.Errorf("stored title = %q, want %q", store.tasks[1].Title, "eight steps")
+	}
+}
+
+func TestSetTaskTitleAcceptsExplicitTaskOverride(t *testing.T) {
+	store := newFakeStore(
+		task.Task{ID: 1, Title: "bound"},
+		task.Task{ID: 2, Title: "other"},
+	)
+	cs := dial(t, store, 1)
+
+	got := callTool[taskOut](t, cs, "set_task_title", map[string]any{"title": "renamed", "task_id": 2})
+	if got.ID != 2 || got.Title != "renamed" {
+		t.Errorf("set_task_title(task_id=2) = %+v, want id=2 title %q", got, "renamed")
+	}
+	if store.tasks[1].Title != "bound" {
+		t.Errorf("bound task title mutated to %q", store.tasks[1].Title)
+	}
+}
+
+func TestSetTaskTitleRejectsBlankTitle(t *testing.T) {
+	store := newFakeStore(task.Task{ID: 1, Title: "keep me"})
+	cs := dial(t, store, 1)
+
+	for _, title := range []string{"", "   ", "\t\n"} {
+		res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+			Name:      "set_task_title",
+			Arguments: map[string]any{"title": title},
+		})
+		if err != nil {
+			t.Fatalf("CallTool(%q): %v", title, err)
+		}
+		if !res.IsError {
+			t.Errorf("set_task_title(%q) should return an error result, not succeed", title)
+		}
+		if store.tasks[1].Title != "keep me" {
+			t.Errorf("set_task_title(%q) changed the title to %q", title, store.tasks[1].Title)
+		}
 	}
 }
 
