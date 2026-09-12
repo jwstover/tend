@@ -71,8 +71,9 @@ type LaunchOpts struct {
 	// to the default system prompt rather than replacing it. The workflow
 	// runner uses it to state the finish_step hand-off contract for a
 	// headless step (workflow.StepSystemPrompt) without touching the
-	// author's prompt_md. Honoured by HeadlessCmd/HeadlessResumeCmd; ""
-	// adds nothing.
+	// author's prompt_md; the TUI uses it to brief an interactive session
+	// on the task it is bound to (task.SessionSystemPrompt). Honoured by
+	// every builder here; "" adds nothing.
 	AppendSystemPrompt string
 }
 
@@ -94,6 +95,9 @@ func LaunchCmdWith(cwd, sessionID, label, mcpConfigPath, settingsPath string, op
 	if opts.PermissionMode != "" {
 		args = append(args, "--permission-mode", opts.PermissionMode)
 	}
+	if opts.AppendSystemPrompt != "" {
+		args = append(args, "--append-system-prompt", opts.AppendSystemPrompt)
+	}
 	if opts.Prompt != "" {
 		args = append(args, opts.Prompt)
 	}
@@ -108,12 +112,25 @@ func LaunchCmdWith(cwd, sessionID, label, mcpConfigPath, settingsPath string, op
 // not just "reread the transcript," so tools and status reporting should
 // both be there either time.
 func ResumeCmd(cwd, externalID, mcpConfigPath, settingsPath string) *exec.Cmd {
+	return ResumeCmdWith(cwd, externalID, mcpConfigPath, settingsPath, LaunchOpts{})
+}
+
+// ResumeCmdWith is ResumeCmd plus a system prompt block
+// (LaunchOpts.AppendSystemPrompt), which claude accepts on a --resume as
+// it does on a launch. The TUI passes a fresh task brief here so a session
+// picked up after a break sees the task as it stands now, not only as it
+// was when the session began. The other LaunchOpts fields are ignored: a
+// resumed session already has its model, mode and first turn.
+func ResumeCmdWith(cwd, externalID, mcpConfigPath, settingsPath string, opts LaunchOpts) *exec.Cmd {
 	args := []string{"--resume", externalID}
 	if mcpConfigPath != "" {
 		args = append(args, "--mcp-config", mcpConfigPath)
 	}
 	if settingsPath != "" {
 		args = append(args, "--settings", settingsPath)
+	}
+	if opts.AppendSystemPrompt != "" {
+		args = append(args, "--append-system-prompt", opts.AppendSystemPrompt)
 	}
 	c := exec.Command(binary, args...)
 	c.Dir = cwd

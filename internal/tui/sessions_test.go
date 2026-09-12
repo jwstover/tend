@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -376,3 +377,85 @@ func TestDetailPaneShowsSessions(t *testing.T) {
 		}
 	}
 }
+
+// The brief an interactive session is launched with comes from the store,
+// not the loaded view state, and carries every relation the task has:
+// project, tags, parent, sub-tasks with their blocked marker, both
+// dependency directions and the log. A task the store cannot read yields
+// no block at all rather than a wrong one.
+func TestSessionBriefPromptGathersTaskContext(t *testing.T) {
+	ctx := context.Background()
+	m, s := newTestApp(t)
+	a := m.(app)
+
+	parent, err := s.AddTask(ctx, "epic")
+	if err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	tk, err := s.AddChild(ctx, parent.ID, "ship the thing")
+	if err != nil {
+		t.Fatalf("AddChild: %v", err)
+	}
+	if err := s.SetBody(ctx, tk.ID, "## Plan\n\nCarefully."); err != nil {
+		t.Fatalf("SetBody: %v", err)
+	}
+	if err := s.SetState(ctx, tk.ID, task.StateDoing); err != nil {
+		t.Fatalf("SetState: %v", err)
+	}
+	if err := s.SetTags(ctx, tk.ID, []string{"cli"}); err != nil {
+		t.Fatalf("SetTags: %v", err)
+	}
+	child, err := s.AddChild(ctx, tk.ID, "sub step")
+	if err != nil {
+		t.Fatalf("AddChild: %v", err)
+	}
+	prereq, err := s.AddTask(ctx, "prereq")
+	if err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	if err := s.AddDependency(ctx, tk.ID, prereq.ID); err != nil {
+		t.Fatalf("AddDependency: %v", err)
+	}
+	if err := s.AddDependency(ctx, child.ID, prereq.ID); err != nil {
+		t.Fatalf("AddDependency: %v", err)
+	}
+	after, err := s.AddTask(ctx, "follow-up")
+	if err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	if err := s.AddDependency(ctx, after.ID, tk.ID); err != nil {
+		t.Fatalf("AddDependency: %v", err)
+	}
+	if _, err := s.AddLogEntry(ctx, &tk.ID, "Wired the flag."); err != nil {
+		t.Fatalf("AddLogEntry: %v", err)
+	}
+
+	got := a.sessionBriefPrompt(tk.ID)
+	for _, want := range []string{
+		"## Task #" + itoa(tk.ID) + ": ship the thing",
+		"- State: doing",
+		"- Project: Unsorted",
+		"- Tags: cli",
+		"- Parent task: #" + itoa(parent.ID) + ` "epic" (inbox)`,
+		"### Sub-tasks (0 of 1 done)",
+		`- [ ] #` + itoa(child.ID) + ` "sub step" (inbox), waiting on 1 open task(s)`,
+		"### Blocked by (1 open)",
+		`- [ ] #` + itoa(prereq.ID) + ` "prereq" (inbox)`,
+		"### Blocks",
+		`- #` + itoa(after.ID) + ` "follow-up" (inbox)`,
+		"### Description\n\n## Plan\n\nCarefully.\n",
+		"### Log (newest first)",
+		": Wired the flag.",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("brief missing %q\n---\n%s", want, got)
+		}
+	}
+
+	if got := a.sessionBriefPrompt(999999); got != "" {
+		t.Errorf("brief for a missing task = %q, want empty", got)
+	}
+}
+
+// itoa renders a task id the way the brief does.
+func itoa(v int64) string { return strconv.FormatInt(v, 10) }

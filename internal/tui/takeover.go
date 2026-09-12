@@ -57,8 +57,8 @@ func (r takeoverRef) set() bool { return r.stepRunID != 0 }
 // fires from Update paths the tests drive, and this repo's dev machine has
 // claude installed, so without a stub a test would hand the terminal to a
 // real claude. Tests swap in a Cmd that yields the returning message.
-var takeoverResume = func(sess task.Session, dbPath string, ref takeoverRef) tea.Cmd {
-	return resumeSessionCmd(sess, dbPath, ref)
+var takeoverResume = func(sess task.Session, dbPath, systemPrompt string, ref takeoverRef) tea.Cmd {
+	return resumeSessionCmd(sess, dbPath, systemPrompt, ref)
 }
 
 // How long a takeover waits for a paused run's runner to exit before
@@ -156,7 +156,7 @@ func (a app) takeoverCmd(run workflow.Run, cur workflow.StepRun) tea.Cmd {
 		}
 		for _, sess := range sessions {
 			if sess.ExternalID == cur.SessionExternalID {
-				return takeoverResume(sess, a.dbPath, takeoverRef{runID: run.ID, stepRunID: cur.ID})()
+				return takeoverResume(sess, a.dbPath, a.sessionBriefPrompt(sess.TaskID), takeoverRef{runID: run.ID, stepRunID: cur.ID})()
 			}
 		}
 		return statusMsg{isErr: true, text: fmt.Sprintf("no session row for step run %d", cur.ID)}

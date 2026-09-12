@@ -30,7 +30,7 @@ func stubTakeoverResume(t *testing.T) *takeoverRecord {
 	t.Helper()
 	rec := &takeoverRecord{}
 	prev := takeoverResume
-	takeoverResume = func(sess task.Session, dbPath string, ref takeoverRef) tea.Cmd {
+	takeoverResume = func(sess task.Session, dbPath, _ string, ref takeoverRef) tea.Cmd {
 		rec.sess, rec.ref = sess, ref
 		rec.calls++
 		return func() tea.Msg {
