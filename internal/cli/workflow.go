@@ -103,6 +103,7 @@ func newWorkflowCmd(open openWorkflowStore, dbPath func() string) *cobra.Command
 		newWorkflowStatusCmd(open),
 		newWorkflowGateCmd(open, workflow.OutcomeApprove),
 		newWorkflowGateCmd(open, workflow.OutcomeReject),
+		newWorkflowDecideCmd(open),
 		newWorkflowPauseCmd(open),
 		newWorkflowResumeCmd(open, dbPath),
 		newWorkflowCancelCmd(open),
@@ -399,7 +400,15 @@ func showRun(ctx context.Context, out io.Writer, s WorkflowStore, runID int64) e
 		return err
 	}
 	if waiting != nil {
-		fmt.Fprintf(out, "\nwaiting for review: tend workflow approve %d | reject %d --feedback \"...\"\n", run.ID, run.ID)
+		edges, err := s.OutgoingEdges(ctx, waiting.StepID)
+		if err != nil {
+			return err
+		}
+		outcomes := make([]string, 0, len(edges))
+		for _, e := range edges {
+			outcomes = append(outcomes, e.Outcome)
+		}
+		fmt.Fprintf(out, "\nwaiting for review: %s\n", gateHint(run.ID, outcomes))
 		if waiting.Input != "" {
 			fmt.Fprintf(out, "input under review:\n%s\n", indent(waiting.Input, "  "))
 		}
@@ -439,6 +448,26 @@ func stepRunLiveState(run workflow.Run, current bool) string {
 	return string(run.State)
 }
 
+// gateHint is the command line `status <run-id>` prints under a waiting
+// gate. It only names commands decideGate would accept for that gate:
+// approve/reject when those are all the gate routes (or it has no edges,
+// when either ends the run), otherwise one `decide` per routed outcome,
+// the shell's counterpart of the run view's `o` picker.
+func gateHint(runID int64, outcomes []string) string {
+	id := strconv.FormatInt(runID, 10)
+	custom := slices.ContainsFunc(outcomes, func(o string) bool {
+		return o != workflow.OutcomeApprove && o != workflow.OutcomeReject
+	})
+	if !custom {
+		return "tend workflow approve " + id + " | reject " + id + " --feedback \"...\""
+	}
+	parts := make([]string, 0, len(outcomes))
+	for _, o := range outcomes {
+		parts = append(parts, "decide "+id+" "+o)
+	}
+	return "tend workflow " + strings.Join(parts, " | ") + " [--feedback \"...\"]"
+}
+
 // runnerNote is the " (runner gone)" suffix for a run whose state says a
 // runner owns it while no tmux session hosts one; "" otherwise, including
 // when there is no way to ask tmux.
@@ -470,8 +499,7 @@ func runnerNote(run workflow.Run) string {
 func newWorkflowGateCmd(open openWorkflowStore, outcome string) *cobra.Command {
 	var feedback string
 	short := "Approve the gate a run is waiting at"
-	usage := "optional; becomes the gate's deliverable: the next step's {{.Input}} on a forward edge (replacing the reviewed deliverable), " +
-		"its {{.Feedback}} on a loop-back edge; omitted, the gate passes its input through unchanged as the TUI does"
+	usage := optionalFeedbackUsage
 	if outcome == workflow.OutcomeReject {
 		short = "Reject the gate a run is waiting at, with feedback for the step it loops back to"
 		usage = "the gate's deliverable, handed to the step the reject edge loops back to as its {{.Feedback}}; must not be blank"
@@ -488,18 +516,7 @@ func newWorkflowGateCmd(open openWorkflowStore, outcome string) *cobra.Command {
 			if outcome == workflow.OutcomeReject && strings.TrimSpace(feedback) == "" {
 				return errors.New("reject needs --feedback with something in it: it is all the step it loops back to hears")
 			}
-			return withWorkflowStore(cmd, open, func(ctx context.Context, s WorkflowStore) error {
-				name, err := decideGate(ctx, s, runID, outcome, feedback)
-				if err != nil {
-					return err
-				}
-				msg := fmt.Sprintf("run %d: %s %s", runID, name, outcome)
-				if feedback != "" {
-					msg += " with feedback"
-				}
-				fmt.Fprintln(cmd.OutOrStdout(), msg)
-				return nil
-			})
+			return settleGate(cmd, open, runID, outcome, feedback)
 		},
 	}
 	cmd.Flags().StringVar(&feedback, "feedback", "", usage)
@@ -507,6 +524,58 @@ func newWorkflowGateCmd(open openWorkflowStore, outcome string) *cobra.Command {
 		_ = cmd.MarkFlagRequired("feedback")
 	}
 	return cmd
+}
+
+// optionalFeedbackUsage is --feedback's help on approve and decide, where
+// the flag may be left out.
+const optionalFeedbackUsage = "optional; becomes the gate's deliverable: the next step's {{.Input}} on a forward edge (replacing the reviewed deliverable), " +
+	"its {{.Feedback}} on a loop-back edge; omitted, the gate passes its input through unchanged as the TUI does"
+
+// newWorkflowDecideCmd builds `decide <run-id> <outcome>`: approve/reject
+// for a gate whose edges route other outcomes (a "Needs human" gate that
+// routes continue and stop), the shell's counterpart of the run view's `o`
+// picker. The outcome is normalized the way edges are stored, trimmed and
+// lower-cased, and then takes the same path as approve, so the refusals
+// are decideGate's: not waiting, not a gate, already decided, or an
+// outcome the gate does not route, naming the ones it does. --feedback is
+// the gate's deliverable exactly as on approve.
+func newWorkflowDecideCmd(open openWorkflowStore) *cobra.Command {
+	var feedback string
+	cmd := &cobra.Command{
+		Use:   "decide <run-id> <outcome>",
+		Short: "Decide the gate a run is waiting at on any outcome its edges route",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			runID, err := parseRunID(args[0])
+			if err != nil {
+				return err
+			}
+			outcome, err := workflow.NormalizeOutcome(args[1])
+			if err != nil {
+				return err
+			}
+			return settleGate(cmd, open, runID, outcome, feedback)
+		},
+	}
+	cmd.Flags().StringVar(&feedback, "feedback", "", optionalFeedbackUsage)
+	return cmd
+}
+
+// settleGate is the body approve, reject and decide share: decideGate
+// against the opened store, then one line naming the gate and outcome.
+func settleGate(cmd *cobra.Command, open openWorkflowStore, runID int64, outcome, feedback string) error {
+	return withWorkflowStore(cmd, open, func(ctx context.Context, s WorkflowStore) error {
+		name, err := decideGate(ctx, s, runID, outcome, feedback)
+		if err != nil {
+			return err
+		}
+		msg := fmt.Sprintf("run %d: %s %s", runID, name, outcome)
+		if feedback != "" {
+			msg += " with feedback"
+		}
+		fmt.Fprintln(cmd.OutOrStdout(), msg)
+		return nil
+	})
 }
 
 // decideGate settles the gate runID is waiting at on outcome and returns
