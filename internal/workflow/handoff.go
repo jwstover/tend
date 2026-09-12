@@ -68,9 +68,22 @@ func StepSystemPrompt(h HandoffContext) string {
 	sb.WriteString(deferredToolsHint)
 	sb.WriteString("\n\n")
 	fmt.Fprintf(&sb, "%s does not end your session; call it once, when the work is done, then finish your turn normally. ", FinishStepTool)
-	sb.WriteString("Do not skip it, and do not substitute a shell command or a message for it: a step that exits without calling it is treated as not having done its job.")
+	sb.WriteString("Do not skip it, and do not substitute a shell command or a message for it: a step that exits without calling it is treated as not having done its job.\n\n")
+	sb.WriteString(dbWriteRule)
 	return sb.String()
 }
+
+// dbWriteRule closes the way a step with bypassPermissions was seen to
+// route around the MCP surface (tend task #252, the Complete Breakdown dry
+// run): needing to edit one table inside a large task body, the Ship step
+// found no tool for it, read tend.db's schema with sqlite3, and ran an
+// UPDATE on the tasks table itself. The write happened to be correct, but
+// nothing checked it and no event recorded it. The tools are the one
+// write path; a step that cannot express an edit through them stops and
+// says so in its deliverable instead.
+const dbWriteRule = "tend's MCP tools are the only way to read or change tend's tasks and workflows from this session. " +
+	"Never open, copy or write tend's SQLite database (tend.db) with sqlite3, a script or any other means, " +
+	"even to make an edit the tools cannot express: put what you could not record into your deliverable instead."
 
 // deferredToolsHint covers the one way a session with many MCP servers
 // has been seen to miss the hand-off (tend task #197, haiku): tend's

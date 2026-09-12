@@ -32,6 +32,9 @@ func TestStepSystemPrompt(t *testing.T) {
 		`step "review"`, `workflow "ship it"`, "iteration 2",
 		"mcp__tend__finish_step", "mcp__tend__get_workflow_step",
 		`"approve", "reject"`, "does not end your session",
+		// A bypassPermissions step once edited tend.db directly when no
+		// tool could express its change (task #252); the block forbids it.
+		"Never open, copy or write tend's SQLite database",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("system prompt missing %q:\n%s", want, got)
