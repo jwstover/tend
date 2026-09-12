@@ -329,3 +329,43 @@ func TestResumeCmdWithHookSettings(t *testing.T) {
 		t.Errorf("Args = %v, want %v", got, want)
 	}
 }
+
+// An interactive launch carries the task brief as --append-system-prompt,
+// placed with the other options ahead of the positional prompt.
+func TestLaunchCmdWithAppendSystemPrompt(t *testing.T) {
+	c := LaunchCmdWith("/tmp/work", "abc-123", "fix the bug", "/tmp/mcp.json", "",
+		LaunchOpts{AppendSystemPrompt: "bound to task #4", Prompt: "go"})
+	want := []string{
+		binary, "--session-id", "abc-123", "-n", "fix the bug", "--mcp-config", "/tmp/mcp.json",
+		"--append-system-prompt", "bound to task #4", "go",
+	}
+	if got := c.Args; !equalArgs(got, want) {
+		t.Errorf("Args = %v, want %v", got, want)
+	}
+}
+
+// A resume takes the same block, and only that block: the other
+// LaunchOpts fields belong to a session's first run and are not repeated.
+func TestResumeCmdWithAppendSystemPrompt(t *testing.T) {
+	c := ResumeCmdWith("/tmp/work", "abc-123", "/tmp/mcp.json", "/tmp/hooks.json",
+		LaunchOpts{AppendSystemPrompt: "bound to task #4", Model: "opus", PermissionMode: "plan", Prompt: "go"})
+	want := []string{
+		binary, "--resume", "abc-123", "--mcp-config", "/tmp/mcp.json", "--settings", "/tmp/hooks.json",
+		"--append-system-prompt", "bound to task #4",
+	}
+	if got := c.Args; !equalArgs(got, want) {
+		t.Errorf("Args = %v, want %v", got, want)
+	}
+	if c.Dir != "/tmp/work" {
+		t.Errorf("Dir = %q, want /tmp/work", c.Dir)
+	}
+}
+
+// The zero LaunchOpts leaves ResumeCmdWith exactly ResumeCmd.
+func TestResumeCmdWithZeroOptionsMatchesResumeCmd(t *testing.T) {
+	plain := ResumeCmd("/tmp/work", "abc-123", "/tmp/mcp.json", "")
+	with := ResumeCmdWith("/tmp/work", "abc-123", "/tmp/mcp.json", "", LaunchOpts{})
+	if !equalArgs(plain.Args, with.Args) {
+		t.Errorf("ResumeCmdWith(zero) = %v, want ResumeCmd's %v", with.Args, plain.Args)
+	}
+}

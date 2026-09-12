@@ -151,7 +151,9 @@ func (a app) chooseSessionPickerRow(row int) (tea.Model, tea.Cmd) {
 // resume follows inside it.
 func (a app) resumeGuardedCmd(sess task.Session) tea.Cmd {
 	if sess.StepRunID == nil {
-		return resumeSessionCmd(sess, a.dbPath, takeoverRef{})
+		return func() tea.Msg {
+			return resumeSessionCmd(sess, a.dbPath, a.sessionBriefPrompt(sess.TaskID), takeoverRef{})()
+		}
 	}
 	stepRunID := *sess.StepRunID
 	return func() tea.Msg {
@@ -172,10 +174,52 @@ func (a app) resumeGuardedCmd(sess task.Session) tea.Cmd {
 			if err := waitRunnerGone(a.ctx, run); err != nil {
 				return statusMsg{isErr: true, text: err.Error()}
 			}
-			return takeoverResume(sess, a.dbPath, takeoverRef{runID: run.ID, stepRunID: sr.ID})()
+			return takeoverResume(sess, a.dbPath, a.sessionBriefPrompt(sess.TaskID), takeoverRef{runID: run.ID, stepRunID: sr.ID})()
 		}
-		return resumeSessionCmd(sess, a.dbPath, takeoverRef{})()
+		return resumeSessionCmd(sess, a.dbPath, a.sessionBriefPrompt(sess.TaskID), takeoverRef{})()
 	}
+}
+
+// sessionBriefPrompt assembles the system prompt block an interactive
+// session on taskID starts with (task.SessionSystemPrompt): the task, its
+// project and tags, its parent and sub-tasks, both dependency directions,
+// and its log. It runs inside a launch or resume Cmd, off the update
+// loop, since it is several store reads.
+//
+// The brief is a convenience layered on a launch, not a condition of it,
+// so it degrades the way the MCP config does: a task that cannot be read
+// at all yields "" (no block, the session still launches), and any of the
+// optional pieces failing to load just leaves that section out. The
+// project comes from the store rather than the loaded projects column so
+// the block is right even when the column has not loaded yet.
+func (a app) sessionBriefPrompt(taskID int64) string {
+	t, err := a.store.GetTask(a.ctx, taskID)
+	if err != nil {
+		return ""
+	}
+	b := task.SessionBrief{Task: t}
+	if projects, err := a.store.ListProjects(a.ctx); err == nil {
+		for _, p := range projects {
+			if p.ID == t.ProjectID {
+				b.Project = p
+				break
+			}
+		}
+	}
+	b.Tags, _ = a.store.TagsForTask(a.ctx, taskID)
+	if t.ParentID != nil {
+		if p, err := a.store.GetTask(a.ctx, *t.ParentID); err == nil {
+			b.Parent = &p
+		}
+	}
+	b.Children, _ = a.store.ListChildren(a.ctx, taskID)
+	if len(b.Children) > 0 {
+		b.ChildBlockers, _ = a.store.BlockerCounts(a.ctx)
+	}
+	b.Blockers, _ = a.store.Blockers(a.ctx, taskID)
+	b.Blocking, _ = a.store.Blocking(a.ctx, taskID)
+	b.Log, _ = a.store.ListTaskLog(a.ctx, taskID)
+	return task.SessionSystemPrompt(b)
 }
 
 // wrapInTmux rewrites a direct claude command to run inside a named tmux
@@ -237,7 +281,8 @@ func (a app) launchSessionCmd(taskID int64, cwd, label string) tea.Cmd {
 		}
 		mcpPath, mcpCleanup, _ := agent.WriteMCPConfig(taskID, 0, a.dbPath)
 		hooksPath, hooksCleanup, _ := agent.WriteHookSettings(a.dbPath)
-		c, tmuxName, confPath := wrapInTmux(agent.LaunchCmd(cwd, id, label, mcpPath, hooksPath), id)
+		opts := agent.LaunchOpts{AppendSystemPrompt: a.sessionBriefPrompt(taskID)}
+		c, tmuxName, confPath := wrapInTmux(agent.LaunchCmdWith(cwd, id, label, mcpPath, hooksPath, opts), id)
 
 		sess, err := a.store.CreateSession(a.ctx, taskID, id, cwd, label, tmuxName)
 		if err != nil {
@@ -302,8 +347,12 @@ func (a app) abandonLaunchCmd(msg sessionFinishedMsg, status flash) tea.Cmd {
 // the task's (WriteMCPConfig with its step run id), so a step taken over
 // by hand can still call finish_step itself. ref, when set, marks the
 // resume as a takeover (takeover.go): it rides on the returning message
-// so the takeover picker opens instead of the recap firing.
-func resumeSessionCmd(sess task.Session, dbPath string, ref takeoverRef) tea.Cmd {
+// so the takeover picker opens instead of the recap firing. systemPrompt
+// is the task brief (sessionBriefPrompt) the fresh `claude --resume`
+// gets as --append-system-prompt, so a session picked up later sees the
+// task as it stands now; the attach path has no new process to give it
+// to, and "" adds nothing.
+func resumeSessionCmd(sess task.Session, dbPath, systemPrompt string, ref takeoverRef) tea.Cmd {
 	if err := agent.CheckInstalled(); err != nil {
 		return errCmd(err)
 	}
@@ -336,8 +385,9 @@ func resumeSessionCmd(sess task.Session, dbPath string, ref takeoverRef) tea.Cmd
 		mcpPath, mcpCleanup, _ := agent.WriteMCPConfig(sess.TaskID, stepRunID, dbPath)
 		hooksPath, hooksCleanup, _ := agent.WriteHookSettings(dbPath)
 		cleanup = func() { mcpCleanup(); hooksCleanup() }
+		opts := agent.LaunchOpts{AppendSystemPrompt: systemPrompt}
 		c, name, confPath = wrapInTmux(
-			agent.ResumeCmd(sess.Cwd, sess.ExternalID, mcpPath, hooksPath), sess.ExternalID)
+			agent.ResumeCmdWith(sess.Cwd, sess.ExternalID, mcpPath, hooksPath, opts), sess.ExternalID)
 	}
 
 	return tea.ExecProcess(c, func(err error) tea.Msg {
