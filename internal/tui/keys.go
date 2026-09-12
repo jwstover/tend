@@ -35,6 +35,7 @@ type keyMap struct {
 	MoveParent     key.Binding // move the selected task under another task, or to the top level
 	Dependencies   key.Binding // pick which tasks the selected one waits on (dependencypicker.go)
 	Archive        key.Binding // archive/restore the selected project
+	ToggleArchived key.Binding // show/hide archived projects in the projects column
 	ProjectCwd     key.Binding // set the selected project's default cwd for new sessions
 
 	// Workflows authoring view (workflows.go). `n`, `R`, `e` and `dd`
@@ -139,7 +140,11 @@ func defaultKeyMap() keyMap {
 		// `c` chord and in triage, neither of which reaches this binding.
 		Dependencies: key.NewBinding(key.WithKeys("b"), key.WithHelp("b", "blocked by")),
 		Archive:      key.NewBinding(key.WithKeys("A"), key.WithHelp("A", "archive")),
-		ProjectCwd:   key.NewBinding(key.WithKeys("w"), key.WithHelp("w", "default cwd")),
+		// `C` reveals the hidden population everywhere: completed tasks in
+		// the list, ended sessions in the agents view, and here the
+		// archived projects -- the only way to find one again to restore it.
+		ToggleArchived: key.NewBinding(key.WithKeys("C"), key.WithHelp("C", "archived")),
+		ProjectCwd:     key.NewBinding(key.WithKeys("w"), key.WithHelp("w", "default cwd")),
 
 		Workflows:      key.NewBinding(key.WithKeys("W"), key.WithHelp("W", "workflows")),
 		Duplicate:      key.NewBinding(key.WithKeys("D"), key.WithHelp("D", "duplicate")),

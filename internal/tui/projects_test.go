@@ -61,10 +61,10 @@ func focusProjectRow(t *testing.T, m tea.Model, name string) tea.Model {
 }
 
 // projectPickerDigit is the 1-based key that picks a named project in the
-// P overlay, which lists projects in the same order as the column.
+// P overlay, which lists the active projects in the column's order.
 func projectPickerDigit(t *testing.T, m tea.Model, name string) rune {
 	t.Helper()
-	for i, p := range m.(app).visibleProjects() {
+	for i, p := range m.(app).activeProjects() {
 		if p.Name == name {
 			if i >= 9 {
 				t.Fatalf("project %q is past the digit shortcuts", name)
@@ -387,6 +387,142 @@ func TestArchivedProjectLeavesTheColumn(t *testing.T) {
 	m = drive(t, m, refreshMsg{})
 	if strings.Contains(m.(app).projectsView(), "seasonal") {
 		t.Error("an archived project should leave the column")
+	}
+}
+
+// archiveProject archives a project through the store and reloads the
+// column, so a test starts from the state `A` leaves behind.
+func archiveProject(t *testing.T, m tea.Model, s *store.Store, id int64) tea.Model {
+	t.Helper()
+	if err := s.SetProjectArchived(context.Background(), id, true); err != nil {
+		t.Fatalf("SetProjectArchived: %v", err)
+	}
+	return drive(t, m, refreshMsg{})
+}
+
+// isArchived reads a project's archived flag back from the store.
+func isArchived(t *testing.T, s *store.Store, id int64) bool {
+	t.Helper()
+	p, err := s.GetProject(context.Background(), id)
+	if err != nil {
+		t.Fatalf("GetProject(%d): %v", id, err)
+	}
+	return p.Archived()
+}
+
+// Archiving hides a project; `C` in the column is how you see the archive
+// again, and `A` on an archived row brings it back. Without both, an
+// archived project could only be revived from the CLI.
+func TestArchivedProjectsShownWithCAndRestoredWithA(t *testing.T) {
+	m, s := newTestApp(t)
+	m, made := seedProjects(t, m, s, "alpha", "seasonal")
+	seasonal := made[1]
+	m = archiveProject(t, m, s, seasonal.ID)
+
+	m = drive(t, m, keyPress('h'))
+	if strings.Contains(ansi.Strip(m.(app).projectsView()), "seasonal") {
+		t.Fatal("the archive should be hidden until C shows it")
+	}
+
+	m = drive(t, m, keyPress('C'))
+	a := m.(app)
+	if !a.showArchived {
+		t.Fatal("C should turn the archive on")
+	}
+	view := ansi.Strip(a.projectsView())
+	if !strings.Contains(view, "seasonal") {
+		t.Fatalf("C should list the archived project:\n%s", view)
+	}
+	// Archived projects shelve under the active ones, marked so they read
+	// apart from the projects in use.
+	if strings.Index(view, "alpha") > strings.Index(view, "seasonal") {
+		t.Errorf("archived projects should list after the active ones:\n%s", view)
+	}
+	if !strings.Contains(view, a.styles.Glyphs.Archived) {
+		t.Errorf("an archived row should carry the archived marker:\n%s", view)
+	}
+
+	m = focusProjectRow(t, m, "seasonal")
+	m = drive(t, m, keyPress('A'))
+	waitFor(t, "project restored", func() bool { return !isArchived(t, s, seasonal.ID) })
+	m = drive(t, m, refreshMsg{})
+
+	// Restored, it is an ordinary project again: still on screen once the
+	// archive is hidden, and still under the cursor.
+	m = drive(t, m, keyPress('C'))
+	a = m.(app)
+	if a.showArchived {
+		t.Fatal("C should turn the archive off again")
+	}
+	if !strings.Contains(ansi.Strip(a.projectsView()), "seasonal") {
+		t.Error("a restored project should stay in the column with the archive hidden")
+	}
+	if p, ok := a.selectedProject(); !ok || p.Name != "seasonal" {
+		t.Errorf("cursor after restore = %v %v, want to stay on seasonal", p.Name, ok)
+	}
+}
+
+// Hiding the archive while the cursor is on an archived project falls back
+// to All, exactly as archiving the selected project does.
+func TestHidingTheArchiveFallsBackToAll(t *testing.T) {
+	m, s := newTestApp(t)
+	m, made := seedProjects(t, m, s, "seasonal")
+	m = archiveProject(t, m, s, made[0].ID)
+
+	m = drive(t, m, keyPress('h'))
+	m = drive(t, m, keyPress('C'))
+	m = focusProjectRow(t, m, "seasonal")
+	if m.(app).projectFilter == nil {
+		t.Fatal("selecting an archived project should scope the list to it")
+	}
+
+	m = drive(t, m, keyPress('C'))
+	a := m.(app)
+	if a.projectCursor != allProjectsRow || a.projectFilter != nil {
+		t.Errorf("cursor=%d filter=%v after hiding the archive, want All and no filter",
+			a.projectCursor, a.projectFilter)
+	}
+}
+
+// With nothing archived, C says so rather than silently toggling a view
+// that looks identical either way.
+func TestCWithNoArchivedProjectsFlashes(t *testing.T) {
+	m, s := newTestApp(t)
+	m, _ = seedProjects(t, m, s, "alpha")
+
+	m = drive(t, m, keyPress('h'))
+	m = drive(t, m, keyPress('C'))
+	a := m.(app)
+	if a.showArchived {
+		t.Error("C with no archived projects should leave the archive off")
+	}
+	if !strings.Contains(a.status.text, "no archived projects") {
+		t.Errorf("status = %q, want it to say there is nothing archived", a.status.text)
+	}
+}
+
+// The P picker moves work into projects in use; an archived project is
+// not a destination even while the column has the archive on show.
+func TestProjectPickerLeavesArchivedProjectsOut(t *testing.T) {
+	m, s := newTestApp(t)
+	m, made := seedProjects(t, m, s, "alpha", "seasonal")
+	m = archiveProject(t, m, s, made[1].ID)
+	if _, err := s.AddTask(context.Background(), "move me"); err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	m = drive(t, m, refreshMsg{})
+
+	m = drive(t, m, keyPress('h'))
+	m = drive(t, m, keyPress('C'))
+	m = drive(t, m, keyPress('l'))
+	m = drive(t, m, keyPress('P'))
+	a := m.(app)
+	if !a.projectPickerOpen {
+		t.Fatal("P should open the project picker")
+	}
+	view := ansi.Strip(a.projectPickerView())
+	if !strings.Contains(view, "alpha") || strings.Contains(view, "seasonal") {
+		t.Errorf("picker should list alpha but not the archived seasonal:\n%s", view)
 	}
 }
 

@@ -92,6 +92,7 @@ type glyphs struct {
 	CaretClosed, CaretOpen   string // disclosure carets
 	BoxChecked, BoxUnchecked string // sub-task checkboxes
 	Flag                     string // priority flag
+	Archived                 string // archived-project marker in the projects column
 	Link                     string // detected-URL marker
 	Plus                     string // capture flash / quick-add marker
 	Pen                      string // edit-saved flash marker
@@ -127,7 +128,7 @@ func unicodeGlyphs() glyphs {
 		SelBar:      "▌",
 		CaretClosed: "▸", CaretOpen: "▾",
 		BoxChecked: "▣", BoxUnchecked: "▢",
-		Flag: "⚑", Link: "↗",
+		Flag: "⚑", Archived: "▫", Link: "↗",
 		Plus: "✚", Pen: "✎",
 		RuleH: "─", RuleV: "│", TeeDown: "┬", TeeUp: "┴",
 		TeeRight: "├", TeeLeft: "┤",
@@ -167,7 +168,7 @@ func asciiGlyphs() glyphs {
 		SelBar:      ">",
 		CaretClosed: ">", CaretOpen: "v",
 		BoxChecked: "[x]", BoxUnchecked: "[ ]",
-		Flag: "!", Link: "->",
+		Flag: "!", Archived: "-", Link: "->",
 		Plus: "+", Pen: "~",
 		RuleH: "-", RuleV: "|", TeeDown: "+", TeeUp: "+",
 		TeeRight: "+", TeeLeft: "+",

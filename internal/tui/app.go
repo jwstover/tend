@@ -556,6 +556,7 @@ type app struct {
 	projectCursor   int
 	activeProjectID int64
 	showProjects    bool                      // `[` toggles the column; auto-hidden when narrow
+	showArchived    bool                      // `C` in the column lists archived projects too, so one can be restored
 	loadedProjects  bool                      // first projectsLoadedMsg arrived
 	expanded        map[int64]bool            // branch disclosure, by task ID, session-scoped
 	childCache      map[int64][]task.Task     // loaded children per parent
@@ -2921,7 +2922,7 @@ func (a app) footer() string {
 	case a.focus == paneProjects && a.mode == modeList:
 		hints = [][2]string{
 			{"j/k", "switch project"}, {"l/⏎", "to tasks"}, {"n", "new"}, {"R", "rename"},
-			{"w", "cwd"}, {"dd", "delete"}, {"A", "archive"}, {"?", "help"}, {"q", "quit"},
+			{"w", "cwd"}, {"dd", "delete"}, {"A", "archive"}, {"C", "archived"}, {"?", "help"}, {"q", "quit"},
 		}
 	case a.focus == paneDetail:
 		hints = [][2]string{

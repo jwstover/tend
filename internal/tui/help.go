@@ -70,6 +70,7 @@ func helpGroups() []helpGroup {
 			{"n / R", "new / rename project"},
 			{"w", "default cwd for new sessions"},
 			{"A", "archive / restore project"},
+			{"C", "show / hide archived projects"},
 			{"dd", "delete project; tasks → Unsorted"},
 		}},
 		{"STANDUP", []helpEntry{

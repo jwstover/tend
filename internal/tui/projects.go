@@ -16,14 +16,39 @@ import (
 // setProjectCursor).
 const allProjectsRow = 0
 
-// visibleProjects is the projects the column actually lists: everything
-// but the archived ones, which stay in the database and keep their tasks.
-func (a app) visibleProjects() []task.Project {
+// activeProjects is every project that is not archived: the population a
+// task can be moved into, and what the column lists by default.
+func (a app) activeProjects() []task.Project {
 	out := make([]task.Project, 0, len(a.projects))
 	for _, p := range a.projects {
 		if !p.Archived() {
 			out = append(out, p)
 		}
+	}
+	return out
+}
+
+// archivedProjects is the projects `A` has hidden. They stay in the
+// database and keep their tasks; the column lists them only while
+// showArchived is on, so one can be found and restored.
+func (a app) archivedProjects() []task.Project {
+	out := make([]task.Project, 0, len(a.projects))
+	for _, p := range a.projects {
+		if p.Archived() {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// visibleProjects is the projects the column actually lists: the active
+// ones, then -- while `C` has them shown -- the archived ones as a block
+// underneath, so the everyday list keeps its order and the archive reads
+// as a separate shelf rather than being shuffled into it.
+func (a app) visibleProjects() []task.Project {
+	out := a.activeProjects()
+	if a.showArchived {
+		out = append(out, a.archivedProjects()...)
 	}
 	return out
 }
@@ -202,6 +227,9 @@ func (a *app) handleProjectsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) 
 			return *a, a.setProjectArchived(p, !p.Archived()), true
 		}
 		return *a, nil, true
+
+	case key.Matches(msg, a.keys.ToggleArchived):
+		return *a, a.toggleArchivedProjects(), true
 	}
 
 	// `G` / `gg` are the list component's own bindings elsewhere; here the
@@ -225,6 +253,40 @@ func (a app) setProjectArchived(p task.Project, archived bool) tea.Cmd {
 	})
 }
 
+// toggleArchivedProjects shows or hides the archived projects in the
+// column. Hiding them while the cursor sits on one falls back to All, the
+// way a project archived from under the cursor does, and the scoped list
+// reloads only when that fallback actually changed the filter.
+func (a *app) toggleArchivedProjects() tea.Cmd {
+	if !a.showArchived && len(a.archivedProjects()) == 0 {
+		a.status = flash{text: "no archived projects"}
+		return nil
+	}
+	wantID, hadSelection := int64(0), false
+	if p, ok := a.selectedProject(); ok {
+		wantID, hadSelection = p.ID, true
+	}
+	before := a.projectFilter
+
+	a.showArchived = !a.showArchived
+	a.syncProjectCursor(wantID, hadSelection)
+
+	if a.showArchived {
+		n := len(a.archivedProjects())
+		noun := "projects"
+		if n == 1 {
+			noun = "project"
+		}
+		a.status = flash{text: fmt.Sprintf("%d archived %s shown; A restores one", n, noun)}
+	} else {
+		a.status = flash{text: "archived projects hidden"}
+	}
+	if (before == nil) != (a.projectFilter == nil) {
+		return a.loadScoped()
+	}
+	return nil
+}
+
 // deleteSelectedProject removes the project under the cursor. Its tasks
 // are reassigned to the default project by the store, not deleted -- a
 // project is a grouping, and dropping one must never drop work.
@@ -240,7 +302,8 @@ func (a app) deleteSelectedProject() tea.Cmd {
 }
 
 // projectsView renders the column: the All row, then every unarchived
-// project with its live task count.
+// project with its live task count, then -- with `C` -- the archived ones,
+// marked and dimmed.
 func (a app) projectsView() string {
 	w := projectsPaneWidth
 	focused := a.focus == paneProjects
@@ -248,14 +311,17 @@ func (a app) projectsView() string {
 	rows := make([]string, 0, a.bodyHeight)
 	visible := a.visibleProjects()
 
+	// The All count is the active projects' work whether or not the
+	// archive is on show: toggling a view of the column should not make
+	// the number beside All jump.
 	total := int64(0)
-	for _, p := range visible {
+	for _, p := range a.activeProjects() {
 		total += p.LiveCount
 	}
-	rows = append(rows, a.projectRow("All", total, a.projectCursor == allProjectsRow, focused, false))
+	rows = append(rows, a.projectRow("All", total, a.projectCursor == allProjectsRow, focused, false, false))
 	for i, p := range visible {
 		rows = append(rows, a.projectRow(p.Name, p.LiveCount, a.projectCursor == i+1,
-			focused, p.ID == a.activeProjectID))
+			focused, p.ID == a.activeProjectID, p.Archived()))
 	}
 
 	// Pad to the body height so the divider beside it runs full length.
@@ -270,8 +336,10 @@ func (a app) projectsView() string {
 
 // projectRow renders one line of the column: selection bar, name, and a
 // right-aligned live count. active marks the capture target -- the project
-// a bare `tend add` will land in.
-func (a app) projectRow(name string, count int64, selected, focused, active bool) string {
+// a bare `tend add` will land in. archived marks a project `A` has hidden:
+// the archived glyph takes the marker column and the name is muted, so the
+// shelf reads apart from the projects in use even when the cursor is on it.
+func (a app) projectRow(name string, count int64, selected, focused, active, archived bool) string {
 	s, g := a.styles, a.styles.Glyphs
 	w := projectsPaneWidth
 
@@ -283,9 +351,13 @@ func (a app) projectRow(name string, count int64, selected, focused, active bool
 	}
 
 	// The capture-target marker only earns its column when the selection
-	// isn't already sitting on it.
-	marker := " "
-	if active && !selected {
+	// isn't already sitting on it. An archived project is never the
+	// capture target in the column's own terms, so the glyph is free.
+	marker, markerStyle := " ", s.Accent
+	switch {
+	case archived:
+		marker, markerStyle = g.Archived, s.Muted
+	case active && !selected:
 		marker = g.CaretClosed
 	}
 
@@ -303,10 +375,12 @@ func (a app) projectRow(name string, count int64, selected, focused, active bool
 		nameStyle = s.Title.Bold(true)
 	case selected:
 		nameStyle = s.Title
+	case archived:
+		nameStyle = s.Muted
 	}
 
 	gap := max(w-runeWidth(gutter)-runeWidth(marker)-runeWidth(label)-runeWidth(countText), 0)
-	line := gutterStyle.Render(gutter) + s.Accent.Render(marker) + nameStyle.Render(label) +
+	line := gutterStyle.Render(gutter) + markerStyle.Render(marker) + nameStyle.Render(label) +
 		strings.Repeat(" ", gap) + s.CountLabel.Render(countText)
 	return line
 }
