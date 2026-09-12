@@ -179,6 +179,24 @@ func registerTools(srv *mcp.Server, store Store, boundTaskID int64) {
 		return fetchTask(ctx, store, t.ID)
 	})
 
+	// A rename is not a state change: the store trims and refuses a blank
+	// title (task.NormalizeTitle, the same rule capture and the TUI's `R`
+	// apply) and writes nothing to task_events.
+	mcp.AddTool(srv, &mcp.Tool{
+		Name: "set_task_title",
+		Description: "Rename a task. The title is trimmed; an empty or whitespace-only title " +
+			"is refused. Defaults to the bound task.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in struct {
+		Title  string `json:"title" jsonschema:"the new title; leading and trailing whitespace is trimmed"`
+		TaskID *int64 `json:"task_id,omitempty" jsonschema:"task id to rename; defaults to the session's bound task"`
+	}) (*mcp.CallToolResult, taskOut, error) {
+		id := resolveID(in.TaskID, boundTaskID)
+		if err := store.SetTitle(ctx, id, in.Title); err != nil {
+			return nil, taskOut{}, err
+		}
+		return fetchTask(ctx, store, id)
+	})
+
 	// The only free-form writes an agent gets. There is deliberately no
 	// add_log_entry tool: log entries are the user's standup notes, so an
 	// agent that wants to leave a record on a task edits its body instead.
