@@ -107,7 +107,8 @@ func registerWorkflowTools(srv *mcp.Server, store Store) {
 		Description: "Get a workflow definition in full, by id or by name: its steps in authoring " +
 			"order with their prompts, settings and edges, a text preview of the graph, and the " +
 			"problems the authoring validator finds (unreachable steps, dead ends, outcomes a " +
-			"prompt names but no edge routes, unbounded loop-backs, templates that fail to render).",
+			"prompt names but no edge routes, unbounded loop-backs, templates that fail to render, " +
+			"agent steps with no permission mode).",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in struct {
 		WorkflowID *int64 `json:"workflow_id,omitempty" jsonschema:"the workflow id; give this or name"`
 		Name       string `json:"name,omitempty" jsonschema:"the workflow name, matched case-insensitively; give this or workflow_id"`
