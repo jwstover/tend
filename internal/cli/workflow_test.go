@@ -737,6 +737,156 @@ func TestWorkflowApproveRefusesUnroutedOutcome(t *testing.T) {
 	}
 }
 
+// decide settles a gate on any outcome its edges route: the shell's
+// counterpart of the run view's `o` picker, for a gate like "Needs human"
+// that routes continue and stop rather than approve and reject. The outcome
+// is normalized the way edges are stored, an unrouted one is refused naming
+// the routed ones, and --feedback is the deliverable exactly as on approve.
+func TestWorkflowDecide(t *testing.T) {
+	s := newFakeWorkflowStore()
+	wf := s.addWorkflow("breakdown", "draft", "needs human", "finish")
+	s.setKind(2, workflow.StepGate)
+	s.edges = append(s.edges,
+		workflow.Edge{ID: 1, FromStepID: 2, Outcome: "continue", ToStepID: 3},
+		workflow.Edge{ID: 2, FromStepID: 2, Outcome: "stop", ToStepID: 1},
+	)
+	tk := s.addTask("t")
+	s.addRun(wf.ID, tk.ID, workflow.RunWaitingReview, 1, 2) // step runs 1, 2
+	s.addRun(wf.ID, tk.ID, workflow.RunWaitingReview, 1, 2) // step runs 3, 4
+	s.addRun(wf.ID, tk.ID, workflow.RunWaitingReview, 1, 2) // step runs 5, 6
+
+	// approve cannot decide this gate; that is what decide is for.
+	if _, err := runWorkflow(t, s, "approve", "1"); err == nil || !strings.Contains(err.Error(), "routes continue, stop, not approve") {
+		t.Fatalf("approve on a continue/stop gate should be refused naming its outcomes, got %v", err)
+	}
+
+	out, err := runWorkflow(t, s, "decide", "1", "continue", "--feedback", "split it in two")
+	if err != nil {
+		t.Fatalf("decide continue: %v", err)
+	}
+	if !strings.Contains(out, "run 1: needs human continue with feedback") {
+		t.Errorf("decide should name the gate, the outcome and the feedback: %q", out)
+	}
+	if sr := s.stepRuns[1]; sr.Outcome != "continue" || !sr.Finished() || sr.Deliverable != "split it in two" {
+		t.Errorf("gate step run = %+v, want continue finished with the feedback as deliverable", sr)
+	}
+
+	// An outcome the gate does not route is refused naming the ones it does.
+	_, err = runWorkflow(t, s, "decide", "2", "reject")
+	if err == nil {
+		t.Fatal("decide on an unrouted outcome should be refused")
+	}
+	for _, want := range []string{"routes", "continue", "stop", "not reject"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q should name %q", err, want)
+		}
+	}
+	if s.stepRuns[3].Finished() {
+		t.Fatal("a refused decision must not finish the gate")
+	}
+
+	// The outcome is normalized the way edges are stored.
+	out, err = runWorkflow(t, s, "decide", "2", "  STOP ")
+	if err != nil {
+		t.Fatalf("decide '  STOP ': %v", err)
+	}
+	if !strings.Contains(out, "needs human stop") || strings.Contains(out, "with feedback") {
+		t.Errorf("decide without feedback should report the normalized outcome and no feedback: %q", out)
+	}
+	if sr := s.stepRuns[3]; sr.Outcome != "stop" || !sr.Finished() || sr.Deliverable != "" {
+		t.Errorf("gate step run = %+v, want stop finished with an empty deliverable", sr)
+	}
+
+	// A blank outcome is refused before the store is touched.
+	if _, err := runWorkflow(t, s, "decide", "3", "   "); err == nil {
+		t.Error("decide with a blank outcome should be refused")
+	}
+	if s.stepRuns[5].Finished() {
+		t.Error("a blank outcome must not finish the gate")
+	}
+
+	// Deciding twice is refused: the first outcome stands.
+	if _, err := runWorkflow(t, s, "decide", "1", "stop"); err == nil || !strings.Contains(err.Error(), "already decided") {
+		t.Errorf("second decision should be refused naming the first, got %v", err)
+	}
+}
+
+// The hint under a waiting gate in `status <run-id>` only names commands
+// that will work for that gate: approve/reject for a gate routing those
+// (or nothing), one decide per routed outcome for any other.
+func TestWorkflowStatusHintMatchesGateOutcomes(t *testing.T) {
+	s := newFakeWorkflowStore()
+	stubProcessControl(t, true, true)
+	wf := s.addWorkflow("breakdown", "draft", "needs human", "finish") // steps 1-3
+	s.setKind(2, workflow.StepGate)
+	s.edges = append(s.edges,
+		workflow.Edge{ID: 1, FromStepID: 2, Outcome: "continue", ToStepID: 3},
+		workflow.Edge{ID: 2, FromStepID: 2, Outcome: "stop", ToStepID: 1},
+	)
+	tk := s.addTask("t")
+	s.addRun(wf.ID, tk.ID, workflow.RunWaitingReview, 1, 2)
+
+	out, err := runWorkflow(t, s, "status", "1")
+	if err != nil {
+		t.Fatalf("status 1: %v", err)
+	}
+	want := `waiting for review: tend workflow decide 1 continue | decide 1 stop [--feedback "..."]`
+	if !strings.Contains(out, want) {
+		t.Errorf("status of a continue/stop gate should hint decide per outcome, want %q in:\n%s", want, out)
+	}
+	if strings.Contains(out, "approve 1") {
+		t.Errorf("status of a continue/stop gate must not hint approve:\n%s", out)
+	}
+
+	// A gate routing approve and reject keeps the approve/reject hint.
+	ship := s.addWorkflow("ship", "implement", "review") // steps 4, 5
+	s.setKind(5, workflow.StepGate)
+	s.edges = append(s.edges,
+		workflow.Edge{ID: 3, FromStepID: 5, Outcome: workflow.OutcomeApprove, ToStepID: 4},
+		workflow.Edge{ID: 4, FromStepID: 5, Outcome: workflow.OutcomeReject, ToStepID: 4},
+	)
+	s.addRun(ship.ID, tk.ID, workflow.RunWaitingReview, 4, 5)
+
+	out, err = runWorkflow(t, s, "status", "2")
+	if err != nil {
+		t.Fatalf("status 2: %v", err)
+	}
+	want = `waiting for review: tend workflow approve 2 | reject 2 --feedback "..."`
+	if !strings.Contains(out, want) {
+		t.Errorf("status of an approve/reject gate should keep the approve/reject hint, want %q in:\n%s", want, out)
+	}
+	if strings.Contains(out, "decide") {
+		t.Errorf("status of an approve/reject gate need not hint decide:\n%s", out)
+	}
+
+	// An outcome with a space in it is quoted so the hinted command is one
+	// the shell hands to decide as a single argument.
+	review := s.addWorkflow("review", "implement", "verdict", "address") // steps 6-8
+	s.setKind(7, workflow.StepGate)
+	s.edges = append(s.edges,
+		workflow.Edge{ID: 5, FromStepID: 7, Outcome: "request changes", ToStepID: 8},
+		workflow.Edge{ID: 6, FromStepID: 7, Outcome: "approved", ToStepID: 6},
+	)
+	s.addRun(review.ID, tk.ID, workflow.RunWaitingReview, 6, 7)
+
+	out, err = runWorkflow(t, s, "status", "3")
+	if err != nil {
+		t.Fatalf("status 3: %v", err)
+	}
+	want = `waiting for review: tend workflow decide 3 "request changes" | decide 3 approved [--feedback "..."]`
+	if !strings.Contains(out, want) {
+		t.Errorf("status of a gate routing a multi-word outcome should quote it, want %q in:\n%s", want, out)
+	}
+}
+
+func TestGateHintQuotesWhitespaceOutcomes(t *testing.T) {
+	got := gateHint(59, []string{"request changes", "approved", "ci\tred"})
+	want := `tend workflow decide 59 "request changes" | decide 59 approved | decide 59 "ci\tred" [--feedback "..."]`
+	if got != want {
+		t.Errorf("gateHint = %q, want %q", got, want)
+	}
+}
+
 // A gate decision needs a run waiting at a gate.
 func TestWorkflowApproveRefusesWhenNotAtAGate(t *testing.T) {
 	s := newFakeWorkflowStore()
