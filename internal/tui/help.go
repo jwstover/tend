@@ -69,9 +69,9 @@ func helpGroups() []helpGroup {
 			{"h / [", "focus / toggle projects column"},
 			{"n / R", "new / rename project"},
 			{"w", "default cwd for new sessions"},
-			{"A", "archive / restore project"},
+			{"A", "archive (asks first) / restore project"},
 			{"C", "show / hide archived projects"},
-			{"dd", "delete project; tasks → Unsorted"},
+			{"dd", "delete project (asks first); tasks → Unsorted"},
 		}},
 		{"STANDUP", []helpEntry{
 			{"S", "open the standup view"},

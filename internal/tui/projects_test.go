@@ -354,8 +354,25 @@ func TestDeleteProjectFromTheColumnKeepsItsTasks(t *testing.T) {
 	if !m.(app).deletePending {
 		t.Fatal("first d should arm the delete chord")
 	}
-	_ = drive(t, m, keyPress('d'))
+	// The second d does not delete yet: a project delete moves every task
+	// in it, so a panel names the project and waits for y.
+	m = drive(t, m, keyPress('d'))
+	a := m.(app)
+	if a.projectConfirm == nil {
+		t.Fatal("dd on a project should ask before deleting")
+	}
+	view := ansi.Strip(m.View().Content)
+	if !strings.Contains(view, "delete project doomed?") {
+		t.Errorf("the confirmation should name the project:\n%s", view)
+	}
+	if !strings.Contains(view, "1 live task moves to Unsorted") {
+		t.Errorf("the confirmation should say how much work moves:\n%s", view)
+	}
+	if _, err := s.GetProject(ctx, made[0].ID); err != nil {
+		t.Fatalf("the project should still exist until y: %v", err)
+	}
 
+	_ = drive(t, m, keyPress('y'))
 	waitFor(t, "project deleted and its task reassigned", func() bool {
 		if _, err := s.GetProject(ctx, made[0].ID); err == nil {
 			return false
@@ -365,12 +382,93 @@ func TestDeleteProjectFromTheColumnKeepsItsTasks(t *testing.T) {
 	})
 }
 
+// Anything but y cancels a pending project delete and leaves the project
+// exactly as it was, in the store and in the column.
+func TestDeleteProjectConfirmationCancels(t *testing.T) {
+	ctx := context.Background()
+	m, s := newTestApp(t)
+	m, made := seedProjects(t, m, s, "keeper")
+
+	m = focusProjectRow(t, m, "keeper")
+	m = drive(t, m, keyPress('d'))
+	m = drive(t, m, keyPress('d'))
+	if m.(app).projectConfirm == nil {
+		t.Fatal("dd on a project should ask before deleting")
+	}
+
+	m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyEscape})
+	a := m.(app)
+	if a.projectConfirm != nil {
+		t.Fatal("esc should clear the confirmation")
+	}
+	if strings.Contains(ansi.Strip(m.View().Content), "delete project keeper?") {
+		t.Error("the confirmation panel should be gone after esc")
+	}
+	if _, err := s.GetProject(ctx, made[0].ID); err != nil {
+		t.Fatalf("a cancelled delete should leave the project: %v", err)
+	}
+	if p, ok := a.selectedProject(); !ok || p.Name != "keeper" {
+		t.Errorf("cursor after cancel = %v %v, want to stay on keeper", p.Name, ok)
+	}
+
+	// A wrong key cancels too, and is not itself acted on: `d` here does
+	// not re-arm the chord.
+	m = drive(t, m, keyPress('d'))
+	m = drive(t, m, keyPress('d'))
+	m = drive(t, m, keyPress('d'))
+	a = m.(app)
+	if a.projectConfirm != nil || a.deletePending {
+		t.Error("a key other than y should cancel without arming anything")
+	}
+	if _, err := s.GetProject(ctx, made[0].ID); err != nil {
+		t.Fatalf("a cancelled delete should leave the project: %v", err)
+	}
+}
+
+// The agents view shares the projects column, and its dd on a project
+// asks the same way the list's does.
+func TestDeleteProjectFromTheAgentsViewAsksFirst(t *testing.T) {
+	ctx := context.Background()
+	m, s := wideApp(t) // the agents view needs the width for its projects column
+	m, made := seedProjects(t, m, s, "doomed")
+
+	m = enterAgents(t, m)
+	m = focusProjectRow(t, m, "doomed")
+	m = drive(t, m, keyPress('d'))
+	m = drive(t, m, keyPress('d'))
+	if m.(app).projectConfirm == nil {
+		t.Fatal("dd on a project in the agents view should ask before deleting")
+	}
+	if _, err := s.GetProject(ctx, made[0].ID); err != nil {
+		t.Fatalf("the project should still exist until y: %v", err)
+	}
+	_ = drive(t, m, keyPress('y'))
+	waitFor(t, "project deleted", func() bool {
+		_, err := s.GetProject(ctx, made[0].ID)
+		return err != nil
+	})
+}
+
 func TestArchivedProjectLeavesTheColumn(t *testing.T) {
 	m, s := newTestApp(t)
-	m, _ = seedProjects(t, m, s, "seasonal")
+	m, made := seedProjects(t, m, s, "seasonal")
 
 	m = focusProjectRow(t, m, "seasonal")
+	// A asks first: archiving takes the project and its tasks off the
+	// screen, and the key is one shift away from quick-add.
 	m = drive(t, m, keyPress('A'))
+	a := m.(app)
+	if a.projectConfirm == nil {
+		t.Fatal("A on an active project should ask before archiving")
+	}
+	view := ansi.Strip(m.View().Content)
+	if !strings.Contains(view, "archive project seasonal?") {
+		t.Errorf("the confirmation should name the project:\n%s", view)
+	}
+	if isArchived(t, s, made[0].ID) {
+		t.Fatal("the project should not be archived until y")
+	}
+	m = drive(t, m, keyPress('y'))
 
 	waitFor(t, "project archived", func() bool {
 		projects, err := s.ListProjects(context.Background())
@@ -387,6 +485,33 @@ func TestArchivedProjectLeavesTheColumn(t *testing.T) {
 	m = drive(t, m, refreshMsg{})
 	if strings.Contains(m.(app).projectsView(), "seasonal") {
 		t.Error("an archived project should leave the column")
+	}
+}
+
+// Anything but y cancels a pending archive; the project stays active and
+// under the cursor.
+func TestArchiveConfirmationCancels(t *testing.T) {
+	m, s := newTestApp(t)
+	m, made := seedProjects(t, m, s, "seasonal")
+
+	m = focusProjectRow(t, m, "seasonal")
+	m = drive(t, m, keyPress('A'))
+	if m.(app).projectConfirm == nil {
+		t.Fatal("A on an active project should ask before archiving")
+	}
+	m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyEscape})
+	a := m.(app)
+	if a.projectConfirm != nil {
+		t.Fatal("esc should clear the confirmation")
+	}
+	if isArchived(t, s, made[0].ID) {
+		t.Error("a cancelled archive should leave the project active")
+	}
+	if p, ok := a.selectedProject(); !ok || p.Name != "seasonal" {
+		t.Errorf("cursor after cancel = %v %v, want to stay on seasonal", p.Name, ok)
+	}
+	if !strings.Contains(ansi.Strip(a.projectsView()), "seasonal") {
+		t.Error("a cancelled archive should leave the project in the column")
 	}
 }
 

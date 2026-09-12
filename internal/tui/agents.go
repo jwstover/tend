@@ -343,7 +343,8 @@ func (a app) handleAgentsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		a.resize()
 		if key.Matches(msg, a.keys.Delete) {
 			if a.focus == paneProjects {
-				return a, a.deleteSelectedProject()
+				a.armProjectDelete()
+				return a, nil
 			}
 			return a, a.killSelectedAgent()
 		}

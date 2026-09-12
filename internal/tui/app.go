@@ -759,6 +759,11 @@ type app struct {
 	deletePending   bool // first `d` pressed; a second `d` confirms the delete
 	quitPending     bool // `q` pressed while a recap was still running; a second press confirms
 
+	// projectConfirm is an archive or delete of a project waiting on `y`
+	// (projects.go): the one place a chord alone is not enough, since the
+	// operation moves every task in the project at once.
+	projectConfirm *projectConfirm
+
 	pendingRecaps int // in-flight recapSessionCmd calls; gates the quit confirmation
 
 	// Live-update bookkeeping for dbChangedMsg. liveReloadInFlight is set
@@ -1323,6 +1328,13 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return a, cmd
 	}
 
+	// A pending project archive/delete consumes the next key: `y` runs
+	// it, anything else cancels. Checked ahead of the view dispatch since
+	// the projects column is shared by the list and agents views.
+	if cmd, handled := a.handleProjectConfirmKey(msg); handled {
+		return a, cmd
+	}
+
 	// The standup view owns the keyboard: there is no list beneath it to
 	// navigate or mutate, so unhandled keys stop here.
 	if a.mode == modeStandup {
@@ -1398,9 +1410,11 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		a.resize()
 		if key.Matches(msg, a.keys.Delete) {
 			// The chord means "delete what is focused": a project in the
-			// projects column, otherwise the selected task.
+			// projects column (which asks once more, naming it), otherwise
+			// the selected task.
 			if a.focus == paneProjects && a.mode == modeList {
-				return a, a.deleteSelectedProject()
+				a.armProjectDelete()
+				return a, nil
 			}
 			if t, selected := a.selected(); selected {
 				return a, a.deleteTask(t)
@@ -1901,9 +1915,11 @@ func (a app) deletePanel() string {
 	switch {
 	case a.focus == paneProjects && (a.mode == modeList || a.mode == modeAgents):
 		// Deleting a project never deletes work, and the panel says so:
-		// the store reassigns its tasks to Unsorted first.
+		// the store reassigns its tasks to Unsorted first. The second `d`
+		// does not delete outright either; it opens the confirmation that
+		// names the project (armProjectDelete).
 		label = "delete project"
-		desc = "delete; tasks move to Unsorted"
+		desc = "delete (asks first); tasks move to Unsorted"
 	case a.mode == modeAgents:
 		// Not a delete at all: the row stays, the process goes. The panel
 		// says which process, since a headless session's is the runner's.
@@ -2231,6 +2247,9 @@ func (a *app) resize() {
 	}
 	if a.cancelPending {
 		bottomHeight = max(lipgloss.Height(a.cancelPanel()), 1)
+	}
+	if a.projectConfirm != nil {
+		bottomHeight = max(lipgloss.Height(a.projectConfirmPanel()), 1)
 	}
 	a.bodyHeight = max(a.height-chromeTop-bottomHeight, 1)
 	a.sizeRunViewport()
@@ -2895,6 +2914,9 @@ func (a app) bottomChrome(splits []int) string {
 	}
 	if a.cancelPending {
 		return a.cancelPanel()
+	}
+	if a.projectConfirm != nil {
+		return a.projectConfirmPanel()
 	}
 	return a.ruleLine(splits, a.styles.Glyphs.TeeUp) + "\n" + a.footer()
 }
