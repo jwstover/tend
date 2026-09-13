@@ -45,6 +45,27 @@ defmodule Tend.TaskTest do
     test "rejects unpadded components" do
       assert {:error, _} = Task.normalize_date("2026-6-9")
     end
+
+    # Go reads the year as exactly four digits, so it rejects ISO 8601's
+    # extended-form sign; Date.from_iso8601/1 on its own accepts both. The
+    # negative one is the dangerous half: it would reach tasks.due, which the
+    # database compares lexically, and sort before every real date.
+    test "rejects a positively signed year, as the Go layout does" do
+      assert Task.normalize_date("+2026-09-13") == {:error, {:invalid_date, "+2026-09-13"}}
+    end
+
+    test "rejects a negatively signed year, as the Go layout does" do
+      assert Task.normalize_date("-2026-09-13") == {:error, {:invalid_date, "-2026-09-13"}}
+    end
+
+    test "rejects a five-digit year" do
+      assert Task.normalize_date("10000-01-01") == {:error, {:invalid_date, "10000-01-01"}}
+    end
+
+    test "keeps the four-digit years Go accepts" do
+      assert Task.normalize_date("0000-01-01") == {:ok, "0000-01-01"}
+      assert Task.normalize_date("9999-12-31") == {:ok, "9999-12-31"}
+    end
   end
 
   # A port of TestNormalizeTitle in internal/task/task_test.go, case for case.

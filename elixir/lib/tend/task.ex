@@ -63,16 +63,34 @@ defmodule Tend.Task do
   format the schema stores.
 
   Surrounding whitespace is trimmed. Anything else -- another format, a word,
-  a day that does not exist -- is `{:error, {:invalid_date, original}}`, which
-  `Tend.Error.message/1` renders the way the Go error does.
+  a signed year, a day that does not exist -- is
+  `{:error, {:invalid_date, original}}`, which `Tend.Error.message/1` renders
+  the way the Go error does. The reason carries the string as given, untrimmed,
+  because Go's does.
   """
   @spec normalize_date(String.t()) :: {:ok, String.t()} | {:error, {:invalid_date, String.t()}}
   def normalize_date(s) when is_binary(s) do
-    case s |> String.trim() |> Date.from_iso8601() do
-      {:ok, date} -> {:ok, Date.to_iso8601(date)}
-      {:error, _reason} -> {:error, {:invalid_date, s}}
+    trimmed = String.trim(s)
+
+    with true <- four_digit_year?(trimmed),
+         {:ok, date} <- Date.from_iso8601(trimmed) do
+      {:ok, Date.to_iso8601(date)}
+    else
+      _not_a_date -> {:error, {:invalid_date, s}}
     end
   end
+
+  # Go reads the year with time.Parse("2006-01-02", ...), which takes exactly
+  # four ASCII digits and nothing else. Date.from_iso8601/1 additionally
+  # accepts ISO 8601's extended-form sign, so on its own it would quietly
+  # rewrite "+2026-09-13" to "2026-09-13" and accept "-2026-09-13" as a
+  # negative year -- a value that would reach tasks.due, which the database
+  # compares lexically, and sort before every real date.
+  defp four_digit_year?(<<a, b, c, d, ?-, _rest::binary>>)
+       when a in ?0..?9 and b in ?0..?9 and c in ?0..?9 and d in ?0..?9,
+       do: true
+
+  defp four_digit_year?(_s), do: false
 
   @doc """
   Trims surrounding whitespace and rejects blank titles.
