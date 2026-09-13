@@ -29,9 +29,10 @@ defmodule Tend.Error do
   Later parts of the port add their own reasons. **Extend the lists here
   rather than inventing a name elsewhere**: add the atom to `@sentinels`
   with the Go message text, or, for an interpolating error, add a clause to
-  `message/1` and a member to `t/0`. `Tend.ErrorTest` reads the Go sources
+  `message/1` and a member to `t/0`. `Tend.GoParityTest` reads the Go sources
   and fails if a sentinel defined there has no atom here, so a missed one is
-  a test failure rather than a surprise at runtime.
+  a test failure rather than a surprise at runtime. (`Tend.ErrorTest` covers
+  this module's own rules; the cross-language guard is the parity test.)
 
   Only the errors of `internal/task/task.go`, `internal/task/project.go` and
   `internal/task/session.go` are listed today; the store and template ports

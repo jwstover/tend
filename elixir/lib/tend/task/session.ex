@@ -28,6 +28,10 @@ defmodule Tend.Task.Session do
   `step_run_id` is set when the session ran a workflow step (it points at that
   step run) so the SESSIONS section can say which step a session belonged to;
   `nil` for an ordinary session.
+
+  Struct fields default to their Go zero values wherever Go's zero has an
+  Elixir counterpart, the same caveat `Tend.Task` carries: the timestamps and
+  `status` are `nil` here, where Go has `time.Time{}` and `SessionStatus("")`.
   """
 
   alias Tend.Task.SessionStatus

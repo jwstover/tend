@@ -16,10 +16,20 @@ defmodule Tend.Task do
   (`Store.TagsByTask` in Go), the same idiom child counts and session statuses
   use.
 
-  Struct fields default to their Go zero values, except the two timestamps
-  Go cannot leave unset -- `created_at` and `updated_at` -- which are `nil`
-  here, since `time.Time`'s zero has no Elixir counterpart and an unsaved task
-  has no honest value to put there.
+  Struct fields default to their Go zero values wherever Go's zero has an
+  Elixir counterpart. Where it does not, the default is `nil`: `created_at`
+  and `updated_at` (Go's `time.Time` zero, which an unsaved task has no honest
+  value for) and `state` (Go's `State("")`, which is not a valid state and so
+  has no atom -- see `Tend.Task.State`). `Tend.Task.Session` reads the same
+  way for its `status`.
+
+  `project_id` defaults to `0`, faithfully: Go's does too. It is not a
+  project. The `tasks.project_id` column is `NOT NULL DEFAULT 1` and
+  deliberately carries no `REFERENCES projects(id)` -- SQLite refuses to add a
+  REFERENCES column with a non-NULL default -- so nothing in the database
+  catches a `0` written through. Go's create path never relies on the column
+  default and always passes `project_id` explicitly; the store port must do
+  the same.
   """
 
   alias Tend.Task.State
