@@ -55,6 +55,7 @@ defmodule Tend.Template.Lexer do
 
   @decimal ~c"0123456789_"
   @hex ~c"0123456789abcdefABCDEF_"
+  @hex_digits ~c"0123456789abcdefABCDEF"
   @octal ~c"01234567_"
   @binary_digits ~c"01_"
 
@@ -75,7 +76,8 @@ defmodule Tend.Template.Lexer do
   Tokenizes `source`, always ending in an `:eof` token.
 
   Raises `Tend.Template.ParseError` on a lexical failure: an unclosed action,
-  an unterminated string, a stray character inside an action.
+  an unterminated string, a stray character inside an action, an escape that
+  names no encodable character.
   """
   @spec tokenize(binary()) :: [token()]
   def tokenize(source) when is_binary(source) do
@@ -449,10 +451,13 @@ defmodule Tend.Template.Lexer do
     end
   end
 
+  # An octal escape names one byte, so Go stops at \377: `"\400"` is
+  # `invalid syntax` there, and a `ParseError` here rather than an unencodable
+  # code point handed to `IO.iodata_to_binary/1`.
   defp escape(src, offset, <<a, b, c, rest::binary>>)
        when a in ?0..?7 and b in ?0..?7 and c in ?0..?7 do
     case Integer.parse(<<a, b, c>>, 8) do
-      {value, ""} -> {value, rest}
+      {value, ""} when value <= 255 -> {value, rest}
       _ -> raise bad_escape(src, offset, <<?\\, a, b, c>>)
     end
   end
@@ -468,12 +473,37 @@ defmodule Tend.Template.Lexer do
   defp escape_width(?u), do: 4
   defp escape_width(?U), do: 8
 
+  # `\x` names one byte; `\u` and `\U` name a code point. Go refuses a
+  # surrogate half or anything above U+10FFFF outright -- `"\uD800"` and
+  # `"\U00110000"` are both `invalid syntax` -- so neither reaches
+  # `<<value::utf8>>`, which would raise an `ArgumentError` past
+  # `Tend.Template.parse/1`'s reach.
   defp hex_escape(src, offset, marker, hex, tail) do
-    case Integer.parse(hex, 16) do
-      {value, ""} when marker == ?x -> {value, tail}
-      {value, ""} -> {<<value::utf8>>, tail}
-      _ -> raise bad_escape(src, offset, <<?\\, marker>> <> hex)
+    case escape_code(marker, hex) do
+      {:ok, chunk} -> {chunk, tail}
+      :error -> raise bad_escape(src, offset, <<?\\, marker>> <> hex)
     end
+  end
+
+  defp escape_code(marker, hex) do
+    if hex_digits?(hex) do
+      code_point(marker, String.to_integer(hex, 16))
+    else
+      :error
+    end
+  end
+
+  defp code_point(?x, value), do: {:ok, value}
+
+  defp code_point(_marker, value) when value in 0..0xD7FF or value in 0xE000..0x10FFFF,
+    do: {:ok, <<value::utf8>>}
+
+  defp code_point(_marker, _value), do: :error
+
+  # `Integer.parse/2` would take a sign, so `"\x-1"` becomes -1 and blows up
+  # in `IO.iodata_to_binary/1`. Only hex digits are an escape.
+  defp hex_digits?(hex) do
+    hex != "" and hex |> :binary.bin_to_list() |> Enum.all?(&(&1 in @hex_digits))
   end
 
   defp bad_escape(src, offset, text),

@@ -299,6 +299,47 @@ defmodule Tend.TemplateTest do
       assert %AST.Bool{value: false} = only_arg("{{false}}")
       assert %AST.Nil{} = only_arg("{{nil}}")
     end
+
+    test "the escapes at the edge of what Go encodes" do
+      assert %AST.String{value: <<255>>} = only_arg(~S|{{"\377"}}|)
+      assert %AST.String{value: <<255>>} = only_arg(~S|{{"\xff"}}|)
+      assert %AST.String{value: "\u{10FFFF}"} = only_arg(~S|{{"\U0010FFFF"}}|)
+      assert %AST.String{value: "\u{D7FF}"} = only_arg(~S|{{"\uD7FF"}}|)
+      assert %AST.Number{value: 255} = only_arg(~S|{{'\377'}}|)
+    end
+  end
+
+  # Go's strconv refuses these and `text/template` reports `invalid syntax`.
+  # They used to reach `IO.iodata_to_binary/1` or `<<value::utf8>>` with a code
+  # point neither can encode, which raised an `ArgumentError` past `parse/1`'s
+  # rescue and broke its `{:ok, _} | {:error, _}` contract.
+  describe "an escape naming no encodable character is a parse error, not a crash" do
+    test "an octal escape above \\377" do
+      for source <- [~S|{{"\400"}}|, ~S|{{"\777"}}|, ~S|{{'\777'}}|] do
+        assert {:error, %Tend.Template.ParseError{} = error} = Template.parse(source)
+        assert error.detail =~ "invalid escape sequence"
+      end
+    end
+
+    test "a \\u or \\U escape naming a surrogate half" do
+      for source <- [~S|{{"\uD800"}}|, ~S|{{'\uDFFF'}}|, ~S|{{"\U0000D800"}}|] do
+        assert {:error, %Tend.Template.ParseError{}} = Template.parse(source)
+      end
+    end
+
+    test "a \\U escape above U+10FFFF" do
+      assert {:error, %{token: "\\U00110000"}} = Template.parse(~S|{{"\U00110000"}}|)
+      assert {:error, %{token: "\\UFFFFFFFF"}} = Template.parse(~S|{{"\UFFFFFFFF"}}|)
+    end
+
+    test "a signed hex escape, which Integer.parse/2 would happily take" do
+      assert {:error, %{token: "\\x-1"}} = Template.parse(~S|{{"\x-1"}}|)
+      assert {:error, %{token: "\\x+1"}} = Template.parse(~S|{{"\x+1"}}|)
+    end
+
+    test "parse!/1 raises ParseError for one, not ArgumentError" do
+      assert_raise Tend.Template.ParseError, fn -> Template.parse!(~S|{{"\777"}}|) end
+    end
   end
 
   describe "errors name the offending token and its byte offset" do
