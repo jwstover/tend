@@ -201,6 +201,12 @@ tui ──┴──→ store, agent, jira, workflow, runner (Launch/Resume/Resta
 - `tui` and `cli` consume `store`/`agent`/`jira`/`mcpserver` through interfaces they declare, plus `task` types. They never touch SQL, exec, or HTTP directly.
 - `internal/` is used because the Go compiler forbids imports from outside the module — correct for an application's guts.
 
+### `elixir/` — the port, building alongside
+
+There is a second, in-progress build of `tend` in Elixir under `elixir/`, namespaced `Tend.*` and pinned by `elixir/.tool-versions`. It is a mix project with its own CI job (`mix compile --warnings-as-errors`, `mix test`, `mix format --check-formatted`) that runs beside the Go jobs; today it is a CLI scaffold whose entry points are stubs.
+
+**The Go tree is the one that ships.** Nothing in `elixir/` is released, and nothing in the Go tree depends on it. A change to the Go command surface, the `--db` resolution order, or the data model should be mirrored in `elixir/` when convenient, but the Go build staying green is the constraint that wins.
+
 ## 5. Data model (SQLite)
 
 ```sql
