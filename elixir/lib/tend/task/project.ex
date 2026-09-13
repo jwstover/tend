@@ -164,10 +164,11 @@ defmodule Tend.Task.Project do
   Splits a free-text tag prompt into normalized tag names.
 
   Commas and whitespace both separate, so `"work, home"` and `"work home"` are
-  the same input. Duplicates are dropped case-insensitively, matching the
-  schema's `NOCASE` uniqueness, and the first spelling of a tag wins. Returns
-  a list, always -- a cleared prompt is an explicit "no tags" rather than an
-  absent value.
+  the same input. Duplicates are dropped case-insensitively, folding the way
+  Go's `strings.ToLower` folds, and the first spelling of a tag wins.
+  Returns a list,
+  always -- a cleared prompt is an explicit "no tags" rather than an absent
+  value.
   """
   @spec parse_tags(String.t()) :: [String.t()]
   def parse_tags(s) when is_binary(s) do
@@ -179,8 +180,22 @@ defmodule Tend.Task.Project do
         :error -> []
       end
     end)
-    |> Enum.uniq_by(&String.downcase/1)
+    |> Enum.uniq_by(&fold/1)
   end
+
+  # The dedup key Go builds with strings.ToLower, which lowers rune by rune
+  # with Unicode's *simple* mapping. String.downcase/1 applies the full
+  # mapping, and over the whole codepoint space the two differ on exactly one
+  # character: U+0130 (dotted capital I), which Go lowers to "i" and Elixir
+  # lowers to "i" + U+0307. Left alone the difference cuts both ways --
+  # parse_tags("İ i") would keep a tag Go folds away, and parse_tags("İİ i̇i̇")
+  # would DROP a tag Go keeps.
+  #
+  # This is narrower than the schema's NOCASE uniqueness, which is ASCII-only
+  # and would treat "İ" and "i" as two tags. Parity with Go wins: the two
+  # trees have to agree on what the prompt produces, and an over-eager fold
+  # only ever costs a duplicate spelling, never a row.
+  defp fold(tag), do: tag |> String.replace("İ", "i") |> String.downcase()
 
   @doc """
   Renders tags back into the space-separated form `parse_tags/1` accepts, for
