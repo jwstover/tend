@@ -354,6 +354,57 @@ defmodule Tend.Store.MigratorTest do
       assert SQL.goose_rows!(conn) == goose
     end
 
+    # The other direction, and the one the header cannot express on its own:
+    # this ladder stamped the header, then the Go binary carried the schema
+    # further and left the stamp where it was. Believing the header would
+    # replay migrations against tables that already exist. Driven end to end
+    # against the real Go binary in `Tend.Store.GoParityTest`; here the stale
+    # header is written by hand so CI without Go still guards it.
+    test "a goose table ahead of the header wins, not the other way round", %{tmp_dir: dir} do
+      path = Path.join(dir, "tend.db")
+      conn = reopen!(path)
+      schema = SQL.schema!(conn)
+      goose = SQL.goose_rows!(conn)
+
+      SQL.exec!(conn, "PRAGMA user_version = 8")
+
+      assert Migrator.version(conn) == {:ok, Migrator.latest_version()}
+      assert SQL.scalar!(conn, "PRAGMA user_version") == Migrator.latest_version()
+      assert :ok = Migrator.migrate(conn)
+      assert SQL.schema!(conn) == schema
+      assert SQL.goose_rows!(conn) == goose
+    end
+
+    # A header nobody on disk can justify is tolerated, not an error: the
+    # ladder applies nothing and leaves it alone, the way goose's own Up does.
+    test "a header ahead of every migration on disk is left alone", %{tmp_dir: dir} do
+      path = Path.join(dir, "tend.db")
+      conn = reopen!(path)
+      schema = SQL.schema!(conn)
+
+      SQL.exec!(conn, "PRAGMA user_version = 99")
+
+      assert :ok = Migrator.migrate(conn)
+      assert SQL.scalar!(conn, "PRAGMA user_version") == 99
+      assert SQL.schema!(conn) == schema
+    end
+
+    # ...but that header must not be allowed to invent goose rows for
+    # migrations that do not exist, or the Go binary would skip the real ones
+    # when they land.
+    test "rebuilding a missing goose table stops at the newest migration", %{tmp_dir: dir} do
+      path = Path.join(dir, "tend.db")
+      conn = reopen!(path)
+
+      SQL.exec!(conn, "DROP TABLE goose_db_version")
+      SQL.exec!(conn, "PRAGMA user_version = 30")
+
+      assert {:ok, 30} = Migrator.version(conn)
+
+      assert SQL.scalar!(conn, "SELECT MAX(version_id) FROM goose_db_version") ==
+               Migrator.latest_version()
+    end
+
     test "a partially migrated goose database resumes where goose left off", %{tmp_dir: dir} do
       path = Path.join(dir, "tend.db")
       conn = open_at(path, @before_workflows)

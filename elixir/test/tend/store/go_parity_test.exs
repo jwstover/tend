@@ -125,6 +125,47 @@ defmodule Tend.Store.GoParityTest do
     assert final.titles == before.titles ++ ["written by go again"]
   end
 
+  test "the Go binary carrying an Elixir-created database forward", context do
+    %{tmp_dir: dir, tend: tend} = context
+    path = Path.join(dir, "tend.db")
+
+    # An older Elixir binary gets the schema to 8 and stamps the header.
+    {:ok, conn} = Sqlite3.open(path)
+    SQL.exec!(conn, "PRAGMA journal_mode = WAL")
+    SQL.exec!(conn, "PRAGMA foreign_keys = ON")
+    :ok = Migrator.migrate_to(conn, 8)
+    assert SQL.scalar!(conn, "PRAGMA user_version") == 8
+    :ok = Sqlite3.close(conn)
+
+    # The Go binary finishes the ladder -- and leaves the header at 8, since
+    # goose does not know the header exists.
+    go!(tend, path, ["add", "written by go"])
+
+    before =
+      inspect!(path, fn conn ->
+        assert SQL.scalar!(conn, "PRAGMA user_version") == 8
+
+        assert SQL.scalar!(conn, "SELECT MAX(version_id) FROM goose_db_version") ==
+                 Migrator.latest_version()
+
+        inspect_state(conn)
+      end)
+
+    # Opening from Elixir must believe goose, not the stale header: replaying
+    # 9..16 would fail on `CREATE TABLE workflows`.
+    {:ok, store} = Store.open(path)
+    assert SQL.scalar!(store.conn, "PRAGMA user_version") == Migrator.latest_version()
+    after_elixir = inspect_state(store.conn)
+    :ok = Store.close(store)
+
+    assert after_elixir.schema == before.schema
+    assert after_elixir.goose == before.goose
+    assert after_elixir.titles == before.titles
+
+    # ...and the Go binary still has it afterwards.
+    assert go!(tend, path, ["ls"]) =~ "written by go"
+  end
+
   defp inspect_state(conn) do
     %{
       schema: SQL.schema!(conn),
