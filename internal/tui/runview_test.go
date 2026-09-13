@@ -39,6 +39,29 @@ func stubResumeRunner(t *testing.T) *launchRecord {
 	return rec
 }
 
+// retryRecord is what the retryRunner stub saw: which run, against which
+// database, whether the step was to start over, and how many times.
+type retryRecord struct {
+	runID  int64
+	dbPath string
+	fresh  bool
+	calls  int
+}
+
+// stubRetryRunner replaces runner.Retry with one that records the call.
+func stubRetryRunner(t *testing.T) *retryRecord {
+	t.Helper()
+	rec := &retryRecord{}
+	prev := retryRunner
+	retryRunner = func(ctx context.Context, s runner.RetryStore, runID int64, dbPath string, fresh bool) (string, error) {
+		rec.runID, rec.dbPath, rec.fresh = runID, dbPath, fresh
+		rec.calls++
+		return "tend-wf-stub", nil
+	}
+	t.Cleanup(func() { retryRunner = prev })
+	return rec
+}
+
 // liveRun is a run the runner has claimed and started a step of: a task,
 // a two-step workflow (an agent step then a gate), the run in state st
 // with the agent step's step run current and its session row written --
@@ -408,6 +431,116 @@ func TestRunViewPauseResumeCancel(t *testing.T) {
 		return err == nil && run.State == workflow.RunCancelled
 	})
 	_ = m
+}
+
+// failRun ends the live run as failed with reason and reloads the model
+// so the run view has the failed state.
+func failRun(t *testing.T, s *store.Store, m tea.Model, runID int64, reason string) tea.Model {
+	t.Helper()
+	if err := s.FailRun(context.Background(), runID, reason); err != nil {
+		t.Fatalf("FailRun: %v", err)
+	}
+	return drive(t, m, refreshMsg{})
+}
+
+// `p` on a run that failed mid-step opens the retry picker: "retry the
+// step" continues the step's session (runner.Retry with fresh false),
+// "rerun the step" starts it over (fresh true), esc leaves the run failed
+// without a call. The footer offers `p retry` for a failed run.
+func TestRunViewRetryFailedRunPicker(t *testing.T) {
+	stubRunnerAlive(t, false)
+	rec := stubRetryRunner(t)
+	m, s := newTestApp(t)
+	l := newLiveRun(t, s, workflow.RunRunning)
+	m = drive(t, m, tea.WindowSizeMsg{Width: 140, Height: 40})
+	m = failRun(t, s, m, l.run.ID, `step "implement": 2 tool call(s) were denied by the permission mode`)
+	m = openRun(t, m)
+	if a := m.(app); a.rv.run.State != workflow.RunFailed {
+		t.Fatalf("view state = %s, want failed", a.rv.run.State)
+	}
+	if content := ansi.Strip(m.View().Content); !strings.Contains(content, "p retry") {
+		t.Errorf("footer does not offer p retry for a failed run:\n%s", content)
+	}
+
+	m = drive(t, m, keyPress('p'))
+	a := m.(app)
+	if !a.retry.open || a.retry.run.ID != l.run.ID || a.retry.stepRun.ID != l.stepRun.ID {
+		t.Fatalf("retry picker = %+v, want it open on the failed step", a.retry)
+	}
+	if rec.calls != 0 {
+		t.Fatalf("opening the picker called retryRunner %d time(s)", rec.calls)
+	}
+	content := ansi.Strip(m.View().Content)
+	for _, want := range []string{"retry implement", "failed", "1 retry the step", "2 rerun the step", "esc leave the run as it is"} {
+		if !strings.Contains(content, want) {
+			t.Errorf("retry picker missing %q:\n%s", want, content)
+		}
+	}
+
+	// esc closes it with nothing done.
+	m = drive(t, m, esc())
+	a = m.(app)
+	if a.retry.open || rec.calls != 0 {
+		t.Fatalf("after esc: picker open=%v, retryRunner calls=%d; want closed and no call", a.retry.open, rec.calls)
+	}
+	if !strings.Contains(a.status.text, "stays failed") {
+		t.Errorf("status = %+v, want a stays-failed hint", a.status)
+	}
+
+	// Enter on the highlighted first row continues the step's session.
+	m = drive(t, m, keyPress('p'))
+	m = drive(t, m, enter())
+	a = m.(app)
+	if rec.calls != 1 || rec.runID != l.run.ID || rec.fresh || rec.dbPath != a.dbPath {
+		t.Fatalf("retryRunner = %+v, want one call for run %d with fresh=false against %q", rec, l.run.ID, a.dbPath)
+	}
+	if a.retry.open || a.status.isErr || !strings.Contains(a.status.text, "retried") {
+		t.Errorf("picker open=%v status=%+v, want it closed with a retried flash", a.retry.open, a.status)
+	}
+
+	// The stub leaves the run failed, so p offers the picker again; 2
+	// starts the step over.
+	m = drive(t, m, keyPress('p'))
+	if !m.(app).retry.open {
+		t.Fatal("second p did not reopen the picker")
+	}
+	m = drive(t, m, keyPress('2'))
+	a = m.(app)
+	if rec.calls != 2 || rec.runID != l.run.ID || !rec.fresh {
+		t.Fatalf("retryRunner = %+v, want a second call for run %d with fresh=true", rec, l.run.ID)
+	}
+	if a.retry.open || a.status.isErr || !strings.Contains(a.status.text, "retried") {
+		t.Errorf("picker open=%v status=%+v, want it closed with a retried flash", a.retry.open, a.status)
+	}
+}
+
+// A run that failed with its current step already finished (routing
+// failed: max_iterations exceeded, a prompt that would not render) has no
+// session to continue, so `p` retries at once with no picker.
+func TestRunViewRetryFinishedStepSkipsPicker(t *testing.T) {
+	ctx := context.Background()
+	stubRunnerAlive(t, false)
+	rec := stubRetryRunner(t)
+	m, s := newTestApp(t)
+	l := newLiveRun(t, s, workflow.RunRunning)
+	if err := s.FinishStepRun(ctx, l.stepRun.ID, "done", "PR #7"); err != nil {
+		t.Fatalf("FinishStepRun: %v", err)
+	}
+	m = drive(t, m, tea.WindowSizeMsg{Width: 140, Height: 40})
+	m = failRun(t, s, m, l.run.ID, `edge "done" from "implement": max_iterations (3) exceeded`)
+	m = openRun(t, m)
+
+	m = drive(t, m, keyPress('p'))
+	a := m.(app)
+	if a.retry.open {
+		t.Fatalf("retry picker opened for a finished step: %+v", a.retry)
+	}
+	if rec.calls != 1 || rec.runID != l.run.ID || rec.fresh || rec.dbPath != a.dbPath {
+		t.Fatalf("retryRunner = %+v, want one call for run %d with fresh=false against %q", rec, l.run.ID, a.dbPath)
+	}
+	if a.status.isErr || !strings.Contains(a.status.text, "retried") || !strings.Contains(a.status.text, "tend-wf-stub") {
+		t.Errorf("status = %+v, want a retried flash naming the tmux session", a.status)
+	}
 }
 
 // `a` and `x` decide the gate the run is waiting at through the same
