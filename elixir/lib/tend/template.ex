@@ -64,9 +64,10 @@ defmodule Tend.Template do
   ## Errors
 
   `parse/1` returns `{:error, %Tend.Template.ParseError{}}`, carrying the
-  offending token and its byte offset. `Exception.message/1` formats it the
-  way the Go tree's `ErrInvalidPrompt` surfaces `text/template`'s own
-  message, which the TUI's validate action shows verbatim:
+  offending token and its byte offset. `Exception.message/1` keeps the shape
+  the Go tree's `ErrInvalidPrompt` surfaces -- the string the TUI's validate
+  action shows verbatim -- and adds the column and the offset, which Go does
+  not report. `Tend.Template.ParseError` says why:
 
       iex> {:error, error} = Tend.Template.parse("{{end}}")
       iex> Exception.message(error)
