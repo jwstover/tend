@@ -38,7 +38,13 @@ defmodule Tend.MixProject do
   # options parser. The store's SQLite driver is the planned exception -- there
   # is no standard-library sqlite3, and CI already caches deps/ and _build/ on
   # the expectation that it is a NIF compiled from C.
+  #
+  # exqlite is that exception, and only its raw `Exqlite.Sqlite3` API is used:
+  # no Ecto, because the Go store is hand-written SQL and the port is a port,
+  # not a redesign.
   defp deps do
-    []
+    [
+      {:exqlite, "~> 0.40"}
+    ]
   end
 end
