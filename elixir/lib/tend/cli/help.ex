@@ -3,9 +3,15 @@ defmodule Tend.CLI.Help do
   Renders `--help`, laid out the way cobra lays it out in the Go binary.
 
   The root help is the contract: same commands, same short descriptions, same
-  `--db` flag line. Two cobra built-ins -- `completion` and `help` -- are
-  deliberately absent, because they are cobra's, not tend's. `tend help` still
-  works as a synonym for `tend --help`.
+  `--db` flag line as `tend --help` from the Go binary, with one stated
+  exception -- cobra's two injected built-ins, `completion` and `help`, which
+  are cobra's surface rather than tend's. The exception is written into the
+  acceptance criterion on sub-task 262 and into `Tend.CLI.HelpTest`, which
+  derives its expectation from the Go help by deleting exactly those two rows
+  by name, so no other divergence can hide behind it.
+
+  `tend help` still works as a synonym for `tend --help`; `tend completion`
+  has no counterpart here and reports itself unknown.
   """
 
   alias Tend.CLI.Command
