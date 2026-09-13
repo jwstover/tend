@@ -18,6 +18,11 @@ defmodule Tend.Template.Parser do
       lex as keywords and are refused by name, so the error says what is
       unsupported rather than something about a stray word.
 
+  There is one construct Go accepts and this refuses: a field chain whose
+  head is neither a field nor a variable -- Go's `ChainNode`, as in
+  `{{len.A}}` or `{{(.A).B}}`. `Tend.Template` lists it with the rest of what
+  is out of the subset, and `extend/3` refuses it by name.
+
   Variable scope *is* tracked, because Go tracks it at parse time: `{{$o}}`
   outside the `{{range}}` that declared it is a parse error in Go and here
   too, and that matters for the TUI's validate action, which has no data to
@@ -347,15 +352,17 @@ defmodule Tend.Template.Parser do
   defp extend(_state, %AST.Field{} = node, names), do: %{node | path: node.path ++ names}
   defp extend(_state, %AST.Variable{} = node, names), do: %{node | path: node.path ++ names}
 
-  defp extend(state, %AST.Pipeline{} = node, names) do
-    raise ParseError.new(
-            state.source,
-            node.offset,
-            "." <> Enum.join(names, "."),
-            "unsupported field chain on a parenthesized pipeline"
-          )
-  end
+  # Go's `operand()` keeps a `ChainNode` when the head of a chain is a
+  # function name (`{{len.A}}`) or a parenthesised pipeline (`{{(.A).B}}`),
+  # and there is no `ChainNode` in this subset -- see `Tend.Template`'s "What
+  # is not, and why". Both are refused by name rather than mis-parsed.
+  defp extend(state, %AST.Pipeline{} = node, names),
+    do: raise(unsupported_chain(state, node, names, "a parenthesized pipeline"))
 
+  defp extend(state, %AST.Identifier{name: name} = node, names),
+    do: raise(unsupported_chain(state, node, names, ~s(the function name "#{name}")))
+
+  # Go's own message, for the terms Go also refuses a chain on.
   defp extend(state, node, names) do
     raise ParseError.new(
             state.source,
@@ -363,6 +370,15 @@ defmodule Tend.Template.Parser do
             "." <> Enum.join(names, "."),
             ~s(unexpected . after term "#{node_text(node)}")
           )
+  end
+
+  defp unsupported_chain(state, node, names, head) do
+    ParseError.new(
+      state.source,
+      node.offset,
+      "." <> Enum.join(names, "."),
+      "unsupported field chain on #{head}"
+    )
   end
 
   defp term(state) do

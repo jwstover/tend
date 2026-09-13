@@ -210,6 +210,14 @@ defmodule Tend.Template.AST.Number do
 
   Character constants (`{{'a'}}`) are numbers here too, as in Go: their value
   is the code point.
+
+  `value` does not have Go's ranges. Go's `NumberNode` holds an `int64`, a
+  `uint64` and a `float64` and falls back to the float when a literal does not
+  fit an integer, so `{{9223372036854775808}}` is `9.223372036854776e18` there
+  and an exact integer here, and `{{99999999999999999999}}`, which Go refuses
+  outright with `integer overflow`, is an exact integer too. The renderer has
+  to decide what those print as; nothing in the repo's prompts uses a literal
+  anywhere near that size.
   """
 
   @type t :: %__MODULE__{
@@ -287,8 +295,9 @@ defmodule Tend.Template.AST do
     * Go's `parse.Tree` also has `ChainNode`, `WithNode`, `TemplateNode`,
       `CommentNode`, `BreakNode` and `ContinueNode`. None of them appear in
       any stored prompt or fixture, and `Tend.Template` rejects all of them
-      with a parse error that names the construct. See `Tend.Template` for
-      the full list of what is out of scope and why.
+      with a parse error that names the construct -- including `ChainNode`,
+      which covers both `{{len.A}}` and `{{(.A).B}}`. `Tend.Template`'s
+      "What is not, and why" is the full list, with the reasoning.
     * Go's `FieldNode` for a chained field such as `.Task.Body` carries the
       position of the *last* `.` in the chain, an artefact of how it merges
       chains. `offset` here is the position of the first `.`, which is what
@@ -314,10 +323,6 @@ defmodule Tend.Template.AST do
           | Tend.Template.AST.Nil.t()
           | Tend.Template.AST.Pipeline.t()
 
-  @typedoc "Any node in the closed set."
-  @type t ::
-          tree_node()
-          | operand()
-          | Tend.Template.AST.Pipeline.t()
-          | Tend.Template.AST.Command.t()
+  @typedoc "Any node in the closed set. `Pipeline` arrives via `operand/0`."
+  @type t :: tree_node() | operand() | Tend.Template.AST.Command.t()
 end

@@ -300,6 +300,18 @@ defmodule Tend.TemplateTest do
       assert %AST.Nil{} = only_arg("{{nil}}")
     end
 
+    # Tend.Template's moduledoc claims the subset is more permissive than Go
+    # everywhere except the chain constructs it names. These are the cases
+    # that claim rests on: Go refuses all four.
+    test "numbers Go refuses parse here, which is the safe direction" do
+      assert %AST.Number{value: 99_999_999_999_999_999_999} =
+               only_arg("{{99999999999999999999}}")
+
+      assert %AST.Number{value: 9_223_372_036_854_775_808} = only_arg("{{9223372036854775808}}")
+      assert %AST.Number{value: 10} = only_arg("{{1_0}}")
+      assert %AST.Number{value: -0.0} = only_arg("{{-.}}")
+    end
+
     test "the escapes at the edge of what Go encodes" do
       assert %AST.String{value: <<255>>} = only_arg(~S|{{"\377"}}|)
       assert %AST.String{value: <<255>>} = only_arg(~S|{{"\xff"}}|)
@@ -420,6 +432,28 @@ defmodule Tend.TemplateTest do
                Template.parse("{{(.A).B}}")
     end
 
+    # Go's operand() keeps a ChainNode for these two heads, so `{{len.A}}` and
+    # `{{(.A).B}}` do parse there. They are the only constructs Go accepts and
+    # this refuses; both are named out in Tend.Template's subset doc, and the
+    # error says which construct rather than borrowing Go's "unexpected ."
+    # wording, which Go only uses for heads it refuses too.
+    test "a malformed field path: a chain off a function name" do
+      assert {:error, error} = Template.parse("{{len.A}}")
+      assert error.detail == ~s(unsupported field chain on the function name "len")
+      assert {error.token, error.offset} == {".A", 2}
+
+      assert {:error, %{detail: ~s(unsupported field chain on the function name "ne")}} =
+               Template.parse("{{ne.Brange}}")
+    end
+
+    test "a chain off a literal keeps Go's own wording, because Go refuses it too" do
+      assert {:error, %{detail: ~s(unexpected . after term "true")}} =
+               Template.parse("{{true.A}}")
+
+      assert {:error, %{detail: ~s(unexpected . after term "\"x\"")}} =
+               Template.parse(~S|{{"x".A}}|)
+    end
+
     test "an unterminated interpreted string" do
       assert {:error, error} = Template.parse(~S|{{eq .A "done}}|)
       assert error.detail == "unterminated quoted string"
@@ -463,6 +497,21 @@ defmodule Tend.TemplateTest do
       assert Exception.message(error) == "template: prompt:3:3: unexpected {{end}} at byte 10"
     end
 
+    # The ASCII case above cannot tell a byte offset from a codepoint offset.
+    # "héllo\n🎉" is 6 bytes then 4, so a codepoint count would say 8 and 5.
+    test "the offset counts bytes, not codepoints" do
+      assert {:error, error} = Template.parse("héllo\n🎉{{end}}")
+      assert error.offset == 13
+      assert {error.line, error.column} == {2, 7}
+      assert Exception.message(error) == "template: prompt:2:7: unexpected {{end}} at byte 13"
+    end
+
+    test "a CRLF is one line break, counted at the newline" do
+      assert {:error, error} = Template.parse("a\r\nb{{end}}")
+      assert error.offset == 6
+      assert {error.line, error.column} == {2, 4}
+    end
+
     test "parse!/1 raises the same error" do
       assert_raise Tend.Template.ParseError, ~r/unexpected \{\{end\}\} at byte 2/, fn ->
         Template.parse!("{{end}}")
@@ -471,9 +520,11 @@ defmodule Tend.TemplateTest do
   end
 
   describe "every prompt_md literal in the Go tree" do
-    # Copied verbatim from internal/workflow/prompt_test.go,
-    # internal/workflow/graph_test.go and internal/cli/workflow_test.go. These
-    # are the templates a user's tend.db may already hold.
+    # Thirty-eight of the thirty-nine are copied verbatim from
+    # internal/workflow/prompt_test.go, internal/workflow/graph_test.go and
+    # internal/cli/workflow_test.go; "do plan" is not from the Go tree, it
+    # stands in for the shortest thing a user might type. These are the
+    # templates a user's tend.db may already hold.
     @ready_set ~S|<<range .Subtasks>><<if and (ne .State "done") (not .IsBlocked)>>- #<<.ID>> <<.Title>>
 <<end>><<end>>|
 

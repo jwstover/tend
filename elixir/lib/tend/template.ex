@@ -43,10 +43,23 @@ defmodule Tend.Template do
       prompt or fixture uses one. Nothing in the repo does, so they are out,
       and `{{/*` gets the same "unrecognized character in action" that Go
       would give a stray `/` anywhere else.
+    * A field chain whose head is neither a field nor a variable -- Go's
+      `ChainNode`. `{{.A.B}}` and `{{$x.A}}` are in; `{{len.A}}` (a chain off
+      a function name) and `{{(.A).B}}` (a chain off a parenthesised
+      pipeline) are out. These are the only constructs Go accepts and this
+      refuses; a repo-wide sweep found zero of either, and supporting them
+      would add a node type to the closed set in `Tend.Template.AST` for the
+      renderer and the built-ins to carry.
     * Imaginary and hex-float literals.
 
   Each of these is a parse error that names the construct, so a prompt using
   one is refused loudly rather than rendered wrongly.
+
+  Everything else is *more* permissive than Go, never less, so no prompt Go
+  accepts is refused here. `{{99999999999999999999}}` is an arbitrary-precision
+  integer where Go reports `integer overflow`; `{{1_}}` and `{{-.}}` parse
+  where Go reports `illegal number syntax`; a non-ASCII byte counts as a
+  letter in an identifier, where Go asks `unicode.IsLetter`.
 
   ## Errors
 
