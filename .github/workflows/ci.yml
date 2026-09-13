@@ -39,3 +39,28 @@ jobs:
         uses: golangci/golangci-lint-action@v8
         with:
           version: latest
+
+  # The Elixir port lives in elixir/ and builds alongside the Go tree, which
+  # stays the shipped one. Toolchain versions come from elixir/.tool-versions.
+  elixir:
+    name: Elixir
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: elixir
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: erlef/setup-beam@v1
+        with:
+          version-file: elixir/.tool-versions
+          version-type: strict
+
+      - name: Compile
+        run: mix compile --warnings-as-errors
+
+      - name: Test
+        run: mix test
+
+      - name: Format
+        run: mix format --check-formatted
