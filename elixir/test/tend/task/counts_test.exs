@@ -9,9 +9,8 @@ defmodule Tend.Task.CountsTest do
       assert %ChildCount{} == %ChildCount{done: 0, total: 0}
     end
 
-    test "carries the N/M the progress indicator shows" do
-      assert %ChildCount{done: 2, total: 5}.done == 2
-      assert %ChildCount{done: 2, total: 5}.total == 5
+    test "has exactly the two fields the progress indicator reads" do
+      assert %ChildCount{} |> Map.from_struct() |> Map.keys() |> Enum.sort() == [:done, :total]
     end
   end
 

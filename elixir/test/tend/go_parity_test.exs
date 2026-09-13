@@ -28,10 +28,13 @@ defmodule Tend.GoParityTest do
 
   defp go_sources, do: Enum.map_join(@go_files, "\n", &go_source/1)
 
-  # Every `ErrX = errors.New("...")`, grouped or standalone, as
-  # {"ErrX", "message"}.
+  # Every `ErrX = errors.New("...")` or `ErrX = fmt.Errorf("...")`, grouped or
+  # standalone, as {"ErrX", "message"}. Both constructors count: a sentinel is
+  # a package-level Err value callers reach for with errors.Is, and which of
+  # the two built it is the author's choice, not a distinction this port cares
+  # about.
   defp go_sentinels do
-    ~r/(Err\w+)\s*=\s*errors\.New\("([^"]*)"\)/
+    ~r/(Err\w+)\s*=\s*(?:errors\.New|fmt\.Errorf)\("([^"]*)"\)/
     |> Regex.scan(go_sources())
     |> Enum.map(fn [_whole, name, message] -> {name, message} end)
   end
