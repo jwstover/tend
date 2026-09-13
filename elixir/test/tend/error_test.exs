@@ -56,4 +56,18 @@ defmodule Tend.ErrorTest do
       assert_raise ArgumentError, fn -> Error.message({:invented, 1}) end
     end
   end
+
+  describe "the convention" do
+    test "the modules ported so far return sentinels, not strings or exceptions" do
+      assert Tend.Task.normalize_title("") == {:error, :empty_title}
+      assert Tend.Task.Project.normalize_name(" ") == {:error, :empty_project_name}
+    end
+
+    test "every sentinel a ported function can return is one this module lists" do
+      {:error, title} = Tend.Task.normalize_title("")
+      {:error, name} = Tend.Task.Project.normalize_name(" ")
+
+      for reason <- [title, name], do: assert(Error.sentinel?(reason))
+    end
+  end
 end
