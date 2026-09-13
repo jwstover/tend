@@ -24,12 +24,24 @@ defmodule Tend.Store.Migrator do
     * `goose_db_version` is written alongside it, in goose's own shape, so the
       Go binary opens an Elixir-created database and finds nothing to do.
 
-  The asymmetry runs the other way too. A `tend.db` created by the Go binary
-  carries `goose_db_version` at version 16 with `PRAGMA user_version` still 0,
-  which read naively would mean "fresh database, replay everything" -- against a
-  schema that already exists. So the first thing `migrate/1` does is reconcile:
-  when the header says 0 but a `goose_db_version` table is present, the header
-  is *seeded* from it rather than believed.
+  The two records can disagree in either direction, because each binary writes
+  only its own. A `tend.db` created by the Go binary carries `goose_db_version`
+  at version 16 with `PRAGMA user_version` still 0, which read naively would
+  mean "fresh database, replay everything" -- against a schema that already
+  exists. And a database *this* ladder stamped that the Go binary then carried
+  further forward keeps the stale header this ladder wrote, because goose never
+  touches it.
+
+  So the first thing `migrate/1` does is reconcile, and it does so
+  symmetrically: whichever of the two is higher is the one that describes the
+  schema actually on disk, so that is the version taken and written back to the
+  header. Believing the header alone is what would replay `00009` against a
+  database that already has `workflows`.
+
+  A header *ahead* of every migration on disk -- a downgrade, or a corrupted
+  one -- is tolerated rather than rejected: the ladder applies nothing and
+  leaves the header where it found it, which is goose's own behaviour when it
+  is asked to run `Up` against a database newer than its own files.
 
   ## Down
 
@@ -106,10 +118,14 @@ defmodule Tend.Store.Migrator do
   The version `conn` is at: the number of the newest applied migration, or 0
   for a database that has never been migrated.
 
+  The answer is the higher of `PRAGMA user_version` and the newest applied row
+  in `goose_db_version`, since either binary can be the one that moved the
+  schema last and neither writes the other's record.
+
   Not a pure read. This is the reconciling step `migrate/1` runs first, so
-  calling it can write `PRAGMA user_version` (seeded from `goose_db_version`)
-  and create the `goose_db_version` table if it is missing. Reading the header
-  without reconciling would answer 0 for every database the Go binary made.
+  calling it can write `PRAGMA user_version` and create the `goose_db_version`
+  table if it is missing. Reading the header without reconciling would answer 0
+  for every database the Go binary made.
   """
   @spec version(Sqlite3.db()) :: {:ok, non_neg_integer()} | {:error, term()}
   def version(conn), do: reconcile(conn)
@@ -195,31 +211,37 @@ defmodule Tend.Store.Migrator do
   defp reconcile(conn) do
     with {:ok, declared} <- read_version(conn),
          {:ok, goose?} <- goose_table?(conn) do
-      cond do
-        # A database the Go binary made: the header was never written, but
-        # goose's table knows exactly how far the schema got.
-        declared == 0 and goose? -> seed_from_goose(conn)
-        goose? -> {:ok, declared}
+      if goose? do
+        agree(conn, declared)
+      else
         # Fresh, or a database whose goose table went missing.
-        true -> with :ok <- create_goose_table(conn, declared), do: {:ok, declared}
+        with :ok <- create_goose_table(conn, min(declared, latest_version())),
+             do: {:ok, declared}
       end
     end
   end
 
-  defp seed_from_goose(conn) do
+  # Neither binary writes the other's record, so either can be the stale one:
+  # goose never touches the header, and the Go binary never reads it. The
+  # higher of the two is the one that describes the schema on disk.
+  defp agree(conn, declared) do
     sql = "SELECT COALESCE(MAX(version_id), 0) FROM goose_db_version WHERE is_applied = 1"
 
-    with {:ok, applied} <- scalar(conn, sql),
-         :ok <- set_version(conn, applied) do
-      {:ok, applied}
+    with {:ok, applied} <- scalar(conn, sql) do
+      case max(declared, applied) do
+        ^declared -> {:ok, declared}
+        current -> with :ok <- set_version(conn, current), do: {:ok, current}
+      end
     end
   end
 
   # goose seeds a version-0 row when it creates the table, then one row per
   # migration; `through` backfills the rows for a schema that is already
   # ahead of a missing table, which is the only way the two can disagree.
+  # It is clamped by the caller: backfilling rows for migrations that do not
+  # exist would make the Go binary skip them once they did.
   defp create_goose_table(conn, through) do
-    with :ok <- exec(conn, @goose_table) do
+    with :ok <- checked(conn, @goose_table) do
       Enum.reduce_while(0..through//1, :ok, fn version, :ok ->
         case record(conn, version) do
           :ok -> {:cont, :ok}
@@ -230,7 +252,7 @@ defmodule Tend.Store.Migrator do
   end
 
   defp record(conn, version) do
-    exec(conn, "INSERT INTO goose_db_version (version_id, is_applied) VALUES (#{version}, 1)")
+    checked(conn, "INSERT INTO goose_db_version (version_id, is_applied) VALUES (#{version}, 1)")
   end
 
   defp read_version(conn), do: scalar(conn, "PRAGMA user_version")
@@ -290,6 +312,16 @@ defmodule Tend.Store.Migrator do
   # script. That is what lets a migration's Up section go over in one call,
   # trigger bodies and their internal semicolons included.
   defp exec(conn, sql), do: Sqlite3.execute(conn, sql)
+
+  # The goose bookkeeping writes are the only ones that run outside a
+  # transaction, so nothing downstream tags their failures; a bare exqlite
+  # string would escape `Tend.Store.open/1` as the whole error term.
+  defp checked(conn, sql) do
+    case exec(conn, sql) do
+      :ok -> :ok
+      {:error, reason} -> {:error, {:query_failed, sql, reason}}
+    end
+  end
 
   defp scalar(conn, sql) do
     case Sqlite3.prepare(conn, sql) do
