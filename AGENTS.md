@@ -23,7 +23,7 @@ Releases are automated. Every commit subject **must** follow Conventional Commit
 ```
 
 - **Types:** `feat` (user-visible feature → minor bump), `fix` (bug fix → patch bump), `refactor`, `docs`, `test`, `chore`, `ci`, `build`, `perf`. Only `feat`, `fix`, and breaking changes appear in the CHANGELOG and trigger a release.
-- **Scopes** (optional, lowercase): `tui`, `cli`, `store`, `task`, `workflow`, `runner`, `agent`, `sessions`, `mcp`, `jira`, `ci`. Omit when a change spans layers.
+- **Scopes** (optional, lowercase): `tui`, `cli`, `store`, `task`, `workflow`, `runner`, `agent`, `sessions`, `mcp`, `jira`, `ci`, `elixir`. Omit when a change spans layers.
 - **Breaking changes:** append `!` after the type/scope (`feat(cli)!: …`) or add a `BREAKING CHANGE:` footer. Pre-1.0, these bump the **minor** version, not the major.
 - **Keep the existing body style:** a narrative body explaining the *why*, plus the `Co-Authored-By:` trailer. Conventional Commits only constrains the subject line.
 - **Releases run via release-please** (see §11): merging to `main` updates a release PR with the CHANGELOG and version bump; merging that PR tags and publishes. **Never hand-edit `CHANGELOG.md` or create tags manually.**
@@ -206,6 +206,8 @@ tui ──┴──→ store, agent, jira, workflow, runner (Launch/Resume/Resta
 There is a second, in-progress build of `tend` in Elixir under `elixir/`, namespaced `Tend.*` and pinned by `elixir/.tool-versions`. It is a mix project with its own CI job (`mix compile --warnings-as-errors`, `mix test`, `mix format --check-formatted`) that runs beside the Go jobs; today it is a CLI scaffold whose entry points are stubs.
 
 **The Go tree is the one that ships.** Nothing in `elixir/` is released, and nothing in the Go tree depends on it. A change to the Go command surface, the `--db` resolution order, or the data model should be mirrored in `elixir/` when convenient, but the Go build staying green is the constraint that wins.
+
+**A commit that only touches `elixir/` must not be typed `feat` or `fix`.** release-please watches the whole repo with no path filter (`release-please-config.json` is `"packages": {".": {}}`), so either type would bump the shipped Go binary's version and list a feature the released artifact does not contain. Use `build`, `chore`, `refactor`, `test`, `docs` or `ci`, scoped `elixir`. This also means `elixir/mix.exs`'s `version` is not the project's version — release-please never touches it; see §11.
 
 ## 5. Data model (SQLite)
 
