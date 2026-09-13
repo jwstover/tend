@@ -20,7 +20,8 @@ type Querier interface {
 	AttachTag(ctx context.Context, arg AttachTagParams) error
 	// Compare-and-swap for starting a runner: only a pending or paused run can
 	// be taken to running, so two runners racing for one run see exactly one
-	// success. Same idiom as ClaimSessionRecap.
+	// success. Same idiom as ClaimSessionRecap. error is cleared here: a run
+	// paused by RetryRun carries the reason it failed until a runner takes it.
 	ClaimRun(ctx context.Context, id int64) (int64, error)
 	ClaimSessionRecap(ctx context.Context, externalID string) (int64, error)
 	// Drops everything a task waits on (not what waits on it).
@@ -176,6 +177,12 @@ type Querier interface {
 	RemoveDependency(ctx context.Context, arg RemoveDependencyParams) error
 	RenameProject(ctx context.Context, arg RenameProjectParams) error
 	RenameWorkflow(ctx context.Context, arg RenameWorkflowParams) error
+	// The one way out of a terminal state: a failed run goes back to paused,
+	// so the resume path (a runner with --takeover) re-enters it at
+	// current_step_run_id. error is kept: it is why the run is paused, and the
+	// runner reads it to tell the step what went wrong before ClaimRun clears
+	// it. The caller turns zero rows into ErrRunNotFailed.
+	RetryRun(ctx context.Context, id int64) (int64, error)
 	SetProjectArchived(ctx context.Context, arg SetProjectArchivedParams) error
 	// '' clears the default working directory; see migration 00010.
 	SetProjectCwd(ctx context.Context, arg SetProjectCwdParams) error
@@ -233,6 +240,9 @@ type Querier interface {
 	SetStepPrompt(ctx context.Context, arg SetStepPromptParams) error
 	SetStepRunLogPath(ctx context.Context, arg SetStepRunLogPathParams) error
 	SetStepRunSession(ctx context.Context, arg SetStepRunSessionParams) error
+	// A retried step picks up the model and permission mode its step has now,
+	// so fixing the step is enough to make the retry differ from the failure.
+	SetStepRunSettings(ctx context.Context, arg SetStepRunSettingsParams) error
 	SetStepSortOrder(ctx context.Context, arg SetStepSortOrderParams) error
 	SetTaskBody(ctx context.Context, arg SetTaskBodyParams) error
 	SetTaskDue(ctx context.Context, arg SetTaskDueParams) error

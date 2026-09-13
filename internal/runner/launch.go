@@ -64,6 +64,66 @@ func Launch(ctx context.Context, s LaunchStore, runID int64, dbPath string, take
 	return name, nil
 }
 
+// RetryStore is the slice of Store that Retry needs: hosting the runner
+// (LaunchStore), the failed-to-paused transition, and the step run
+// reads/writes RestartStep makes for a fresh start.
+type RetryStore interface {
+	LaunchStore
+	RestartStore
+	RetryRun(ctx context.Context, id int64) error
+}
+
+// Retry re-enters a failed run at the step that failed. It takes the run
+// back to paused (Store.RetryRun; the failure stays on the row for the
+// runner to read) and launches a runner with takeover, exactly as Resume
+// does for a paused run: the runner picks the failed step back up on its
+// existing session, telling it what went wrong (workflow.RetryPrompt).
+// With fresh true the step is started over instead -- RestartStep clears
+// the step run's session id, so the runner runs the step's recorded
+// prompt under a new session, same step run and iteration. Either way
+// the step run first takes the model and permission mode its step has
+// now, so a step fixed after the failure runs fixed. A failure that left
+// no unfinished step (an edge's max_iterations exceeded, claude not on
+// $PATH) is simply re-evaluated from where the run stood.
+//
+// A run in any state but failed is refused with workflow.ErrRunNotFailed
+// (a paused run is resumed, not retried), and a runner somehow still
+// alive with ErrRunnerAlive, so it can be run on a hunch without harm.
+func Retry(ctx context.Context, s RetryStore, runID int64, dbPath string, fresh bool) (string, error) {
+	run, err := s.GetRun(ctx, runID)
+	if err != nil {
+		return "", err
+	}
+	if run.State != workflow.RunFailed {
+		return "", fmt.Errorf("run %d is %s: %w", runID, run.State, workflow.ErrRunNotFailed)
+	}
+	if !agent.TmuxInstalled() {
+		return "", ErrNoTmux
+	}
+	confPath, err := agent.WriteConfig()
+	if err != nil {
+		return "", err
+	}
+	if agent.HasSession(agent.RunnerSessionName(runID), confPath) {
+		return "", fmt.Errorf("run %d: %w (tmux session %s)", runID, ErrRunnerAlive, agent.RunnerSessionName(runID))
+	}
+	if fresh && run.CurrentStepRunID != nil {
+		sr, err := s.GetStepRun(ctx, *run.CurrentStepRunID)
+		if err != nil {
+			return "", err
+		}
+		if !sr.Finished() {
+			if err := RestartStep(ctx, s, sr.ID); err != nil {
+				return "", err
+			}
+		}
+	}
+	if err := s.RetryRun(ctx, runID); err != nil {
+		return "", err
+	}
+	return Launch(ctx, s, runID, dbPath, true)
+}
+
 // Resume re-enters a run whose runner died -- the host rebooted, the
 // tmux server was killed, the runner crashed -- or was paused, by
 // launching a fresh runner with takeover. It refuses a run that has

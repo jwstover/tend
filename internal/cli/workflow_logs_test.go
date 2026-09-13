@@ -86,6 +86,9 @@ func (s *logsFakeStore) CreateRun(context.Context, int64, int64, string) (workfl
 func (s *logsFakeStore) ListActiveRuns(context.Context) ([]workflow.Run, error) {
 	return nil, errors.New("logsFakeStore: not implemented")
 }
+func (s *logsFakeStore) RetryRun(context.Context, int64) error {
+	return errors.New("logsFakeStore: not implemented")
+}
 func (s *logsFakeStore) ListSessionsForTask(context.Context, int64) ([]task.Session, error) {
 	return nil, errors.New("logsFakeStore: not implemented")
 }

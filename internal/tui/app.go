@@ -117,14 +117,17 @@ type Store interface {
 	FailRun(ctx context.Context, id int64, reason string) error
 
 	// Watching and steering runs (runview.go, the detail pane's WORKFLOWS
-	// section, pollRuns). Reads only, plus the three writes the CLI would
-	// make: SetRunState for pause/cancel and FinishStepRun for a gate.
+	// section, pollRuns). Reads only, plus the writes the CLI would make:
+	// SetRunState for pause/cancel, RetryRun for `p` on a failed run (the
+	// write runner.Retry makes, so *store.Store satisfies runner.RetryStore
+	// through this interface) and FinishStepRun for a gate.
 	GetWorkflow(ctx context.Context, id int64) (workflow.Workflow, error)
 	GetStep(ctx context.Context, id int64) (workflow.Step, error)
 	OutgoingEdges(ctx context.Context, stepID int64) ([]workflow.Edge, error)
 	ListActiveRuns(ctx context.Context) ([]workflow.Run, error)
 	ListRunsForTask(ctx context.Context, taskID int64) ([]workflow.Run, error)
 	SetRunState(ctx context.Context, id int64, st workflow.RunState) error
+	RetryRun(ctx context.Context, id int64) error
 	GetStepRun(ctx context.Context, id int64) (workflow.StepRun, error)
 	ListStepRunsForRun(ctx context.Context, runID int64) ([]workflow.StepRun, error)
 	FinishStepRun(ctx context.Context, id int64, outcome, deliverable string) error
@@ -646,6 +649,10 @@ type app struct {
 	// Takeover picker overlay (takeover.go): what to do with a paused run
 	// once its step's session has been driven by hand and returned.
 	takeover takeoverPicker
+
+	// Retry picker overlay (runview.go): how `p` re-enters a failed run
+	// whose step is still unfinished -- continue its session or start over.
+	retry retryPicker
 
 	// Workflow-run picker overlay (workflowrun.go): choose a workflow to
 	// run on a task. wfRunPickerQuery is the type-to-filter text and
@@ -1260,6 +1267,11 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// And the takeover picker, back from a paused step's session.
 	if a.takeover.open {
 		return a.handleTakeoverPickerKey(msg)
+	}
+
+	// And the retry picker, over a failed run.
+	if a.retry.open {
+		return a.handleRetryPickerKey(msg)
 	}
 
 	// An open palette swallows all keys.
@@ -2725,7 +2737,7 @@ func (a app) View() tea.View {
 	// the design's splice.
 	if a.paletteOpen || a.helpOpen || a.urlPickerOpen || a.sessionPickerOpen ||
 		a.projectPickerOpen || a.parentPickerOpen || a.depPickerOpen || a.wfPickerOpen || a.wfRunPickerOpen ||
-		a.gatePickerOpen || a.takeover.open {
+		a.gatePickerOpen || a.takeover.open || a.retry.open {
 		box := a.paletteView()
 		switch {
 		case a.helpOpen:
@@ -2748,6 +2760,8 @@ func (a app) View() tea.View {
 			box = a.gatePickerView()
 		case a.takeover.open:
 			box = a.takeoverPickerView()
+		case a.retry.open:
+			box = a.retryPickerView()
 		}
 		rows := strings.Split(box, "\n")
 		if maxRows := max(a.height-1, 1); len(rows) > maxRows {

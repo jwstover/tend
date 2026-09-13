@@ -39,8 +39,10 @@ import (
 //
 // Controls write exactly what the CLI would: SetRunState for pause and
 // cancel (the runner polls for both), FinishStepRun for a gate decision
-// (the same call finish_step makes), and runner.Resume for a paused run.
-// `t` hands the current step's session to the user (takeover.go). Nothing
+// (the same call finish_step makes), runner.Resume for a paused run and
+// runner.Retry for a failed one (the retry picker below chooses whether
+// the failed step's session continues or starts over). `t` hands the
+// current step's session to the user (takeover.go). Nothing
 // here polls on its own timer: the session poller's tick (pollRuns in
 // sessions.go) reports run and log changes and the view reloads on it.
 
@@ -86,6 +88,11 @@ var runnerAlive = func(run workflow.Run) bool {
 // production and must not in tests.
 var resumeRunner = func(ctx context.Context, s runner.LaunchStore, runID int64, dbPath string) (string, error) {
 	return runner.Resume(ctx, s, runID, dbPath)
+}
+
+// retryRunner is runner.Retry behind a seam, like resumeRunner.
+var retryRunner = func(ctx context.Context, s runner.RetryStore, runID int64, dbPath string, fresh bool) (string, error) {
+	return runner.Retry(ctx, s, runID, dbPath, fresh)
 }
 
 // summarizeRuns builds the summaries for a task's runs. Every lookup past
@@ -815,9 +822,10 @@ func (a app) cancelRun() tea.Cmd {
 }
 
 // pauseOrResumeRun pauses a live run (the runner stops the step, leaving
-// its session resumable) or resumes a paused one by starting a fresh
-// runner, the way `tend workflow resume` does.
-func (a app) pauseOrResumeRun() tea.Cmd {
+// its session resumable), resumes a paused one by starting a fresh
+// runner, the way `tend workflow resume` does, or retries a failed one
+// (retryFailedRun).
+func (a *app) pauseOrResumeRun() tea.Cmd {
 	run := a.rv.run
 	switch run.State {
 	case workflow.RunRunning, workflow.RunWaitingReview:
@@ -832,10 +840,182 @@ func (a app) pauseOrResumeRun() tea.Cmd {
 			}
 			return refreshMsg{status: flash{kind: flashAdd, text: fmt.Sprintf("run %d resumed (%s)", run.ID, name)}}
 		}
+	case workflow.RunFailed:
+		return a.retryFailedRun()
 	case workflow.RunPending:
 		return statusCmd(flash{text: fmt.Sprintf("run %d has not been claimed by a runner yet", run.ID)})
 	}
 	return statusCmd(flash{text: fmt.Sprintf("run %d has already %s", run.ID, run.State)})
+}
+
+// --- retry (`p` on a failed run) -------------------------------------------
+
+// retryFailedRun is `p` on a failed run. A run that failed mid-step has
+// two ways back in -- continue the step's session, told what went wrong,
+// or start the step over on a fresh session -- so the retry picker asks
+// which. A run with no unfinished current step (it failed routing, say:
+// an edge's max_iterations exceeded, or the next step's prompt would not
+// render) has nothing to continue, the two modes are the same thing, and
+// the retry goes ahead at once.
+func (a *app) retryFailedRun() tea.Cmd {
+	run := a.rv.run
+	cur, ok := a.rv.current()
+	if !ok || cur.Finished() {
+		return a.retryRunCmd(run.ID, false, "")
+	}
+	a.openRetryPicker(run, cur)
+	return nil
+}
+
+// retryRunCmd re-enters the failed run through runner.Retry, the `tend
+// workflow retry` path, which refuses a run that has not failed or whose
+// runner is somehow still alive. fresh asks for the step to start over;
+// what, when set, prefixes the flash.
+func (a app) retryRunCmd(runID int64, fresh bool, what string) tea.Cmd {
+	return func() tea.Msg {
+		name, err := retryRunner(a.ctx, a.store, runID, a.dbPath, fresh)
+		if err != nil {
+			return errMsg{err}
+		}
+		text := fmt.Sprintf("run %d retried (%s)", runID, name)
+		if what != "" {
+			text = what + " · " + text
+		}
+		return refreshMsg{status: flash{kind: flashAdd, text: text}}
+	}
+}
+
+// --- retry picker -----------------------------------------------------------
+
+// retryPicker is the overlay's state: the failed run and the unfinished
+// step run it failed at, as the view had them when `p` was pressed.
+type retryPicker struct {
+	open     bool
+	run      workflow.Run
+	stepRun  workflow.StepRun
+	stepName string
+	sel      int
+}
+
+// retryChoice is one row of the picker.
+type retryChoice struct {
+	label, desc string
+	act         func(a *app) tea.Cmd
+}
+
+// choices is the picker's rows: the two ways runner.Retry can re-enter the
+// step. Every row closes the picker as it acts.
+func (p retryPicker) choices() []retryChoice {
+	run, name := p.run, p.stepName
+	closing := func(f func(a *app) tea.Cmd) func(a *app) tea.Cmd {
+		return func(a *app) tea.Cmd {
+			a.closeRetryPicker()
+			return f(a)
+		}
+	}
+	return []retryChoice{
+		{
+			label: "retry the step",
+			desc:  "continue " + name + "'s session, told what went wrong",
+			act:   closing(func(a *app) tea.Cmd { return a.retryRunCmd(run.ID, false, name+" continues") }),
+		},
+		{
+			label: "rerun the step",
+			desc:  "a fresh session on the same step run; the runner starts " + name + " over",
+			act:   closing(func(a *app) tea.Cmd { return a.retryRunCmd(run.ID, true, name+" starts over") }),
+		},
+	}
+}
+
+// openRetryPicker arms the picker over run's unfinished current step.
+func (a *app) openRetryPicker(run workflow.Run, cur workflow.StepRun) {
+	name := a.rv.stepNames[cur.StepID]
+	if name == "" {
+		name = fmt.Sprintf("step %d", cur.StepID)
+	}
+	a.retry = retryPicker{open: true, run: run, stepRun: cur, stepName: name}
+}
+
+func (a *app) closeRetryPicker() {
+	a.retry = retryPicker{}
+}
+
+// handleRetryPickerKey owns the keyboard while the picker is open, in the
+// other pickers' mould: arrows, j/k or ctrl-n/ctrl-p move, a digit picks
+// directly, Enter picks the highlight. esc backs out -- the run stays
+// failed, and the flash says how to come back to it.
+func (a app) handleRetryPickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	p := a.retry
+	rows := len(p.choices())
+	pick := func(idx int) (tea.Model, tea.Cmd) {
+		if idx < 0 || idx >= rows {
+			return a, nil
+		}
+		return a, p.choices()[idx].act(&a)
+	}
+	switch msg.String() {
+	case "esc":
+		a.closeRetryPicker()
+		a.status = flash{text: fmt.Sprintf("run %d stays failed — p retries it", p.run.ID)}
+		return a, nil
+	case "enter":
+		return pick(p.sel)
+	case "up", "ctrl+p", "k":
+		if a.retry.sel > 0 {
+			a.retry.sel--
+		}
+		return a, nil
+	case "down", "ctrl+n", "j":
+		if a.retry.sel < rows-1 {
+			a.retry.sel++
+		}
+		return a, nil
+	}
+	if len(msg.Text) == 1 && msg.Text[0] >= '1' && msg.Text[0] <= '9' {
+		return pick(int(msg.Text[0] - '1'))
+	}
+	return a, nil
+}
+
+// retryPickerView renders the overlay in the takeover picker's mould: a
+// title naming the step and the failed run, then the numbered rows, each
+// with a line saying what it does.
+func (a app) retryPickerView() string {
+	s, g := a.styles, a.styles.Glyphs
+	p := a.retry
+	w := max(a.width, 20)
+	cb := s.CardBorder
+	hbar := strings.Repeat(g.RuleH, w-4)
+
+	row := func(content string) string {
+		gap := max(w-5-lipgloss.Width(content), 0)
+		return "  " + cb.Render(g.RuleV) + " " + content +
+			strings.Repeat(" ", gap) + cb.Render(g.RuleV)
+	}
+	name := truncTail(p.stepName, max(w-40, 10), g.Ellipsis)
+	title := s.Title.Render("retry ") + s.Accent.Render(name) +
+		s.Dimmed.Render(fmt.Sprintf("  run %d failed", p.run.ID))
+	lines := []string{"  " + cb.Render(g.BoxTL+hbar+g.BoxTR)}
+	lines = append(lines, row(s.State[task.StateBlocked].Bold(true).Render(g.State[task.StateBlocked]+" ")+
+		title+s.Muted.Render("  ⏎ or type a number")))
+	lines = append(lines, "  "+cb.Render(g.TeeRight+hbar+g.TeeLeft))
+
+	choices := p.choices()
+	sel := min(p.sel, len(choices)-1)
+	for i, c := range choices {
+		num := fmt.Sprintf("%d ", i+1)
+		var content string
+		if i == sel {
+			content = s.SelBar.Render(g.SelBar+" ") + s.Accent.Render(num) + s.Title.Bold(true).Render(c.label)
+		} else {
+			content = "  " + s.Muted.Render(num) + s.Dimmed.Render(c.label)
+		}
+		content += s.Muted.Render("  " + truncTail(c.desc, max(w-12-lipgloss.Width(content), 10), g.Ellipsis))
+		lines = append(lines, row(content))
+	}
+	lines = append(lines, row(s.Muted.Render("esc leave the run as it is")))
+	lines = append(lines, "  "+cb.Render(g.BoxBL+hbar+g.BoxBR))
+	return strings.Join(lines, "\n")
 }
 
 // waitingGate is the gate step run the run is parked at, or the reason it
@@ -1293,6 +1473,8 @@ func (a app) runViewHints() [][2]string {
 		hints = append(hints, [2]string{"a/x/o", "approve / reject / pick"}, [2]string{"p", "pause"})
 	case workflow.RunRunning:
 		hints = append(hints, [2]string{"p", "pause"}, [2]string{"t", "take over step"})
+	case workflow.RunFailed:
+		hints = append(hints, [2]string{"p", "retry"})
 	}
 	if !a.rv.run.State.Terminal() {
 		hints = append(hints, [2]string{"cc", "cancel"})

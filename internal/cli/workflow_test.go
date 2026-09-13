@@ -130,6 +130,20 @@ func (f *fakeWorkflowStore) FailRun(ctx context.Context, id int64, reason string
 	return nil
 }
 
+// RetryRun mirrors the real store: only a failed run goes back to paused,
+// keeping its error until a claim clears it.
+func (f *fakeWorkflowStore) RetryRun(_ context.Context, id int64) error {
+	r := f.run(id)
+	if r == nil {
+		return workflow.ErrRunNotFound
+	}
+	if r.State != workflow.RunFailed {
+		return fmt.Errorf("run %d is %s: %w", id, r.State, workflow.ErrRunNotFailed)
+	}
+	r.State, r.EndedAt, r.TmuxSession = workflow.RunPaused, nil, ""
+	return nil
+}
+
 func (f *fakeWorkflowStore) SetRunTmuxSession(_ context.Context, id int64, name string) error {
 	if r := f.run(id); r != nil {
 		r.TmuxSession = name
@@ -331,6 +345,16 @@ func (f *fakeWorkflowStore) SetStepRunSession(_ context.Context, id int64, exter
 	for i := range f.stepRuns {
 		if f.stepRuns[i].ID == id {
 			f.stepRuns[i].SessionExternalID = externalID
+			return nil
+		}
+	}
+	return workflow.ErrStepRunNotFound
+}
+
+func (f *fakeWorkflowStore) SetStepRunSettings(_ context.Context, id int64, model, permissionMode string) error {
+	for i := range f.stepRuns {
+		if f.stepRuns[i].ID == id {
+			f.stepRuns[i].Model, f.stepRuns[i].PermissionMode = model, permissionMode
 			return nil
 		}
 	}
@@ -971,10 +995,124 @@ func TestWorkflowCancel(t *testing.T) {
 	}
 }
 
+// stubRetryRunner points the retry seam at a fake that records the call
+// and mimics runner.Retry's state guard and store writes.
+func stubRetryRunner(t *testing.T) *[]struct {
+	runID int64
+	fresh bool
+} {
+	t.Helper()
+	old := retryRunner
+	t.Cleanup(func() { retryRunner = old })
+	var calls []struct {
+		runID int64
+		fresh bool
+	}
+	retryRunner = func(ctx context.Context, s runner.RetryStore, runID int64, _ string, fresh bool) (string, error) {
+		run, err := s.GetRun(ctx, runID)
+		if err != nil {
+			return "", err
+		}
+		if run.State != workflow.RunFailed {
+			return "", fmt.Errorf("run %d is %s: %w", runID, run.State, workflow.ErrRunNotFailed)
+		}
+		calls = append(calls, struct {
+			runID int64
+			fresh bool
+		}{runID, fresh})
+		if fresh && run.CurrentStepRunID != nil {
+			if err := runner.RestartStep(ctx, s, *run.CurrentStepRunID); err != nil {
+				return "", err
+			}
+		}
+		if err := s.RetryRun(ctx, runID); err != nil {
+			return "", err
+		}
+		name := fmt.Sprintf("tend-wf-%d", runID)
+		return name, s.SetRunTmuxSession(ctx, runID, name)
+	}
+	return &calls
+}
+
+// retry re-enters a failed run, continuing the step by default and
+// starting it over with --fresh; anything but a failed run is refused
+// with a pointer at resume.
+func TestWorkflowRetry(t *testing.T) {
+	s := newFakeWorkflowStore()
+	wf := s.addWorkflow("ship", "plan")
+	tk := s.addTask("t")
+	calls := stubRetryRunner(t)
+	s.addRun(wf.ID, tk.ID, workflow.RunFailed, 1)
+	s.addRun(wf.ID, tk.ID, workflow.RunFailed, 1)
+	s.addRun(wf.ID, tk.ID, workflow.RunPaused, 1)
+	s.addRun(wf.ID, tk.ID, workflow.RunDone, 1)
+	s.runs[0].Error, s.runs[1].Error = "step \"plan\": 2 tool call(s) were denied", "step \"plan\": error_max_turns"
+	s.stepRuns[0].SessionExternalID, s.stepRuns[1].SessionExternalID = "sess-1", "sess-2"
+
+	out, err := runWorkflow(t, s, "retry", "1")
+	if err != nil {
+		t.Fatalf("retry 1: %v", err)
+	}
+	if !strings.Contains(out, "retrying run 1") || !strings.Contains(out, "continuing the failed step's session") || !strings.Contains(out, "tend-wf-1") {
+		t.Errorf("retry output = %q, want the run, the mode and the tmux session", out)
+	}
+	if s.runs[0].State != workflow.RunPaused || s.runs[0].TmuxSession != "tend-wf-1" || s.stepRuns[0].SessionExternalID != "sess-1" {
+		t.Errorf("run 1 after retry = %+v / step run %+v, want paused under a new runner with the step's session kept", s.runs[0], s.stepRuns[0])
+	}
+
+	out, err = runWorkflow(t, s, "retry", "2", "--fresh")
+	if err != nil {
+		t.Fatalf("retry 2 --fresh: %v", err)
+	}
+	if !strings.Contains(out, "starting the failed step over") {
+		t.Errorf("fresh retry output = %q, want it to say the step starts over", out)
+	}
+	if s.stepRuns[1].SessionExternalID != "" {
+		t.Errorf("run 2's step run after a fresh retry = %+v, want its session cleared for the runner to start over", s.stepRuns[1])
+	}
+	if len(*calls) != 2 || (*calls)[0].fresh || !(*calls)[1].fresh {
+		t.Errorf("retry calls = %+v, want run 1 continued then run 2 fresh", *calls)
+	}
+
+	if _, err := runWorkflow(t, s, "retry", "3"); err == nil || !errors.Is(err, workflow.ErrRunNotFailed) || !strings.Contains(err.Error(), "tend workflow resume") {
+		t.Errorf("retry on a paused run = %v, want ErrRunNotFailed pointing at resume", err)
+	}
+	if _, err := runWorkflow(t, s, "retry", "4"); err == nil || !errors.Is(err, workflow.ErrRunNotFailed) {
+		t.Errorf("retry on a done run = %v, want ErrRunNotFailed", err)
+	}
+	if _, err := runWorkflow(t, s, "retry", "9"); err == nil || !errors.Is(err, workflow.ErrRunNotFound) {
+		t.Errorf("retry on an unknown run = %v, want ErrRunNotFound", err)
+	}
+}
+
+// status on a failed run says how to retry it, both ways.
+func TestWorkflowStatusHintsRetryForFailedRun(t *testing.T) {
+	s := newFakeWorkflowStore()
+	wf := s.addWorkflow("ship", "plan")
+	tk := s.addTask("t")
+	stubProcessControl(t, false, false)
+	s.addRun(wf.ID, tk.ID, workflow.RunFailed, 1)
+	s.runs[0].Error = "step \"plan\": error_max_turns"
+
+	out, err := runWorkflow(t, s, "status", "1")
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	for _, want := range []string{"state: failed: step \"plan\": error_max_turns", "tend workflow retry 1 ", "retry 1 --fresh"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("status of a failed run missing %q:\n%s", want, out)
+		}
+	}
+	s.addRun(wf.ID, tk.ID, workflow.RunPaused, 1)
+	if out, _ := runWorkflow(t, s, "status", "2"); strings.Contains(out, "retry") {
+		t.Errorf("status of a paused run should not offer retry:\n%s", out)
+	}
+}
+
 // Every subcommand validates its run id before opening anything.
 func TestWorkflowRunIDMustBePositive(t *testing.T) {
 	s := newFakeWorkflowStore()
-	for _, args := range [][]string{{"status", "x"}, {"approve", "0"}, {"pause", "-1"}, {"cancel", "abc"}} {
+	for _, args := range [][]string{{"status", "x"}, {"approve", "0"}, {"pause", "-1"}, {"cancel", "abc"}, {"retry", "0"}} {
 		if _, err := runWorkflow(t, s, args...); err == nil {
 			t.Errorf("%v should fail on its run id", args)
 		}

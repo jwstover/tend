@@ -30,6 +30,7 @@ import (
 // than the rest of the command tree.
 type WorkflowStore interface {
 	runner.Store
+	RetryRun(ctx context.Context, id int64) error
 	ListWorkflows(ctx context.Context) ([]workflow.Workflow, error)
 	WorkflowByName(ctx context.Context, name string) (workflow.Workflow, error)
 	ListEdges(ctx context.Context, workflowID int64) ([]workflow.Edge, error)
@@ -55,6 +56,9 @@ var (
 	tmuxPresent  = agent.TmuxInstalled
 	launchRunner = func(ctx context.Context, s runner.LaunchStore, runID int64, dbPath string) (string, error) {
 		return runner.Launch(ctx, s, runID, dbPath, false)
+	}
+	retryRunner = func(ctx context.Context, s runner.RetryStore, runID int64, dbPath string, fresh bool) (string, error) {
+		return runner.Retry(ctx, s, runID, dbPath, fresh)
 	}
 	// runnerAlive asks tmux whether a run's runner session exists. known
 	// is false when there is no way to ask (no tmux, no config), so the
@@ -106,6 +110,7 @@ func newWorkflowCmd(open openWorkflowStore, dbPath func() string) *cobra.Command
 		newWorkflowDecideCmd(open),
 		newWorkflowPauseCmd(open),
 		newWorkflowResumeCmd(open, dbPath),
+		newWorkflowRetryCmd(open, dbPath),
 		newWorkflowCancelCmd(open),
 		newWorkflowLogsCmd(open),
 		newWorkflowRunCmd(open),
@@ -362,6 +367,9 @@ func showRun(ctx context.Context, out io.Writer, s WorkflowStore, runID int64) e
 		state += ": " + run.Error
 	}
 	fmt.Fprintf(out, "state: %s%s\n", state, runnerNote(run))
+	if run.State == workflow.RunFailed {
+		fmt.Fprintf(out, "retry: %s\n", retryHint(run.ID))
+	}
 	fmt.Fprintf(out, "cwd: %s\n", run.Cwd)
 	fmt.Fprintf(out, "started: %s (%s)\n", run.StartedAt.Local().Format("2006-01-02 15:04"),
 		fmtDuration(runElapsed(run, time.Now())))
@@ -478,6 +486,13 @@ func shellWord(s string) string {
 		return s
 	}
 	return strconv.Quote(s)
+}
+
+// retryHint is the command line `status <run-id>` prints under a failed
+// run: both ways back in, so the choice is visible where the failure is.
+func retryHint(runID int64) string {
+	id := strconv.FormatInt(runID, 10)
+	return "tend workflow retry " + id + " (continue the step's session) | retry " + id + " --fresh (start the step over)"
 }
 
 // runnerNote is the " (runner gone)" suffix for a run whose state says a
@@ -778,6 +793,54 @@ func newWorkflowResumeCmd(open openWorkflowStore, dbPath func() string) *cobra.C
 			})
 		},
 	}
+}
+
+// newWorkflowRetryCmd re-enters a failed run at the step that failed
+// (runner.Retry): the run goes back to paused and a fresh runner takes it
+// over. By default the failed step's session is continued and told what
+// went wrong; --fresh starts the step over on a new session from its
+// recorded prompt. Either way it is the same step run and iteration, and
+// the step runs with the model and permission mode its step has now, so
+// fixing the step first is enough. A run that has not failed is refused
+// saying so (a paused one is `resume`d), as is one whose runner is alive.
+func newWorkflowRetryCmd(open openWorkflowStore, dbPath func() string) *cobra.Command {
+	var fresh bool
+	cmd := &cobra.Command{
+		Use:   "retry <run-id> [--fresh]",
+		Short: "Retry a failed run at the step that failed",
+		Long: "Take a failed run back to paused and start a runner that re-enters it at the step that failed. " +
+			"Without --fresh the step's existing claude session is continued with a turn that quotes the failure " +
+			"(a step that ended without calling finish_step, or hit an error, picks up where it was). " +
+			"With --fresh the step is started over from its recorded prompt on a new session. " +
+			"Both keep the same step run and iteration, and both run the step with the model and permission mode " +
+			"its step has now, so a step that failed on denied tool calls is fixed by setting its permission mode and retrying. " +
+			"A failure with no step to retry (an edge's max_iterations exceeded, claude missing) is re-evaluated from where the run stood.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			runID, err := parseRunID(args[0])
+			if err != nil {
+				return err
+			}
+			return withWorkflowStore(cmd, open, func(ctx context.Context, s WorkflowStore) error {
+				name, err := retryRunner(ctx, s, runID, dbPath(), fresh)
+				if err != nil {
+					if errors.Is(err, workflow.ErrRunNotFailed) {
+						return fmt.Errorf("%w; only a failed run is retried (tend workflow resume for a paused one)", err)
+					}
+					return err
+				}
+				how := "continuing the failed step's session"
+				if fresh {
+					how = "starting the failed step over"
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "retrying run %d, %s, in tmux session %s (tmux -L %s attach -t %s to watch)\n",
+					runID, how, name, agent.SocketName, name)
+				return nil
+			})
+		},
+	}
+	cmd.Flags().BoolVar(&fresh, "fresh", false, "start the failed step over on a new session instead of continuing its session")
+	return cmd
 }
 
 // --- helpers --------------------------------------------------------------
