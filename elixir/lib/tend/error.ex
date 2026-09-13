@@ -89,6 +89,11 @@ defmodule Tend.Error do
   The message `reason` would print, character for character as the Go error
   prints it.
 
+  A reason that interpolates a value quotes it the way Go's `%q` does, by
+  the port of `strconv.Quote` below -- not by `inspect/1`, which disagrees
+  with it on interpolation markers, on escape spellings and on any binary it
+  cannot read as text.
+
   Raises `ArgumentError` for anything not listed above -- a reason with no
   message is a reason that was invented instead of being added here.
   """
@@ -98,15 +103,76 @@ defmodule Tend.Error do
   end
 
   # fmt.Errorf("invalid date %q (want YYYY-MM-DD)", s) in
-  # internal/task/task.go. Elixir's inspect/1 quotes a plain string the way
-  # Go's %q does.
+  # internal/task/task.go.
   def message({:invalid_date, value}) when is_binary(value) do
-    "invalid date #{inspect(value)} (want YYYY-MM-DD)"
+    "invalid date #{quote_go(value)} (want YYYY-MM-DD)"
   end
 
   def message(reason) do
     raise ArgumentError,
           "unknown error reason #{inspect(reason)}; add it to Tend.Error " <>
             "with the message text its Go counterpart prints"
+  end
+
+  # A port of Go's strconv.Quote, which is what fmt's %q verb applies to a
+  # string. Elixir's inspect/1 is NOT a stand-in for it: it escapes `#{}`,
+  # spells escape `\e` where Go spells it `\x1b`, and abandons the quoted
+  # form entirely for a binary it cannot read as text ("<<0>>" rather than
+  # "\x00"), which turns the message into something that is no longer a
+  # quoted string at all.
+  #
+  # The rules, from strconv.appendEscapedRune: `"` and `\` are always
+  # backslashed; a printable rune is emitted as itself; the seven characters
+  # Go names get their name (\a \b \f \n \r \t \v); anything else below
+  # U+0020, plus U+007F, is \xNN; anything else below U+10000 is \uNNNN; the
+  # rest is \UNNNNNNNN. A byte that is not part of a valid UTF-8 sequence is
+  # \xNN on its own, one byte at a time, exactly as Go's decoder yields it.
+  defp quote_go(s), do: IO.iodata_to_binary([?", escape(s), ?"])
+
+  defp escape(<<>>), do: []
+  defp escape(<<?", rest::binary>>), do: [~S(\") | escape(rest)]
+  defp escape(<<?\\, rest::binary>>), do: [~S(\\) | escape(rest)]
+  defp escape(<<cp::utf8, rest::binary>>), do: [escape_rune(cp) | escape(rest)]
+  defp escape(<<byte, rest::binary>>), do: [hex(?x, byte, 2) | escape(rest)]
+
+  # The seven escapes Go spells with a letter, by codepoint.
+  @named %{
+    0x07 => ~S(\a),
+    0x08 => ~S(\b),
+    0x09 => ~S(\t),
+    0x0A => ~S(\n),
+    0x0B => ~S(\v),
+    0x0C => ~S(\f),
+    0x0D => ~S(\r)
+  }
+
+  defp escape_rune(cp) do
+    cond do
+      printable?(cp) -> <<cp::utf8>>
+      is_map_key(@named, cp) -> Map.fetch!(@named, cp)
+      cp < 0x20 or cp == 0x7F -> hex(?x, cp, 2)
+      cp < 0x10000 -> hex(?u, cp, 4)
+      true -> hex(?U, cp, 8)
+    end
+  end
+
+  defp hex(verb, value, width) do
+    digits = value |> Integer.to_string(16) |> String.downcase() |> String.pad_leading(width, "0")
+    <<?\\, verb>> <> digits
+  end
+
+  # Go's unicode.IsPrint: the letter, mark, number, punctuation and symbol
+  # categories, plus the ASCII space. `:unicode_util.lookup/1` is the only
+  # general-category table on the BEAM, and it tracks a newer Unicode edition
+  # than Go's tables do (16.0 against 15.0 as of go1.26), so the two can
+  # disagree on a codepoint assigned in between -- a rune Go escapes as
+  # \uNNNN because it knows nothing about it. `test/tend/error_test.exs`
+  # measures that gap against the Go binary; everything a user can plausibly
+  # type into a date prompt is outside it.
+  defp printable?(0x20), do: true
+
+  defp printable?(cp) do
+    {class, _subclass} = Map.fetch!(:unicode_util.lookup(cp), :category)
+    class in [:letter, :mark, :number, :punctuation, :symbol]
   end
 end
