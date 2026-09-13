@@ -56,6 +56,20 @@ jobs:
           version-file: elixir/.tool-versions
           version-type: strict
 
+      # deps/ and _build/ are cached together: the store's SQLite driver is a
+      # NIF and would otherwise be compiled from C on every run. The key is
+      # the lock file, so a dependency change starts from a clean slate.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            elixir/deps
+            elixir/_build
+          key: ${{ runner.os }}-mix-${{ hashFiles('elixir/.tool-versions', 'elixir/mix.lock') }}
+          restore-keys: ${{ runner.os }}-mix-
+
+      - name: Install dependencies
+        run: mix deps.get
+
       - name: Compile
         run: mix compile --warnings-as-errors
 
