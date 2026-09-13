@@ -2,16 +2,28 @@ defmodule Tend.Template.ParseError do
   @moduledoc """
   A `prompt_md` template that is not a valid Go `text/template`.
 
+  ## The message deliberately differs from Go's
+
   The Go tree surfaces `text/template`'s own message verbatim: `parsePrompt`
   in `internal/workflow/prompt.go` wraps it as
-  `invalid prompt template: template: prompt:1: unexpected {{end}}`, and the
-  TUI's validate action, the CLI pre-flight and the MCP writes all show that
-  string as-is. So the message shape is part of the contract, not decoration.
 
-  This struct keeps Go's prefix and phrasing and adds what the sub-task asks
-  for -- the offending token and its byte offset:
+      invalid prompt template: template: prompt:1: unexpected {{end}}
 
-      template: prompt:2:7: unexpected {{end}} at byte 19
+  and the TUI's validate action, the CLI pre-flight and the MCP writes all
+  show that string as-is. Go gives a line and no more -- no column, no offset.
+
+  The sub-task asks for the offending token *and its byte offset*, so this
+  port does not reproduce that string. It keeps Go's prefix and its wording
+  for the failure itself and appends the position, which is strictly more
+  than Go says and in the same shape:
+
+      template: prompt:1:4: unexpected {{end}} at byte 3
+
+  That is the decided contract, not an accident: a user reading a validate
+  error wants to find the character, and `line` alone does not locate it in a
+  long single-line prompt. Anything that renders one of these -- including the
+  renderer and the built-ins sub-tasks -- should expect the richer string, and
+  a test that pins a `text/template` message byte for byte will not match.
 
   Fields:
 
@@ -27,9 +39,17 @@ defmodule Tend.Template.ParseError do
   sub-task), so this is a free-standing exception rather than a `Tend.Error`
   variant. When the two meet, `ErrInvalidPrompt`'s Elixir counterpart becomes
   a `Tend.Error` whose `reason` is `:invalid_prompt` and whose cause is this
-  struct; `Exception.message/1` here already produces the tail that the
-  wrapper prepends `invalid prompt template: ` to, so nothing about this
-  struct has to change -- only the code that raises it one layer up.
+  struct, and the wrapper prepends `invalid prompt template: ` to
+  `Exception.message/1` here. The composed string is
+
+      invalid prompt template: template: prompt:1:4: unexpected {{end}} at byte 3
+
+  where Go's is
+
+      invalid prompt template: template: prompt:1: unexpected {{end}}
+
+  so the wrapper needs no change, but whoever writes it should know it is
+  inheriting the richer message above on purpose.
   """
 
   @type t :: %__MODULE__{
