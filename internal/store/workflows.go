@@ -464,9 +464,11 @@ func (s *Store) ListActiveRuns(ctx context.Context) ([]workflow.Run, error) {
 }
 
 // SetRunState moves a run to a new state. Entering a terminal state
-// stamps ended_at. A run already in a terminal state cannot move again
-// (workflow.ErrRunEnded): terminal is final, and a new attempt is a new
-// run.
+// stamps ended_at and any move clears workflow.Run.Error, which describes
+// the state a run is in, not its history. A run already in a terminal
+// state cannot move again (workflow.ErrRunEnded): terminal is final, and
+// a new attempt is a new run -- except that a failed run can be retried
+// (RetryRun).
 func (s *Store) SetRunState(ctx context.Context, id int64, st workflow.RunState) error {
 	if !st.Valid() {
 		return fmt.Errorf("unknown run state %q", st)
@@ -504,6 +506,29 @@ func (s *Store) FailRun(ctx context.Context, id int64, reason string) error {
 			return err
 		}
 		return fmt.Errorf("run %d: %w", id, workflow.ErrRunEnded)
+	}
+	return nil
+}
+
+// RetryRun takes a failed run back to paused so a runner can re-enter it
+// at its current step (runner.Retry) -- the one exception to terminal
+// being final, and only for failed: done and cancelled were decided, a
+// failure was not. ended_at and the dead runner's tmux session are
+// cleared; workflow.Run.Error is kept as the reason the run is now paused
+// (the TUI shows it, and the runner hands it to the step) until ClaimRun
+// clears it. A run in any other state is refused with
+// workflow.ErrRunNotFailed.
+func (s *Store) RetryRun(ctx context.Context, id int64) error {
+	n, err := s.q.RetryRun(ctx, id)
+	if err != nil {
+		return fmt.Errorf("retrying run %d: %w", id, err)
+	}
+	if n == 0 {
+		run, err := s.GetRun(ctx, id)
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("run %d is %s: %w", id, run.State, workflow.ErrRunNotFailed)
 	}
 	return nil
 }
@@ -672,6 +697,18 @@ func (s *Store) SetStepRunLogPath(ctx context.Context, id int64, path string) er
 func (s *Store) SetStepRunSession(ctx context.Context, id int64, externalID string) error {
 	if err := s.q.SetStepRunSession(ctx, gen.SetStepRunSessionParams{SessionExternalID: externalID, ID: id}); err != nil {
 		return fmt.Errorf("setting step run %d session: %w", id, err)
+	}
+	return nil
+}
+
+// SetStepRunSettings replaces the model and permission mode a step run
+// will execute with. The runner calls it when retrying a failed step so
+// the attempt runs with what the step definition says now -- a step that
+// failed on denied tool calls is fixed by giving it a permission mode,
+// and the fix has to reach the retry.
+func (s *Store) SetStepRunSettings(ctx context.Context, id int64, model, permissionMode string) error {
+	if err := s.q.SetStepRunSettings(ctx, gen.SetStepRunSettingsParams{Model: model, PermissionMode: permissionMode, ID: id}); err != nil {
+		return fmt.Errorf("setting step run %d settings: %w", id, err)
 	}
 	return nil
 }

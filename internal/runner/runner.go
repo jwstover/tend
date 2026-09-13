@@ -30,6 +30,12 @@
 //     poll the step run until the TUI or CLI records a decision.
 //  6. paused and cancelled, written by the TUI or CLI, are honoured by
 //     polling the run's state between steps and while a step runs.
+//  7. A failed run retried (Retry: Store.RetryRun takes it back to paused
+//     with the failure kept on the row) is re-entered the same way as a
+//     crash, except that the failed step's session is told what went
+//     wrong (workflow.RetryPrompt) instead of being settled from the log
+//     it already failed on, and the step run picks up the model and
+//     permission mode its step has now.
 //
 // Everything that shells out goes through Exec, so the transition logic
 // is tested against a fake without claude on the machine.
@@ -73,6 +79,7 @@ type Store interface {
 	FinishStepRun(ctx context.Context, id int64, outcome, deliverable string) error
 	SetStepRunLogPath(ctx context.Context, id int64, path string) error
 	SetStepRunSession(ctx context.Context, id int64, externalID string) error
+	SetStepRunSettings(ctx context.Context, id int64, model, permissionMode string) error
 
 	CreateStepRunSession(ctx context.Context, stepRunID, taskID int64, externalID, cwd, label, tmuxSession string) (task.Session, error)
 	SetSessionStatus(ctx context.Context, externalID string, status task.SessionStatus) error
@@ -151,7 +158,7 @@ var errInterrupted = errors.New("run interrupted")
 // runner itself being killed -- returns ctx.Err() with the run left
 // exactly as it was, so a resume picks it up.
 func (r *Runner) Run(ctx context.Context, runID int64, takeover bool) error {
-	run, err := r.claim(ctx, runID, takeover)
+	run, retryReason, err := r.claim(ctx, runID, takeover)
 	if err != nil {
 		return err
 	}
@@ -167,6 +174,9 @@ func (r *Runner) Run(ctx context.Context, runID int64, takeover bool) error {
 		return r.fail(ctx, run, err.Error())
 	}
 	r.logf("run %d: %s on #%d (%s) in %s", run.ID, wf.Name, tk.ID, tk.Title, run.Cwd)
+	if retryReason != "" {
+		r.logf("run %d: retrying after failure: %s", run.ID, retryReason)
+	}
 
 	// A step in flight from a previous runner is finished first.
 	var last *workflow.StepRun
@@ -176,7 +186,7 @@ func (r *Runner) Run(ctx context.Context, runID int64, takeover bool) error {
 			return r.fail(ctx, run, err.Error())
 		}
 		if !sr.Finished() {
-			sr, err = r.resumeStep(ctx, run, tk, sr)
+			sr, err = r.resumeStep(ctx, run, tk, sr, retryReason)
 			if err != nil {
 				return r.stopped(ctx, run, err)
 			}
@@ -207,27 +217,39 @@ func (r *Runner) Run(ctx context.Context, runID int64, takeover bool) error {
 	}
 }
 
-// claim takes the run for this runner, per Run's contract.
-func (r *Runner) claim(ctx context.Context, runID int64, takeover bool) (workflow.Run, error) {
+// claim takes the run for this runner, per Run's contract. The second
+// result is the failure a retried run carried into the claim: RetryRun
+// leaves workflow.Run.Error on the paused row and ClaimRun clears it, so
+// the row is read once before the claim to catch it. Empty for any run
+// that did not come here by way of a failure.
+func (r *Runner) claim(ctx context.Context, runID int64, takeover bool) (workflow.Run, string, error) {
+	before, err := r.Store.GetRun(ctx, runID)
+	if err != nil {
+		return workflow.Run{}, "", err
+	}
+	retryReason := before.Error
+	if before.State.Terminal() {
+		retryReason = ""
+	}
 	ok, err := r.Store.ClaimRun(ctx, runID)
 	if err != nil {
-		return workflow.Run{}, err
+		return workflow.Run{}, "", err
 	}
 	run, err := r.Store.GetRun(ctx, runID)
 	if err != nil {
-		return workflow.Run{}, err
+		return workflow.Run{}, "", err
 	}
 	if ok {
-		return run, nil
+		return run, retryReason, nil
 	}
 	if run.State.Terminal() {
-		return workflow.Run{}, fmt.Errorf("run %d: %w", runID, workflow.ErrRunEnded)
+		return workflow.Run{}, "", fmt.Errorf("run %d: %w", runID, workflow.ErrRunEnded)
 	}
 	if !takeover {
-		return workflow.Run{}, fmt.Errorf("run %d: %w", runID, ErrAlreadyRunning)
+		return workflow.Run{}, "", fmt.Errorf("run %d: %w", runID, ErrAlreadyRunning)
 	}
 	r.logf("run %d: taking over a run left %s", run.ID, run.State)
-	return run, nil
+	return run, "", nil
 }
 
 // nextStep resolves what runs after last: the workflow's first step in
@@ -421,7 +443,14 @@ func (r *Runner) startStep(ctx context.Context, run workflow.Run, wf workflow.Wo
 // session cannot be continued -- killed before claude ever wrote it --
 // the step is likewise started over. Either way the restart is on the
 // same step run, so the iteration count stays honest.
-func (r *Runner) resumeStep(ctx context.Context, run workflow.Run, tk task.Task, sr workflow.StepRun) (workflow.StepRun, error) {
+//
+// retryReason is non-empty when the run got here by Retry rather than a
+// crash: the step's log then holds the very result the runner failed on,
+// so it is not consulted, and the session's next turn is
+// workflow.RetryPrompt with the reason instead of ResumePrompt. Before
+// either, the step run takes the model and permission mode its step has
+// now (refreshSettings), so a step fixed after the failure runs fixed.
+func (r *Runner) resumeStep(ctx context.Context, run workflow.Run, tk task.Task, sr workflow.StepRun, retryReason string) (workflow.StepRun, error) {
 	step, err := r.Store.GetStep(ctx, sr.StepID)
 	if err != nil {
 		return workflow.StepRun{}, err
@@ -430,23 +459,63 @@ func (r *Runner) resumeStep(ctx context.Context, run workflow.Run, tk task.Task,
 	if step.Kind == workflow.StepGate {
 		return r.waitGate(ctx, run, step, sr)
 	}
+	if retryReason != "" {
+		if sr, err = r.refreshSettings(ctx, run, step, sr); err != nil {
+			return workflow.StepRun{}, err
+		}
+	}
 
 	if sr.SessionExternalID == "" {
 		r.logf("run %d: step %q has no session; starting it over", run.ID, step.Name)
 		return r.startOver(ctx, run, tk, step, sr)
 	}
 
-	if res, ok := loggedResult(sr.LogPath); ok {
-		r.logf("run %d: step %q had already finished; recording its result", run.ID, step.Name)
-		return r.settle(ctx, run, tk, step, sr, res, nil, false)
+	prompt := ResumePrompt
+	if retryReason == "" {
+		if res, ok := loggedResult(sr.LogPath); ok {
+			r.logf("run %d: step %q had already finished; recording its result", run.ID, step.Name)
+			return r.settle(ctx, run, tk, step, sr, res, nil, false)
+		}
+	} else {
+		edges, err := r.Store.OutgoingEdges(ctx, step.ID)
+		if err != nil {
+			return workflow.StepRun{}, err
+		}
+		prompt = workflow.RetryPrompt(step.Name, retryReason, outcomesOf(edges))
 	}
 
-	fin, err := r.execStep(ctx, run, tk, step, sr, ResumePrompt, true, false)
+	fin, err := r.execStep(ctx, run, tk, step, sr, prompt, true, false)
 	if !errors.Is(err, errNoResult) {
 		return fin, err
 	}
 	r.logf("run %d: step %q could not be resumed (%v); starting it over", run.ID, step.Name, err)
 	return r.startOver(ctx, run, tk, step, sr)
+}
+
+// refreshSettings brings a step run's model and permission mode up to
+// date with its step's, for a retry. A run's other step runs keep what
+// they ran with -- they are history -- but this one is about to run
+// again, and the most common fix for a failed step (give it the
+// permission mode it was denied without) lives on the step.
+func (r *Runner) refreshSettings(ctx context.Context, run workflow.Run, step workflow.Step, sr workflow.StepRun) (workflow.StepRun, error) {
+	if sr.Model == step.Model && sr.PermissionMode == step.PermissionMode {
+		return sr, nil
+	}
+	if err := r.Store.SetStepRunSettings(ctx, sr.ID, step.Model, step.PermissionMode); err != nil {
+		return workflow.StepRun{}, err
+	}
+	r.logf("run %d: step %q now runs with model %q and permission mode %q", run.ID, step.Name,
+		orInherit(step.Model), orInherit(step.PermissionMode))
+	sr.Model, sr.PermissionMode = step.Model, step.PermissionMode
+	return sr, nil
+}
+
+// orInherit names the stored "" the way the TUI and MCP tools do.
+func orInherit(s string) string {
+	if s == "" {
+		return "inherit"
+	}
+	return s
 }
 
 // startOver runs an unfinished agent step run again from its recorded

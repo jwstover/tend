@@ -12,13 +12,15 @@ import (
 
 const claimRun = `-- name: ClaimRun :execrows
 UPDATE workflow_runs
-SET state = 'running'
+SET state = 'running',
+    error = ''
 WHERE id = ? AND state IN ('pending', 'paused')
 `
 
 // Compare-and-swap for starting a runner: only a pending or paused run can
 // be taken to running, so two runners racing for one run see exactly one
-// success. Same idiom as ClaimSessionRecap.
+// success. Same idiom as ClaimSessionRecap. error is cleared here: a run
+// paused by RetryRun carries the reason it failed until a runner takes it.
 func (q *Queries) ClaimRun(ctx context.Context, id int64) (int64, error) {
 	result, err := q.db.ExecContext(ctx, claimRun, id)
 	if err != nil {
@@ -806,6 +808,27 @@ func (q *Queries) RenameWorkflow(ctx context.Context, arg RenameWorkflowParams) 
 	return err
 }
 
+const retryRun = `-- name: RetryRun :execrows
+UPDATE workflow_runs
+SET state        = 'paused',
+    ended_at     = NULL,
+    tmux_session = ''
+WHERE id = ? AND state = 'failed'
+`
+
+// The one way out of a terminal state: a failed run goes back to paused,
+// so the resume path (a runner with --takeover) re-enters it at
+// current_step_run_id. error is kept: it is why the run is paused, and the
+// runner reads it to tell the step what went wrong before ClaimRun clears
+// it. The caller turns zero rows into ErrRunNotFailed.
+func (q *Queries) RetryRun(ctx context.Context, id int64) (int64, error) {
+	result, err := q.db.ExecContext(ctx, retryRun, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const setRunCurrentStepRun = `-- name: SetRunCurrentStepRun :exec
 UPDATE workflow_runs
 SET current_step_run_id = ?
@@ -825,7 +848,8 @@ func (q *Queries) SetRunCurrentStepRun(ctx context.Context, arg SetRunCurrentSte
 const setRunState = `-- name: SetRunState :execrows
 UPDATE workflow_runs
 SET state    = ?,
-    ended_at = ?
+    ended_at = ?,
+    error    = ''
 WHERE id = ?
   AND state NOT IN ('done', 'failed', 'cancelled')
 `
@@ -961,6 +985,26 @@ type SetStepRunSessionParams struct {
 
 func (q *Queries) SetStepRunSession(ctx context.Context, arg SetStepRunSessionParams) error {
 	_, err := q.db.ExecContext(ctx, setStepRunSession, arg.SessionExternalID, arg.ID)
+	return err
+}
+
+const setStepRunSettings = `-- name: SetStepRunSettings :exec
+UPDATE workflow_step_runs
+SET model           = ?,
+    permission_mode = ?
+WHERE id = ?
+`
+
+type SetStepRunSettingsParams struct {
+	Model          string
+	PermissionMode string
+	ID             int64
+}
+
+// A retried step picks up the model and permission mode its step has now,
+// so fixing the step is enough to make the retry differ from the failure.
+func (q *Queries) SetStepRunSettings(ctx context.Context, arg SetStepRunSettingsParams) error {
+	_, err := q.db.ExecContext(ctx, setStepRunSettings, arg.Model, arg.PermissionMode, arg.ID)
 	return err
 }
 

@@ -108,6 +108,29 @@ func NudgePrompt(step string, outcomes []string) string {
 		step, FinishStepTool, quoteAll(outcomes), deferredToolsHint)
 }
 
+// RetryPrompt is the turn sent to a failed step's existing session when
+// the user retries the run (runner.Retry without a fresh start): the
+// session already holds the step and whatever it did, so it only has to
+// learn that the run stopped, why, and that the hand-off still stands.
+// reason is the failure the runner recorded on the run (workflow.Run.Error);
+// it is quoted back so an agent that ended without finish_step, hit a
+// denied tool call, or reported an error knows which of those to fix
+// rather than redoing the step from the top.
+func RetryPrompt(step, reason string, outcomes []string) string {
+	if len(outcomes) == 0 {
+		outcomes = []string{OutcomeDone}
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "The workflow run failed at step %q and has been retried. The runner recorded the failure as: %s\n\n",
+		step, strings.TrimSpace(reason))
+	sb.WriteString("Review where you left off, fix what caused the failure, and complete the step as originally instructed. ")
+	fmt.Fprintf(&sb, "Then hand off by calling the MCP tool %s with `outcome` set to one of %s and the step's result as `deliverable`; ",
+		FinishStepTool, quoteAll(outcomes))
+	sb.WriteString("do not end your turn without it. ")
+	sb.WriteString(deferredToolsHint)
+	return sb.String()
+}
+
 // quoteAll renders outcomes as `"approve", "reject"`.
 func quoteAll(outcomes []string) string {
 	q := make([]string, 0, len(outcomes))

@@ -193,9 +193,22 @@ ORDER BY started_at DESC, id DESC;
 -- because sqlc v1.31.1 leaves a named arg inside a CASE unrewritten.
 UPDATE workflow_runs
 SET state    = ?,
-    ended_at = ?
+    ended_at = ?,
+    error    = ''
 WHERE id = ?
   AND state NOT IN ('done', 'failed', 'cancelled');
+
+-- name: RetryRun :execrows
+-- The one way out of a terminal state: a failed run goes back to paused,
+-- so the resume path (a runner with --takeover) re-enters it at
+-- current_step_run_id. error is kept: it is why the run is paused, and the
+-- runner reads it to tell the step what went wrong before ClaimRun clears
+-- it. The caller turns zero rows into ErrRunNotFailed.
+UPDATE workflow_runs
+SET state        = 'paused',
+    ended_at     = NULL,
+    tmux_session = ''
+WHERE id = ? AND state = 'failed';
 
 -- name: FailRun :execrows
 -- SetRunState for the failed state, recording why in the same statement
@@ -211,9 +224,11 @@ WHERE id = ?
 -- name: ClaimRun :execrows
 -- Compare-and-swap for starting a runner: only a pending or paused run can
 -- be taken to running, so two runners racing for one run see exactly one
--- success. Same idiom as ClaimSessionRecap.
+-- success. Same idiom as ClaimSessionRecap. error is cleared here: a run
+-- paused by RetryRun carries the reason it failed until a runner takes it.
 UPDATE workflow_runs
-SET state = 'running'
+SET state = 'running',
+    error = ''
 WHERE id = ? AND state IN ('pending', 'paused');
 
 -- name: SetRunTmuxSession :exec
@@ -268,6 +283,14 @@ WHERE id = ? AND ended_at IS NULL;
 -- name: SetStepRunLogPath :exec
 UPDATE workflow_step_runs
 SET log_path = ?
+WHERE id = ?;
+
+-- name: SetStepRunSettings :exec
+-- A retried step picks up the model and permission mode its step has now,
+-- so fixing the step is enough to make the retry differ from the failure.
+UPDATE workflow_step_runs
+SET model           = ?,
+    permission_mode = ?
 WHERE id = ?;
 
 -- name: SetStepRunSession :exec

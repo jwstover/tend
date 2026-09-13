@@ -403,6 +403,78 @@ func TestFailRunRecordsReasonOnce(t *testing.T) {
 	}
 }
 
+// A failed run is the one terminal state a run can leave: RetryRun takes
+// it back to paused with its reason kept, a claim then clears the reason,
+// and any other state is refused.
+func TestRetryRunReopensOnlyFailedRuns(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	w := mustWorkflow(t, s, "wf")
+	run := mustRun(t, s, w.ID)
+
+	if err := s.RetryRun(ctx, run.ID); !errors.Is(err, workflow.ErrRunNotFailed) {
+		t.Errorf("RetryRun on a pending run = %v, want ErrRunNotFailed", err)
+	}
+	if ok, _ := s.ClaimRun(ctx, run.ID); !ok {
+		t.Fatal("ClaimRun should win")
+	}
+	if err := s.SetRunTmuxSession(ctx, run.ID, "tend-wf-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.FailRun(ctx, run.ID, "step \"implement\": 2 tool call(s) were denied"); err != nil {
+		t.Fatalf("FailRun: %v", err)
+	}
+
+	if err := s.RetryRun(ctx, run.ID); err != nil {
+		t.Fatalf("RetryRun: %v", err)
+	}
+	got, err := s.GetRun(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != workflow.RunPaused || got.EndedAt != nil || got.TmuxSession != "" {
+		t.Errorf("retried run = %+v, want paused, not ended, with no runner session", got)
+	}
+	if !strings.Contains(got.Error, "were denied") {
+		t.Errorf("retried run error = %q, want the failure kept as the reason it is paused", got.Error)
+	}
+	active, err := s.ListActiveRuns(ctx)
+	if err != nil || len(active) != 1 || active[0].ID != run.ID {
+		t.Errorf("ListActiveRuns = (%+v, %v), want the retried run back among the live ones", active, err)
+	}
+
+	if err := s.RetryRun(ctx, run.ID); !errors.Is(err, workflow.ErrRunNotFailed) {
+		t.Errorf("RetryRun on a paused run = %v, want ErrRunNotFailed", err)
+	}
+	if ok, _ := s.ClaimRun(ctx, run.ID); !ok {
+		t.Fatal("ClaimRun on the retried run should win")
+	}
+	if got, _ = s.GetRun(ctx, run.ID); got.State != workflow.RunRunning || got.Error != "" {
+		t.Errorf("claimed run = %+v, want running with the old failure cleared", got)
+	}
+
+	// A move to any state clears a stale reason too, and the other
+	// terminal states stay final.
+	if err := s.FailRun(ctx, run.ID, "again"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RetryRun(ctx, run.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetRunState(ctx, run.ID, workflow.RunCancelled); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ = s.GetRun(ctx, run.ID); got.Error != "" {
+		t.Errorf("cancelled run error = %q, want cleared", got.Error)
+	}
+	if err := s.RetryRun(ctx, run.ID); !errors.Is(err, workflow.ErrRunNotFailed) {
+		t.Errorf("RetryRun on a cancelled run = %v, want ErrRunNotFailed", err)
+	}
+	if err := s.RetryRun(ctx, 9999); !errors.Is(err, workflow.ErrRunNotFound) {
+		t.Errorf("RetryRun(unknown) = %v, want ErrRunNotFound", err)
+	}
+}
+
 func TestStepRunsIterateAndFinishOnce(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

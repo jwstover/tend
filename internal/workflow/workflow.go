@@ -53,6 +53,11 @@ var ErrCrossWorkflowEdge = errors.New("edge joins steps of different workflows")
 // is a new run.
 var ErrRunEnded = errors.New("run has already ended")
 
+// ErrRunNotFailed is returned when a retry is attempted on a run that has
+// not failed: only a failed run has a step to try again. A paused run is
+// resumed instead, and done or cancelled are final.
+var ErrRunNotFailed = errors.New("run has not failed")
+
 // ErrStepRunFinished is returned when a step run is finished a second
 // time. finish_step is a one-shot handoff; the first outcome stands.
 var ErrStepRunFinished = errors.New("step run already finished")
@@ -107,7 +112,8 @@ const (
 	// RunDone means the last step's outcome had no edge to follow.
 	RunDone RunState = "done"
 	// RunFailed means the runner gave up: a step could not launch, or an
-	// edge's max_iterations was exceeded.
+	// edge's max_iterations was exceeded. The one terminal state a run can
+	// leave: a retry takes it back to paused at the step that failed.
 	RunFailed RunState = "failed"
 	// RunCancelled means the user ended the run deliberately.
 	RunCancelled RunState = "cancelled"
