@@ -27,6 +27,7 @@ defmodule Tend.CLI do
   @type plan ::
           {:run, Invocation.t()}
           | {:help, [Command.t()]}
+          | {:unknown_help_topic, [String.t()]}
           | :version
           | {:not_implemented, [Command.t()]}
           | {:error, String.t(), [Command.t()]}
@@ -50,6 +51,16 @@ defmodule Tend.CLI do
 
       {:help, path} ->
         IO.write(Help.command(path))
+        0
+
+      {:unknown_help_topic, topics} ->
+        # cobra's help command says so on stderr and still exits 0, then
+        # prints the root command's usage block. Ours prints the root help,
+        # which is that block plus the one-line description: cobra's own is
+        # missing -h and -v here, because Execute adds those flags after the
+        # help command has already run.
+        IO.write(:stderr, "Unknown help topic #{quote_topics(topics)}\n")
+        IO.write(:stderr, Help.command([]))
         0
 
       :version ->
@@ -84,8 +95,16 @@ defmodule Tend.CLI do
   # `tend help [command]` is a synonym for `--help`, the one cobra built-in
   # worth keeping: without it `tend help` would read as an unknown command.
   defp resolve(["help" | rest], _db_flag) do
-    {path, _argv} = walk(Commands.all(), rest, [])
-    {:help, path}
+    {path, argv} = walk(Commands.all(), rest, [])
+
+    # cobra only complains about the topic when the first word names nothing
+    # at the root: `tend help workflow bogus` prints workflow's help, because
+    # the topic lookup only fails when it fails outright.
+    if path == [] and command_names(argv) != [] do
+      {:unknown_help_topic, rest}
+    else
+      {:help, path}
+    end
   end
 
   defp resolve(argv, db_flag) do
@@ -104,11 +123,26 @@ defmodule Tend.CLI do
 
   defp finish([], rest, db_flag) do
     cond do
-      help_flag?(rest) -> {:help, []}
-      version_flag?(rest) -> :version
-      rest == [] -> {:run, invocation(:tui, [], [], db_flag)}
-      flag?(hd(rest)) -> {:error, "unknown flag: #{hd(rest)}", []}
-      true -> {:error, ~s(unknown command "#{hd(rest)}" for "tend"), []}
+      help_flag?(rest) ->
+        {:help, []}
+
+      version_flag?(rest) ->
+        :version
+
+      rest == [] ->
+        {:run, invocation(:tui, [], [], db_flag)}
+
+      flag?(hd(rest)) ->
+        {:error, "unknown flag: #{hd(rest)}", []}
+
+      true ->
+        # Whatever is left is positional. The root ignores its arguments and
+        # opens the TUI, so only a word that could have named a command is an
+        # error: `tend -- ls` and `tend ""` both run the TUI in the Go binary.
+        case unknown_command_name(rest) do
+          nil -> {:run, invocation(:tui, [], rest, db_flag)}
+          name -> {:error, ~s(unknown command "#{name}" for "tend"), []}
+        end
     end
   end
 
@@ -122,16 +156,20 @@ defmodule Tend.CLI do
       node.stub ->
         {:run, invocation(node.stub, Enum.map(path, & &1.name), rest, db_flag)}
 
-      node.subcommands != [] and rest != [] and not flag?(hd(rest)) ->
-        {:error, ~s(unknown command "#{hd(rest)}" for "tend #{join(path)}"), path}
-
       node.subcommands != [] ->
-        {:help, path}
+        case unknown_command_name(rest) do
+          nil -> {:help, path}
+          name -> {:error, ~s(unknown command "#{name}" for "tend #{join(path)}"), path}
+        end
 
       true ->
         {:not_implemented, path}
     end
   end
+
+  # The first word of `rest` that could have named a command, or nil when
+  # there is none -- in which case there is nothing to report as unknown.
+  defp unknown_command_name(rest), do: List.first(command_names(rest))
 
   defp invocation(command, path, argv, db_flag) do
     %Invocation{
@@ -168,8 +206,22 @@ defmodule Tend.CLI do
     |> Enum.any?(&(&1 in names))
   end
 
+  # cobra's stripFlags, which is what decides whether a word is reported as an
+  # unknown command: the scan ends at `--`, and neither a flag nor an empty
+  # argument can name one. A bare `-` is not a flag either -- pflag leaves it
+  # to the command as a positional, the way the stdin convention wants.
+  defp command_names(argv) do
+    argv
+    |> Enum.take_while(&(&1 != "--"))
+    |> Enum.reject(&(&1 == "" or String.starts_with?(&1, "-")))
+  end
+
   defp flag?("-"), do: false
+  defp flag?("--"), do: false
   defp flag?(token), do: String.starts_with?(token, "-")
 
   defp join(path), do: Enum.map_join(path, " ", & &1.name)
+
+  # Go prints the topic list with %#q: backquoted words inside brackets.
+  defp quote_topics(topics), do: "[" <> Enum.map_join(topics, " ", &"`#{&1}`") <> "]"
 end
