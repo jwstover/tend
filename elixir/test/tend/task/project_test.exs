@@ -32,6 +32,17 @@ defmodule Tend.Task.ProjectTest do
     test "a newline separates too" do
       assert Project.parse_tags("work\nhome") == ["work", "home"]
     end
+
+    # Go folds the dedup key with strings.ToLower, whose simple mapping lowers
+    # U+0130 to "i"; String.downcase/1's full mapping lowers it to "i" +
+    # U+0307. Both expectations below are what Go's ParseTags returns, run.
+    test "folds a dotted capital I into a plain i, as strings.ToLower does" do
+      assert Project.parse_tags("İ i") == ["İ"]
+    end
+
+    test "keeps two tags Go keeps apart, rather than folding one away" do
+      assert Project.parse_tags("İİ i̇i̇") == ["İİ", "i̇i̇"]
+    end
   end
 
   # The prompt seeds from format_tags/1 and submits through parse_tags/1, so
