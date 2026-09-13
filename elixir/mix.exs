@@ -9,10 +9,16 @@ defmodule Tend.MixProject do
       version: @version,
       elixir: "~> 1.18",
       start_permanent: Mix.env() == :prod,
+      elixirc_paths: elixirc_paths(Mix.env()),
       escript: escript(),
       deps: deps()
     ]
   end
+
+  # test/support holds helpers shared by more than one test file; it is
+  # compiled only under MIX_ENV=test so none of it can reach the release.
+  defp elixirc_paths(:test), do: ["lib", "test/support"]
+  defp elixirc_paths(_env), do: ["lib"]
 
   def application do
     [extra_applications: [:logger]]
