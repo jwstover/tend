@@ -113,10 +113,52 @@ defmodule Tend.CLITest do
                CLI.plan(["add", "--", "--db", "/tmp/a.db"])
     end
 
+    test "a missing value is an error end to end, not only in the plan" do
+      output = capture_io(:stderr, fn -> assert CLI.run(["ls", "--db"]) == 1 end)
+
+      assert output =~ "tend: flag needs an argument: --db"
+    end
+
     test "without the flag it falls back through the environment" do
       # The precedence itself is Tend.DBPathTest's; this is the wiring.
       assert {:run, %Invocation{db_path: db_path}} = CLI.plan(["ls"])
       assert db_path == Tend.DBPath.resolve(nil)
+    end
+  end
+
+  # From review pass 1, which ran each of these against both binaries. cobra
+  # ends its scan for a command name at `--`, and an empty argument never
+  # names one, so both fall through to the root and open the TUI.
+  describe "the argument terminator" do
+    # $ tend -- --db x           (Go) launches the TUI; `--` ends flag parsing
+    #                                 and everything after it is a positional
+    #                                 the root RunE ignores.
+    test "`tend -- ...` runs the TUI, the way cobra treats the terminator" do
+      assert {:run, %Invocation{command: :tui}} = CLI.plan(["--", "--db", "x"])
+    end
+
+    # $ tend -- bogus            (Go) launches the TUI.
+    test "`tend -- bogus` does not report `--` as an unknown flag" do
+      refute match?({:error, "unknown flag: --", _}, CLI.plan(["--", "bogus"]))
+      assert {:run, %Invocation{command: :tui}} = CLI.plan(["--", "bogus"])
+    end
+
+    # $ tend --db /x -- ls       (Go) launches the TUI against /x.
+    test "a `--` after --db still leaves a runnable root invocation" do
+      assert {:run, %Invocation{command: :tui, db_path: "/x"}} =
+               CLI.plan(["--db", "/x", "--", "ls"])
+    end
+
+    # $ tend ""                  (Go) launches the TUI; stripFlags drops the
+    #                                 empty argument, so nothing is unknown.
+    test "an empty argument is not a command name" do
+      assert {:run, %Invocation{command: :tui}} = CLI.plan([""])
+      assert {:error, ~s(unknown command "bogus" for "tend"), []} = CLI.plan(["", "bogus"])
+    end
+
+    # A bare `-` is a positional by pflag's stdin convention, not a flag.
+    test "a bare - is left to the command" do
+      assert {:run, %Invocation{command: :tui}} = CLI.plan(["-"])
     end
   end
 
@@ -135,6 +177,23 @@ defmodule Tend.CLITest do
       assert output =~ "List, start, watch and steer agent workflow runs"
       assert output =~ "Usage:\n  tend workflow [command]"
       assert output =~ "  start       Run a workflow on a task"
+    end
+
+    # $ tend help bogus          (Go) rc=0, "Unknown help topic [`bogus`]" on
+    #                                 stderr, followed by the usage block.
+    test "an unknown help topic says so on stderr and still exits zero" do
+      output = capture_io(:stderr, fn -> assert CLI.run(["help", "bogus"]) == 0 end)
+
+      assert output =~ "Unknown help topic [`bogus`]\n"
+      assert output =~ "Available Commands:"
+    end
+
+    test "a topic that resolves part-way prints that command's help" do
+      # `tend help workflow bogus` prints workflow's help in cobra: the lookup
+      # only fails when the first word names nothing at the root.
+      output = capture_io(fn -> assert CLI.run(["help", "workflow", "bogus"]) == 0 end)
+
+      assert output =~ "List, start, watch and steer agent workflow runs"
     end
 
     test "a group with no subcommand prints its help" do
