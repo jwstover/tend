@@ -222,11 +222,35 @@ defmodule Tend.Template.RendererTest do
       assert error.detail == ~s(map has no entry for key "Nope")
     end
 
-    test "reading a field off nil says so rather than rendering nothing" do
+    test "a nil root is Go's nil data, naming the key it was asked for" do
+      # Go 1.26.4, "{{.B}}" executed against a nil data value:
+      # nil data; no entry for key "B"
+      assert {:error, %RenderError{reason: :nil_data} = error} = Template.render("{{.B}}", nil)
+
+      assert error.detail == ~s(nil data; no entry for key "B")
+    end
+
+    test "a nil partway down a chain is Go's nil pointer, not Go's nil data" do
+      # Go reserves `nil data; no entry for key` for a nil root and says
+      # `nil pointer evaluating T.Field` for a nil inside a chain -- for
+      # `{{.A.B}}` with a nil `A`, `nil pointer evaluating *main.Inner.B` or
+      # `interface {}.B` depending on the declared type. An Elixir nil has no
+      # type, so the type slot reads `nil`; the rest is Go's.
       assert {:error, %RenderError{reason: :nil_data} = error} =
                Template.render("{{.Task.Title}}", %{"Task" => nil})
 
-      assert error.detail == ~s(nil data; no entry for key "Title")
+      assert error.detail == "nil pointer evaluating nil.Title"
+    end
+
+    test "an Elixir internal is not a field, however much it looks like one" do
+      # `.__struct__` resolves to a module in Elixir and to nothing at all in
+      # Go: "{{.__struct__}}" is `can't evaluate field __struct__ in type
+      # main.PromptData` there, so it has to be a miss here too.
+      assert {:error, %RenderError{reason: :missing_field} = error} =
+               Template.render("{{.__struct__}}", @full)
+
+      assert error.detail ==
+               "can't evaluate field __struct__ in type Tend.Template.RendererTest.PromptData"
     end
 
     test "a parse error comes back from render/2 too, as its own struct" do
@@ -408,6 +432,60 @@ defmodule Tend.Template.RendererTest do
       assert_raise ArgumentError, fn ->
         String.to_existing_atom("no_such_field_in_this_system")
       end
+    end
+  end
+
+  describe "an argument given to something that is not a function" do
+    # Go has three messages for this and picks by what the head of the
+    # command turned out to be. Every `detail` below is Go 1.26.4's, captured
+    # against a struct with these fields and against a plain map.
+    test "a struct field cannot be invoked as a function" do
+      assert {:error, %RenderError{reason: :bad_command} = error} =
+               Template.render("{{.Cwd .Input}}", @full)
+
+      assert error.detail == "Cwd has arguments but cannot be invoked as function"
+      assert error.context == ".Cwd"
+    end
+
+    test "so does a field reached through $" do
+      assert {:error, %RenderError{} = error} = Template.render("{{$.Cwd .Input}}", @full)
+
+      assert error.detail == "Cwd has arguments but cannot be invoked as function"
+      assert error.context == "$.Cwd"
+    end
+
+    test "a map key is not a method, which is Go's other wording" do
+      assert {:error, %RenderError{} = error} =
+               Template.render("{{.k .k}}", %{"k" => "v"})
+
+      assert error.detail == "k is not a method but has arguments"
+      assert error.context == ".k"
+    end
+
+    test "only a head that is no field at all can't be given an argument" do
+      for {source, detail, context} <- [
+            {"{{$ .Cwd}}", "can't give argument to non-function $", "$"},
+            {"{{. .Cwd}}", "can't give argument to non-function .", "."},
+            {"{{1 2}}", "can't give argument to non-function 1", "1"},
+            {~S({{"a" "b"}}), ~S(can't give argument to non-function "a"), ~S("a")},
+            {"{{true .Cwd}}", "can't give argument to non-function true", "true"},
+            {"{{(.Cwd) .Input}}", "can't give argument to non-function .Cwd", "(.Cwd) .Input"}
+          ] do
+        assert {:error, %RenderError{reason: :bad_command} = error} =
+                 Template.render(source, @full)
+
+        assert error.detail == detail
+        assert error.context == context
+      end
+    end
+
+    test "the head is resolved first, so a missing field still wins" do
+      # Go: `{{.Bogus .Cwd}}` is `can't evaluate field Bogus in type main.D`,
+      # not an argument error.
+      assert {:error, %RenderError{reason: :missing_field} = error} =
+               Template.render("{{.Bogus .Cwd}}", @full)
+
+      assert error.detail =~ "can't evaluate field Bogus"
     end
   end
 

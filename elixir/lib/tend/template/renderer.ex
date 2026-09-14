@@ -173,13 +173,57 @@ defmodule Tend.Template.Renderer do
 
   defp eval_command(%AST.Command{args: [arg]}, state), do: eval_operand(arg, state)
 
-  defp eval_command(%AST.Command{args: [arg | _]} = command, state) do
-    raise RenderError.new(
-            state.source,
-            command,
-            :bad_command,
-            "can't give argument to non-function #{AST.to_source(arg)}"
-          )
+  defp eval_command(%AST.Command{args: [head | _]} = command, state) do
+    # Go resolves the head before it objects to the arguments, so
+    # `{{.Nope .Cwd}}` is still `can't evaluate field Nope`, not an argument
+    # error. Evaluating it here and throwing the value away keeps that order.
+    _value = eval_operand(head, state)
+
+    raise argument_error(command, head, state)
+  end
+
+  # Go has three messages here, not one. A field chain off a map is "not a
+  # method"; off anything else it "cannot be invoked as function"; and only a
+  # head that is no field at all -- `$`, the cursor, a literal, a
+  # parenthesised pipeline -- gets "can't give argument to non-function".
+  defp argument_error(_command, %AST.Field{path: path} = head, state),
+    do: field_argument_error(head, state.dot, path, state)
+
+  defp argument_error(_command, %AST.Variable{name: "$", path: [_ | _] = path} = head, state),
+    do: field_argument_error(head, state.root, path, state)
+
+  defp argument_error(command, %AST.Pipeline{} = head, state) do
+    # Go names the pipeline's own head in the message and the whole command
+    # in the context: `at <(.Cwd) .Input>: ... non-function .Cwd`.
+    RenderError.new(
+      state.source,
+      command,
+      :bad_command,
+      "can't give argument to non-function #{AST.to_source(head_operand(head))}"
+    )
+  end
+
+  defp argument_error(_command, head, state) do
+    RenderError.new(
+      state.source,
+      head,
+      :bad_command,
+      "can't give argument to non-function #{AST.to_source(head)}"
+    )
+  end
+
+  defp field_argument_error(head, base, path, state) do
+    receiver = walk(base, Enum.drop(path, -1), head, state)
+    name = List.last(path)
+
+    detail =
+      if is_map(receiver) and not is_struct(receiver) do
+        "#{name} is not a method but has arguments"
+      else
+        "#{name} has arguments but cannot be invoked as function"
+      end
+
+    RenderError.new(state.source, head, :bad_command, detail)
   end
 
   ## Operands
@@ -208,10 +252,13 @@ defmodule Tend.Template.Renderer do
   ## Field access -- the missingkey=error half
 
   defp walk(value, path, node, state) do
-    Enum.reduce(path, value, &field(&2, &1, node, state))
+    path
+    |> Enum.with_index()
+    |> Enum.reduce(value, fn {name, index}, acc -> field(acc, name, index, node, state) end)
   end
 
-  defp field(nil, name, node, state) do
+  # Go says `nil data; no entry for key "X"` only for a nil *root*.
+  defp field(nil, name, 0, node, state) do
     raise RenderError.new(
             state.source,
             node,
@@ -220,14 +267,27 @@ defmodule Tend.Template.Renderer do
           )
   end
 
-  defp field(%module{} = struct, name, node, state) do
+  # Partway down a chain Go says `nil pointer evaluating T.X`, naming the Go
+  # type of the pointer it could not follow. An Elixir nil carries no type,
+  # so the type slot is `nil` -- the same substitution every other message
+  # here makes when Go names a type. `Tend.Template.RenderError` says so.
+  defp field(nil, name, _index, node, state) do
+    raise RenderError.new(
+            state.source,
+            node,
+            :nil_data,
+            "nil pointer evaluating nil.#{name}"
+          )
+  end
+
+  defp field(%module{} = struct, name, _index, node, state) do
     case fetch(struct, name) do
       {:ok, value} -> value
       :error -> raise missing_field(state, node, name, inspect(module))
     end
   end
 
-  defp field(map, name, node, state) when is_map(map) do
+  defp field(map, name, _index, node, state) when is_map(map) do
     case fetch(map, name) do
       {:ok, value} ->
         value
@@ -242,7 +302,7 @@ defmodule Tend.Template.Renderer do
     end
   end
 
-  defp field(other, name, node, state) do
+  defp field(other, name, _index, node, state) do
     raise missing_field(state, node, name, type_name(other))
   end
 
@@ -266,10 +326,18 @@ defmodule Tend.Template.Renderer do
     end)
   end
 
+  # `__struct__` is Elixir's, not the data's: Go has no concept of it, and
+  # `{{.__struct__}}` has to be the miss `{{.Bogus}}` is rather than printing
+  # a module name. The string key is left alone -- a plain map with a literal
+  # `"__struct__"` key is a map Go would have resolved too.
+  @reserved_atoms [:__struct__, :__exception__]
+
   defp keys(name) do
-    [name, existing_atom(name), name |> Macro.underscore() |> existing_atom()]
-    |> Enum.reject(&is_nil/1)
-    |> Enum.uniq()
+    atoms =
+      [existing_atom(name), name |> Macro.underscore() |> existing_atom()]
+      |> Enum.reject(&(is_nil(&1) or &1 in @reserved_atoms))
+
+    Enum.uniq([name | atoms])
   end
 
   # Never String.to_atom/1: a prompt is user input, and the atom table is not
