@@ -301,4 +301,161 @@ defmodule Tend.Store.RowTest do
       assert Row.parse_status_time(millisecond) == {:ok, ~U[2026-09-14 08:30:00.500Z]}
     end
   end
+
+  describe "format_status_time/1 (Go's statusUpdatedAtParam)" do
+    test "renders exactly what strftime('%Y-%m-%d %H:%M:%f') would have written" do
+      assert Row.format_status_time(~U[2026-09-14 08:30:00.123Z]) == "2026-09-14 08:30:00.123"
+      assert Row.format_status_time(~U[2026-01-02 03:04:05.007Z]) == "2026-01-02 03:04:05.007"
+    end
+
+    test "is the exact inverse of parse_status_time/1, which is what the CAS needs" do
+      # The compare-and-swap compares this text against the stored column with
+      # SQL `IS`. Anything but a byte-identical round trip makes a token the
+      # store itself wrote fail to match its own row.
+      for stored <- [
+            "2026-09-14 08:30:00.000",
+            "2026-09-14 08:30:00.001",
+            "2026-09-14 08:30:00.010",
+            "2026-09-14 08:30:00.100",
+            "2026-09-14 23:59:59.999",
+            "2026-12-31 00:00:00.500"
+          ] do
+        assert {:ok, parsed} = Row.parse_status_time(stored)
+        assert Row.format_status_time(parsed) == stored
+      end
+    end
+
+    test "pads the milliseconds to three digits rather than following the DateTime" do
+      # Calendar.strftime's %f would render a whole-second DateTime as "0" and
+      # a millisecond one as "100" -- the width follows the value's own
+      # precision, not the layout's. Go's `.000` chunk is fixed width.
+      assert Row.format_status_time(~U[2026-09-14 08:30:00Z]) == "2026-09-14 08:30:00.000"
+      assert Row.format_status_time(~U[2026-09-14 08:30:00.1Z]) == "2026-09-14 08:30:00.100"
+      assert Row.format_status_time(~U[2026-09-14 08:30:00.01Z]) == "2026-09-14 08:30:00.010"
+    end
+
+    test "truncates sub-millisecond precision rather than rounding, the way Go does" do
+      assert Row.format_status_time(~U[2026-09-14 08:30:00.123999Z]) ==
+               "2026-09-14 08:30:00.123"
+
+      assert Row.format_status_time(~U[2026-09-14 08:30:00.000999Z]) ==
+               "2026-09-14 08:30:00.000"
+    end
+
+    test "renders in UTC, as Go's t.UTC().Format does" do
+      # The column is UTC because strftime('now') is. A caller holding a
+      # non-UTC DateTime must not mint a token an hour off the stored text.
+      shifted = %{~U[2026-09-14 08:30:00.123Z] | utc_offset: 3600, time_zone: "Etc/GMT-1"}
+      shifted = %{shifted | hour: 9}
+
+      assert Row.format_status_time(shifted) == "2026-09-14 08:30:00.123"
+    end
+  end
+
+  describe "to_session/1" do
+    # The column order every session query selects, which is the order
+    # to_session/1 reads positionally.
+    @session_columns [
+      :id,
+      :task_id,
+      :external_id,
+      :cwd,
+      :label,
+      :started_at,
+      :last_active_at,
+      :tmux_session,
+      :needs_recap,
+      :status,
+      :status_updated_at,
+      :workflow_step_run_id
+    ]
+
+    @session_defaults %{
+      id: 3,
+      task_id: 7,
+      external_id: "ext-1",
+      cwd: "/tmp/work",
+      label: "fix the bug",
+      started_at: "2026-09-14 08:30:00",
+      last_active_at: "2026-09-14 08:31:00",
+      tmux_session: "",
+      needs_recap: 0,
+      status: "starting",
+      status_updated_at: "2026-09-14 08:30:00.123",
+      workflow_step_run_id: nil
+    }
+
+    defp session_row(overrides \\ []) do
+      values = Map.merge(@session_defaults, Map.new(overrides))
+      Enum.map(@session_columns, &Map.fetch!(values, &1))
+    end
+
+    test "maps every column into its field" do
+      assert {:ok, session} =
+               Row.to_session(
+                 session_row(
+                   tmux_session: "tend-ext-1",
+                   needs_recap: 1,
+                   status: "blocked",
+                   workflow_step_run_id: 12
+                 )
+               )
+
+      assert session.id == 3
+      assert session.task_id == 7
+      assert session.external_id == "ext-1"
+      assert session.cwd == "/tmp/work"
+      assert session.label == "fix the bug"
+      assert session.tmux_session == "tend-ext-1"
+      assert session.needs_recap
+      assert session.status == :blocked
+      assert session.status_updated_at == ~U[2026-09-14 08:30:00.123Z]
+      assert session.started_at == ~U[2026-09-14 08:30:00Z]
+      assert session.last_active_at == ~U[2026-09-14 08:31:00Z]
+      assert session.step_run_id == 12
+    end
+
+    test "a NULL status_updated_at is nil, Go's zero time" do
+      assert {:ok, session} = Row.to_session(session_row(status_updated_at: nil))
+      assert session.status_updated_at == nil
+    end
+
+    test "an unparseable status_updated_at degrades to nil rather than failing the read" do
+      # Go's sessionToDomain discards parseStatusTime's error on purpose: it is
+      # a display timestamp on a cached observation, not worth refusing a
+      # session over.
+      assert {:ok, session} = Row.to_session(session_row(status_updated_at: "not a time"))
+      assert session.status_updated_at == nil
+    end
+
+    test "an unreadable started_at or last_active_at does fail the read" do
+      assert Row.to_session(session_row(started_at: "nope")) ==
+               {:error, {:invalid_timestamp, "session 3 started_at", "nope"}}
+
+      assert Row.to_session(session_row(last_active_at: "nope")) ==
+               {:error, {:invalid_timestamp, "session 3 last_active_at", "nope"}}
+    end
+
+    test "a status tend does not recognize reads as :unknown rather than erroring" do
+      assert {:ok, session} = Row.to_session(session_row(status: "compacting"))
+      assert session.status == :unknown
+    end
+  end
+
+  describe "to_task_session/1" do
+    test "splits the session's twelve columns from the owning task's two" do
+      row = session_row() ++ ["fix the bug", "doing"]
+
+      assert {:ok, task_session} = Row.to_task_session(row)
+      assert task_session.session.external_id == "ext-1"
+      assert task_session.task_title == "fix the bug"
+      assert task_session.task_state == :doing
+    end
+
+    test "a state nothing seeded is an error, the way to_task/1's is" do
+      row = session_row() ++ ["fix the bug", "invented"]
+
+      assert Row.to_task_session(row) == {:error, {:unknown_state, "invented"}}
+    end
+  end
 end
