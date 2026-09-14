@@ -12,13 +12,16 @@ defmodule Tend.GoParityTest do
 
   use ExUnit.Case, async: true
 
+  alias Tend.Task.DayNotes
+  alias Tend.Task.LogEntry
+  alias Tend.Task.NoteGroup
   alias Tend.Task.Project
   alias Tend.Task.Session
 
   # The Go package this part of the port covers. Its sibling files (brief.go,
-  # event.go, log.go) belong to later parts and are deliberately not read.
+  # event.go) belong to later parts and are deliberately not read.
   @go_dir Path.expand("../../../internal/task", __DIR__)
-  @go_files ["task.go", "project.go", "session.go"]
+  @go_files ["task.go", "project.go", "session.go", "log.go"]
 
   defp go_source(file) do
     path = Path.join(@go_dir, file)
@@ -39,9 +42,8 @@ defmodule Tend.GoParityTest do
     |> Enum.map(fn [_whole, name, message] -> {name, message} end)
   end
 
-  # The field names of a Go struct, in declaration order. The three structs
-  # read here have no nested braces, so matching to the first unindented "}"
-  # is enough.
+  # The field names of a Go struct, in declaration order. The structs read here
+  # have no nested braces, so matching to the first unindented "}" is enough.
   defp go_struct_fields(file, struct_name) do
     source = go_source(file)
 
@@ -69,7 +71,7 @@ defmodule Tend.GoParityTest do
     test "the Go sources really do define the sentinels we think they do" do
       # Guards the regex itself: if it silently stopped matching, every other
       # assertion in this block would pass vacuously.
-      assert length(go_sentinels()) == 6
+      assert length(go_sentinels()) == 7
     end
 
     test "each Go sentinel maps to exactly one atom, by the documented rule" do
@@ -105,6 +107,12 @@ defmodule Tend.GoParityTest do
 
     test "Tend.Task.Session has the fields of Go's task.Session" do
       assert elixir_fields(%Session{}) == expected_fields("session.go", "Session")
+    end
+
+    test "the log structs have the fields of their Go counterparts" do
+      assert elixir_fields(%LogEntry{}) == expected_fields("log.go", "LogEntry")
+      assert elixir_fields(%NoteGroup{}) == expected_fields("log.go", "NoteGroup")
+      assert elixir_fields(%DayNotes{}) == expected_fields("log.go", "DayNotes")
     end
   end
 
