@@ -94,12 +94,12 @@ defmodule Tend.Task.LogEntry do
 
   Groups keep the order each task first appeared in the window, and notes stay
   chronological within their group, so every group reads as that workstream's
-  narrative. Freestanding notes share one group.
+  narrative. Freestanding notes share one group, keyed by `nil` where Go keys it
+  by task id `0`, so the group does not borrow an id a task could in principle
+  hold.
   """
   @spec group_notes([t()]) :: [NoteGroup.t()]
   def group_notes(notes) when is_list(notes) do
-    # Go keys the freestanding group by task id 0; `nil` is the same bucket
-    # without borrowing an id a task could in principle hold.
     {groups, order} = Enum.reduce(notes, {%{}, []}, &add_to_group/2)
 
     order
