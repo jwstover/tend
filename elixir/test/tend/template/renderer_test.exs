@@ -302,12 +302,42 @@ defmodule Tend.Template.RendererTest do
                {:ok, "/home/me/proj:approve /home/me/proj:reject "}
     end
 
+    test "an integer ranges over its indices, the way Go has since 1.22" do
+      # .Iteration is an int64 in internal/workflow/prompt.go, so this is an
+      # ordinary prompt rather than a curiosity. Go 1.26.4 against fullData:
+      #
+      #     {{range .Iteration}}x{{end}}     => "xxx"
+      #     {{range .Iteration}}{{.}}{{end}} => "012"
+      assert Template.render("{{range .Iteration}}x{{end}}", @full) == {:ok, "xxx"}
+      assert Template.render("{{range .Iteration}}{{.}}{{end}}", @full) == {:ok, "012"}
+    end
+
+    test "a zero or negative integer iterates no times, as Go's <= 0 break does" do
+      # Go 1.26.4: "{{range .Iteration}}x{{else}}none{{end}}" is "none" for
+      # both 0 and -2, and "" with no {{else}} arm.
+      assert Template.render("{{range .Iteration}}x{{else}}none{{end}}", @zero) == {:ok, "none"}
+      assert Template.render("{{range .Iteration}}x{{end}}", @zero) == {:ok, ""}
+      assert Template.render("{{range .V}}x{{else}}none{{end}}", %{"V" => -2}) == {:ok, "none"}
+    end
+
     test "ranging over something that is not a list is an error naming it" do
+      # Go refuses a string too -- `range can't iterate over /home/me/proj` --
+      # so this is parity, not a gap.
       assert {:error, %RenderError{reason: :not_iterable} = error} =
                Template.render("{{range .Cwd}}x{{end}}", @full)
 
       assert error.detail == "range can't iterate over /home/me/proj"
       assert error.context == ".Cwd"
+    end
+
+    test "ranging over a struct is refused, and names it the way Go's %v does" do
+      # Go 1.26.4, "{{range .Task}}x{{end}}" against fullData:
+      # range can't iterate over {42 Fix the flaky test It fails on CI only.}
+      assert {:error, %RenderError{reason: :not_iterable} = error} =
+               Template.render("{{range .Task}}x{{end}}", @full)
+
+      assert error.detail ==
+               "range can't iterate over {42 Fix the flaky test It fails on CI only.}"
     end
   end
 
