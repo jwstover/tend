@@ -73,8 +73,23 @@ jobs:
       - name: Compile
         run: mix compile --warnings-as-errors
 
+      # The domain port reads stored UTC as local time the way Go's time.Local
+      # does, and the runner is UTC, where that conversion is the identity and
+      # the tests covering it would pass for the wrong reason. So the suite
+      # runs again in a zone either side of UTC -- one whose local date is
+      # behind UTC's, one ahead, both with DST.
       - name: Test
         run: mix test
+
+      - name: Test (TZ=America/New_York)
+        run: mix test
+        env:
+          TZ: America/New_York
+
+      - name: Test (TZ=Pacific/Auckland)
+        run: mix test
+        env:
+          TZ: Pacific/Auckland
 
       - name: Format
         run: mix format --check-formatted
