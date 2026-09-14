@@ -55,14 +55,35 @@ defmodule Tend.Template.Parity.Corpus do
   @spec extra_templates() :: [binary()]
   def extra_templates, do: @extra_templates
 
+  @cases_key {__MODULE__, :repo_cases}
+
   @doc """
   Every template the repo has to offer, paired with every data set: the ones
   scanned out of its Go test fixtures, plus `extra_templates/0`.
 
   Ordered by template then data set, so the golden file has a stable diff.
+
+  Memoised for the life of the VM. The scan reads every `*_test.go` in the
+  repo, which is a third of a second, and a `mix test` asks for it half a
+  dozen times -- once per parity test and once more for the end-of-suite
+  banner, including on an invocation that matched no tests at all. Nothing
+  edits a Go test file mid-run, and `mix tend.parity` is a fresh VM every
+  time, so there is nothing for a stale answer to be stale against.
   """
   @spec repo_cases() :: [map()]
   def repo_cases do
+    case :persistent_term.get(@cases_key, nil) do
+      nil ->
+        cases = scan_repo_cases()
+        :persistent_term.put(@cases_key, cases)
+        cases
+
+      cases ->
+        cases
+    end
+  end
+
+  defp scan_repo_cases do
     from_go_tests =
       repo_root()
       |> Path.join("**/*_test.go")
