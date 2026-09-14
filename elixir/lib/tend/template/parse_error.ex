@@ -52,6 +52,8 @@ defmodule Tend.Template.ParseError do
   inheriting the richer message above on purpose.
   """
 
+  alias Tend.Template.Position
+
   @type t :: %__MODULE__{
           detail: String.t(),
           token: String.t(),
@@ -62,8 +64,6 @@ defmodule Tend.Template.ParseError do
 
   @enforce_keys [:detail, :token, :offset, :line, :column]
   defexception [:detail, :token, :offset, :line, :column]
-
-  alias Tend.Template.Position
 
   @impl true
   def message(%__MODULE__{} = error) do

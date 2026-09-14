@@ -34,12 +34,15 @@ defmodule Tend.Template do
       {{- .Input -}}                             trim markers
       1  -1.5  0x1f  'a'  "s"  `raw`  true  nil  literals
 
-  The last four lines of that table parse but do not yet *render*: function
-  calls, parenthesised sub-expressions, `|` pipelines and the variables a
-  `:=` binds are the built-ins sub-task's, and `render/2` refuses them with
-  `Tend.Template.RenderError` rather than guessing. `$` needs no declaration
-  and does resolve. Everything above them -- field chains, the cursor,
-  `{{if}}`, `{{range}}`, trim markers and the literals -- renders today.
+  Three things in that table parse but do not yet *render*: function calls,
+  `|` pipelines and the variables a `:=` binds are the built-ins sub-task's,
+  and `render/2` refuses them with `Tend.Template.RenderError` rather than
+  guessing. Parentheses are not one of them -- a parenthesised
+  sub-expression is a pipeline like any other, so `{{(.Cwd)}}` renders, and
+  renders what Go renders; only parentheses wrapped around one of the three
+  above are refused. `$` needs no declaration and does resolve. Everything
+  else -- field chains, the cursor, `{{if}}`, `{{range}}`, trim markers and
+  the literals -- renders today.
 
   ## What is not, and why
 
