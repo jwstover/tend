@@ -12,11 +12,33 @@ defmodule Tend.Workflow.Graph do
   ## Messages are the contract
 
   `validate/3`'s problems are rendered verbatim by the TUI's validate action,
-  so their text is part of the port, not a detail: `Tend.Workflow.GraphParity`
-  cases in `test/tend/workflow/go_parity_test.exs` pin every message format
-  against the Go source and fail when the two drift. Go's `Problem` carries no
+  so their text is part of the port, not a detail: the
+  `describe "the graph problems"` cases in `Tend.Workflow.GoParityTest`
+  (`test/tend/workflow/go_parity_test.exs`) pin every message format against
+  the Go source and fail when the two drift. Go's `Problem` carries no
   severity -- every problem is a problem -- so neither does
   `Tend.Workflow.Graph.Problem`.
+
+  ### One rule this owes Go: PR #75
+
+  This ports the *committed* `internal/workflow/graph.go`. PR #75,
+  `feat/validate-permission-mode`, was open against `main` when this landed
+  and adds a seventh rule to Go's `Validate`: an agent step whose
+  `permission_mode` is `""` gets
+
+      no permission mode: a headless step denies every tool call that would
+      need approval; set one on the step (acceptEdits, or bypassPermissions
+      for a step that runs commands)
+
+  `validate/3` does not report it, so a graph this calls sound can still be
+  one Go flags. Whichever of #75 and this port merges second turns
+  `Tend.Workflow.GoParityTest`'s exact-list assertion on `Validate`'s formats
+  red, which is the intended alarm rather than a silent gap. Closing it in
+  that rebase is two lines: a clause at the head of `prompt_problems/4`'s
+  agent body, ahead of the injected prompt check -- `Tend.Workflow.Step`
+  already carries `permission_mode` -- and the same format added to the pinned
+  list, in Go's source order, which puts it before the `"%v"` the prompt check
+  produces.
 
   Problem order is Go's: authoring order over the steps, and within a step
   unreachability, then the missing terminal, then each leaving edge in the
@@ -38,16 +60,32 @@ defmodule Tend.Workflow.Graph do
   text Go's `%v` on the wrapped `ErrInvalidPrompt` would produce -- and the
   problem appears with no change here.
 
+  The reason in that tuple is a `t:String.t/0`, deliberately: it is the
+  problem's text, and a problem is text. `Tend.Error`'s convention is the
+  opposite -- a reason is never a string -- so the prompt port will hand
+  `validate/3` a one-line adapter that renders its own reason rather than its
+  `validate_prompt/1` directly. Nothing in this module has to change for that.
+
   ## Divergences from Go
 
     * Go's `Validate(steps, edges)` is `validate/3` here, the third argument
       being the options above. There is no one-argument form: a graph is its
       steps and its edges, exactly as in Go.
     * The `(?i)` in the patterns below folds case the way PCRE does without
-      `UCP`, i.e. ASCII only, where Go's RE2 folds Unicode. An outcome whose
-      letters are outside ASCII is matched case-sensitively here. Same family
-      of divergence as `Tend.Workflow.normalize_outcome/1`'s, and the same
-      reason it is left alone: closing it would mean reimplementing a table.
+      `UCP`, i.e. ASCII only, where Go's RE2 folds Unicode. So an outcome
+      *or a prompt* whose letters fold outside ASCII is matched
+      case-sensitively here. In practice it bites the quoted form: unlike
+      `word/1`, `quoted_anywhere/1` carries no `\\b`, so a pure-ASCII outcome
+      diverges too as soon as the prompt carries a rune that folds onto ASCII
+      -- with the outcome `stop` routed elsewhere and a prompt reading
+      `Say "ſtop" when done.`, Go reports `prompt mentions "stop" but no
+      edge routes it` and this reports nothing. Same family of divergence as
+      `Tend.Workflow.normalize_outcome/1`'s, and the same reason it is left
+      alone: closing it would mean reimplementing a table. Adding `/u` is not
+      that fix -- it would switch `\\b` and `\\w` to Unicode as well, and
+      diverge from RE2's ASCII-only `\\b` in the other direction.
+      `Tend.Workflow.GraphTest`'s `"divergences from Go"` cases pin both
+      halves, so the day the folding is closed they say so.
 
   Nothing calls this module yet, exactly as nothing calls the rest of
   `Tend.Workflow`. The store and TUI ports are what will.
