@@ -2,6 +2,8 @@ defmodule Tend.ErrorTest do
   use ExUnit.Case, async: true
 
   alias Tend.Error
+  alias Tend.Store
+  alias Tend.Template
 
   # The one-to-one mapping with the Go sentinels is checked against the Go
   # sources themselves, in Tend.GoParityTest. These are the module's own rules.
@@ -17,6 +19,7 @@ defmodule Tend.ErrorTest do
                :empty_project_name,
                :empty_title,
                :in_use,
+               :invalid_prompt,
                :project_not_found,
                :protected_project,
                :run_ended,
@@ -103,6 +106,107 @@ defmodule Tend.ErrorTest do
     test "refuses a reason nobody registered, and says how to fix it" do
       assert_raise ArgumentError, ~r/add it to Tend.Error/, fn -> Error.message(:invented) end
       assert_raise ArgumentError, fn -> Error.message({:invented, 1}) end
+    end
+  end
+
+  # The fold-in the template and workflow ports were waiting for: both
+  # Tend.Template exceptions reach a user through :invalid_prompt, and
+  # Tend.Error.message/1 has to splice their text in rather than restate it,
+  # because that text is what names the offending variable and its position.
+  describe "message/1 renders {:invalid_prompt, cause}" do
+    test "prepends ErrInvalidPrompt's own text to a parse failure's message" do
+      {:error, cause} = Template.parse("{{end}}")
+
+      assert Error.message({:invalid_prompt, cause}) ==
+               "invalid prompt template: template: prompt:1:3: unexpected {{end}} at byte 2"
+    end
+
+    test "prepends it to a render failure's message, variable and position intact" do
+      {:error, cause} = Template.render("Hello {{.Nope}}", %{name: "me"})
+
+      assert Error.message({:invalid_prompt, cause}) ==
+               ~s(invalid prompt template: template: prompt:1:9: ) <>
+                 ~s(executing "prompt" at <.Nope>: map has no entry for key "Nope")
+    end
+
+    test "refuses a cause that is not an exception" do
+      assert_raise ArgumentError, fn -> Error.message({:invalid_prompt, "a string"}) end
+    end
+  end
+
+  # The store half of the same fold-in. Its reasons are descriptive tuples
+  # rather than sentinels, so the check that matters is that every tag the
+  # store tree actually builds has a clause here -- an untagged one would blow
+  # up in the catch-all the first time anything rendered it.
+  @store_reasons [
+    {:db_directory_failed, "/nope", :enotdir},
+    {:db_open_failed, "/nope/tend.db", "unable to open database file"},
+    {:pragma_failed, "PRAGMA journal_mode = WAL", "disk I/O error"},
+    {:migration_failed, :up, 7, "add_workflows", "no such table: tasks"},
+    {:query_failed, "SELECT 1", "database is locked"},
+    {:data_version_failed, :timeout}
+  ]
+
+  # The cause is the last element of every store reason.
+  defp put_cause(reason, cause) do
+    put_elem(reason, tuple_size(reason) - 1, cause)
+  end
+
+  describe "message/1 renders the store's reasons" do
+    test "one clause per reason, each naming what was being done" do
+      assert Error.message({:db_directory_failed, "/tmp/x", :enotdir}) ==
+               "creating db directory /tmp/x: enotdir"
+
+      assert Error.message({:db_open_failed, "/tmp/x/tend.db", "unable to open database file"}) ==
+               "opening db /tmp/x/tend.db: unable to open database file"
+
+      assert Error.message({:pragma_failed, "PRAGMA foreign_keys = ON", "disk I/O error"}) ==
+               "applying PRAGMA foreign_keys = ON: disk I/O error"
+
+      assert Error.message({:migration_failed, :up, 7, "add_workflows", "no such table"}) ==
+               "migrating up 7_add_workflows: no such table"
+
+      assert Error.message({:query_failed, "SELECT 1", "database is locked"}) ==
+               "running SELECT 1: database is locked"
+
+      assert Error.message({:data_version_failed, :timeout}) ==
+               "reading PRAGMA data_version: timeout"
+    end
+
+    test "every reason the store tree builds has one" do
+      # Scanned rather than listed: a tuple added to the store with no clause
+      # here is exactly the drift this fold-in exists to stop, and it would
+      # otherwise only surface when something rendered it.
+      built =
+        ["store.ex", "store/migrator.ex", "store/watcher.ex"]
+        |> Enum.map(&Path.join(Path.expand("../../lib/tend", __DIR__), &1))
+        |> Enum.map(&File.read!/1)
+        |> Enum.flat_map(&Regex.scan(~r/\{:error, \{:(\w+),/, &1))
+        |> Enum.map(fn [_whole, tag] -> String.to_atom(tag) end)
+        |> Enum.uniq()
+        |> Enum.sort()
+
+      assert built == Enum.sort(Enum.map(@store_reasons, &elem(&1, 0)))
+    end
+
+    test "each renders whatever shape of cause the layer underneath hands back" do
+      for reason <- @store_reasons, cause <- [:enoent, "a string", %RuntimeError{}, {:odd, 1}] do
+        rendered = reason |> put_cause(cause) |> Error.message()
+        assert is_binary(rendered) and rendered != ""
+      end
+    end
+
+    @tag :tmp_dir
+    test "a real Tend.Store.open/1 failure renders through message/1", %{tmp_dir: tmp_dir} do
+      # Not a hypothetical tuple: a store opened beneath a regular file cannot
+      # create its directory, and this is the reason it returns.
+      blocker = Path.join(tmp_dir, "not-a-directory")
+      File.write!(blocker, "")
+      path = Path.join([blocker, "db", "tend.db"])
+
+      assert {:error, {:db_directory_failed, dir, cause} = reason} = Store.open(path)
+      assert dir == Path.dirname(path)
+      assert Error.message(reason) == "creating db directory #{dir}: #{cause}"
     end
   end
 

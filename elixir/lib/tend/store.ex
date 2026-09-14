@@ -70,8 +70,10 @@ defmodule Tend.Store do
 
   Idempotent: opening a database that is already current runs no migration.
 
-  Errors come back as `{:error, reason}` with a descriptive term. They will be
-  folded into `Tend.Error` once that module exists on this branch's siblings.
+  Errors come back as `{:error, reason}` with a descriptive term, and every
+  one of them is a `t:Tend.Error.t/0`: `Tend.Error.message/1` renders
+  `:db_directory_failed`, `:db_open_failed`, `:pragma_failed`,
+  `:migration_failed` and `:query_failed`.
   """
   @spec open(String.t()) :: {:ok, t()} | {:error, term()}
   def open(path) do
