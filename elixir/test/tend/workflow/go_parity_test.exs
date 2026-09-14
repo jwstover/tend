@@ -86,9 +86,9 @@ defmodule Tend.Workflow.GoParityTest do
   describe "sentinel errors" do
     test "the Go sources really do define the sentinels we think they do" do
       # Guards the regex itself: if it silently stopped matching, every other
-      # assertion in this block would pass vacuously. All ten are in
+      # assertion in this block would pass vacuously. All eleven are in
       # workflow.go; status.go defines none.
-      assert length(go_sentinels()) == 10
+      assert length(go_sentinels()) == 11
       assert scan_sentinels(go_source("status.go")) == []
     end
 
