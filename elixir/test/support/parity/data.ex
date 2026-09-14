@@ -15,6 +15,34 @@ defmodule Tend.Template.Parity.Data do
     * `one` and `three` differ from `full` only in `Outcomes`, so a
       `{{range $i, $o := .Outcomes}}` can be checked at zero, one and several
       elements
+
+  ## What this corpus cannot reach
+
+  The Go side of the comparison is a *typed* struct, and that is not a detail
+  of the harness -- it is what `internal/workflow`'s `PromptData` is. So every
+  field here has a type on both sides, and a whole class of divergence is out
+  of the corpus's reach by construction:
+
+    * **an Elixir `nil` field.** Go's zero value for `Outcomes []string` is a
+      nil slice, which prints `[]` and ranges as empty. An Elixir `nil` models
+      Go's nil *interface*, which prints `<no value>`. The two are different
+      Go values, so no data set can be nil on the Elixir side and nil on the
+      Go side at once: these sets use `[]` and `""`, the zero-valued struct's
+      spelling, and `Tend.Template.Renderer`'s `nil` paths -- the `{{range}}`
+      that sub-task #321 fixed among them -- are never entered from here.
+      Reverting that fix leaves this corpus green; it is
+      `test/tend/template/renderer_go_parity_test.exs` that catches it.
+    * **a field of a type `PromptData` has not got**, such as a map (`range`
+      over a map sorts its keys) or a pointer that can be nil.
+    * **anything that is not a `prompt_md`.** No `{{template}}`, `{{block}}`
+      or `{{define}}`, because `RenderPrompt` parses one unnamed template and
+      a stored prompt has nowhere to define another.
+
+  Those live in `test/tend/template/renderer_go_parity_test.exs` and its
+  neighbours, where a `want` captured from Go can be asserted against a plain
+  map with whatever shape the case needs. What this corpus settles is the
+  other question, and the one no hand-written test can: that every prompt a
+  user actually has renders to the bytes Go gives it.
   """
 
   alias Tend.Template.Parity.PromptData

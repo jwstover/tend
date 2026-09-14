@@ -20,6 +20,13 @@ defmodule Tend.Template.Parity.Corpus do
   Each template is paired with every data set in `Tend.Template.Parity.Data`,
   so a prompt is rendered against an empty `PromptData` and a populated one
   and both arms of the usual `{{if .Feedback}}` are walked.
+
+  On top of those two sources there is `extra_templates/0`: a short list of
+  constructs a stored `prompt_md` can be written in that no `*_test.go` in
+  this repo happens to contain. They are kept here rather than added to a Go
+  test file because the Go tree is the one that ships and its test suite is
+  not this port's to grow. `Tend.Template.Parity.Data` says what the corpus
+  can and cannot reach even with them.
   """
 
   alias Tend.Template.Parity.Data
@@ -30,22 +37,46 @@ defmodule Tend.Template.Parity.Corpus do
   @spec golden_path() :: binary()
   def golden_path, do: @golden
 
+  # Templates the repo's Go tests do not write. `range` with an `{{else}}` arm
+  # is the whole of it: 11 of the repo's templates use `range` and not one of
+  # them has an `{{else}}`, so the arm Go takes for an empty sequence was
+  # never rendered by this corpus at all -- including the integer `range` Go
+  # 1.22 added, which `{{range .Iteration}}` reaches from a stored prompt.
+  @extra_templates [
+    "{{range .Outcomes}}- {{.}}\n{{else}}none\n{{end}}",
+    "{{range $i, $s := .Subtasks}}{{$i}}:{{$s.Title}}\n{{else}}no subtasks\n{{end}}",
+    "{{range .Iteration}}.{{else}}not started{{end}}"
+  ]
+
   @doc """
-  Every template in the repo's Go test fixtures, paired with every data set.
+  The templates in `repo_cases/0` that come from this module rather than from
+  a Go test file. See the moduledoc for why they are here.
+  """
+  @spec extra_templates() :: [binary()]
+  def extra_templates, do: @extra_templates
+
+  @doc """
+  Every template the repo has to offer, paired with every data set: the ones
+  scanned out of its Go test fixtures, plus `extra_templates/0`.
 
   Ordered by template then data set, so the golden file has a stable diff.
   """
   @spec repo_cases() :: [map()]
   def repo_cases do
-    repo_root()
-    |> Path.join("**/*_test.go")
-    |> Path.wildcard()
-    |> Enum.sort()
-    |> Enum.flat_map(&templates_in/1)
+    from_go_tests =
+      repo_root()
+      |> Path.join("**/*_test.go")
+      |> Path.wildcard()
+      |> Enum.sort()
+      |> Enum.flat_map(&templates_in/1)
+
+    (from_go_tests ++ @extra_templates)
     |> Enum.uniq()
     |> Enum.sort()
-    |> Enum.flat_map(&cases_for("repo", &1))
+    |> Enum.flat_map(&cases_for(label(&1), &1))
   end
+
+  defp label(template), do: if(template in @extra_templates, do: "extra", else: "repo")
 
   @doc """
   Every `prompt_md` row in the `tend.db` at `path`, paired with every data
