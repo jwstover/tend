@@ -85,11 +85,23 @@ defmodule Tend.Template.RenderError do
       be invoked as function` for a field, `X is not a method but has
       arguments` for a map key, and `can't give argument to non-function X`
       for a literal, `$`, the cursor or a parenthesised pipeline
-    * `:unsupported` -- a construct the renderer does not implement yet.
-      Every one of these belongs to the builtins-and-pipelines sub-task
-      (functions, multi-stage pipelines, variable declarations); when that
-      lands, this reason should stop being reachable for anything a stored
-      prompt contains
+    * `:undefined_function` -- a bare word that is not one of the built-ins
+      in `Tend.Template.Funcs`; `function "x" not defined`. Go resolves
+      function names while *parsing* and refuses an unknown one there, so
+      this is the one message of the set that Go words the same way but
+      raises at a different moment
+    * `:wrong_args` -- a built-in called with the wrong number of arguments;
+      `wrong number of args for eq: want at least 1 got 0`
+    * `:call_error` -- a built-in that was called and failed, wrapped the way
+      Go wraps it: `error calling eq: incompatible types for comparison:
+      integer and float`
+    * `:undefined_variable` -- `undefined variable: $x`. The parser tracks
+      declarations and refuses an undeclared *read*, so `{{$x}}` with no
+      `{{$x := ...}}` above it never reaches the renderer. An undeclared
+      *assignment target* does: `{{$y = 1}}` and `{{range $i, $o = .L}}`
+      both parse, because the grammar cannot tell an assignment's left-hand
+      side from a declaration's, and Go's `setVar` refuses them at render
+      time. That is what raises this
   """
 
   alias Tend.Template.AST
@@ -102,7 +114,10 @@ defmodule Tend.Template.RenderError do
           | :nil_data
           | :not_iterable
           | :bad_command
-          | :unsupported
+          | :undefined_function
+          | :wrong_args
+          | :call_error
+          | :undefined_variable
 
   @type t :: %__MODULE__{
           reason: reason(),
