@@ -13,15 +13,19 @@ defmodule Tend.GoParityTest do
   use ExUnit.Case, async: true
 
   alias Tend.Task.DayNotes
+  alias Tend.Task.Event
   alias Tend.Task.LogEntry
+  alias Tend.Task.MovedItem
   alias Tend.Task.NoteGroup
   alias Tend.Task.Project
   alias Tend.Task.Session
+  alias Tend.Task.Summary
+  alias Tend.Task.SummaryItem
 
-  # The Go package this part of the port covers. Its sibling files (brief.go,
-  # event.go) belong to later parts and are deliberately not read.
+  # The Go package this part of the port covers. Its one remaining sibling
+  # (brief.go) belongs to a later part and is deliberately not read.
   @go_dir Path.expand("../../../internal/task", __DIR__)
-  @go_files ["task.go", "project.go", "session.go", "log.go"]
+  @go_files ["task.go", "project.go", "session.go", "event.go", "log.go"]
 
   defp go_source(file) do
     path = Path.join(@go_dir, file)
@@ -109,6 +113,16 @@ defmodule Tend.GoParityTest do
       assert elixir_fields(%Session{}) == expected_fields("session.go", "Session")
     end
 
+    test "Tend.Task.Event has the fields of Go's task.Event" do
+      assert elixir_fields(%Event{}) == expected_fields("event.go", "Event")
+    end
+
+    test "the summary structs have the fields of their Go counterparts" do
+      assert elixir_fields(%Summary{}) == expected_fields("event.go", "Summary")
+      assert elixir_fields(%SummaryItem{}) == expected_fields("event.go", "SummaryItem")
+      assert elixir_fields(%MovedItem{}) == expected_fields("event.go", "MovedItem")
+    end
+
     test "the log structs have the fields of their Go counterparts" do
       assert elixir_fields(%LogEntry{}) == expected_fields("log.go", "LogEntry")
       assert elixir_fields(%NoteGroup{}) == expected_fields("log.go", "NoteGroup")
@@ -135,6 +149,26 @@ defmodule Tend.GoParityTest do
 
       assert names != []
       assert Enum.map(Tend.Task.SessionStatus.all(), &Tend.Task.SessionStatus.format/1) == names
+    end
+
+    test "the event kinds are the Go EventKind constants" do
+      names =
+        ~r/Event(\w+)\s+EventKind = "(\w+)"/
+        |> Regex.scan(go_source("event.go"))
+        |> Enum.map(fn [_whole, _const, name] -> name end)
+
+      assert names != []
+      assert Enum.map(Event.kinds(), &Event.format_kind/1) == names
+    end
+  end
+
+  describe "labels" do
+    test "the top-level label is Go's TopLevelLabel, verbatim" do
+      [_whole, label] =
+        Regex.run(~r/\nconst TopLevelLabel = "([^"]*)"\n/, go_source("event.go")) ||
+          flunk("no `const TopLevelLabel` in event.go")
+
+      assert Event.top_level_label() == label
     end
   end
 end
