@@ -31,7 +31,6 @@ defmodule Tend.Template.Parity.BannerExclusionTest do
   alias Tend.Template.Parity.Banner
   alias Tend.Template.Parity.Go
 
-  @tag :review_318
   test "does not claim live Go checked the recording when the :go tag is excluded" do
     if Go.available?() do
       original = Keyword.get(ExUnit.configuration(), :exclude, [])

@@ -120,13 +120,13 @@ defmodule Tend.Template.Parity.BannerTest do
       end
     end
 
-    test "does not report live Go until the :go-tagged test has said it ran" do
-      # `Parity.plan/0` reads a fact recorded by that test, so a plan taken
-      # from a run that excluded it -- as this suite's own `--exclude go`
-      # invocation does -- cannot come back `:ran`.
-      if :go in Keyword.get(ExUnit.configuration(), :exclude, []) do
-        assert Parity.plan().live_go == :not_run
-      end
-    end
+    # There is deliberately no "plan/0 does not report live Go unless the
+    # :go test ran" test here. Every version of it has to ask whether the
+    # tag is excluded in *this* invocation, and on any machine with Go --
+    # including CI, which pins a toolchain -- that is false, so the body
+    # never executes and the test asserts nothing where it matters. The
+    # discriminating coverage lives in
+    # `Tend.Template.Parity.BannerExclusionTest`, which is `async: false`
+    # and reconfigures the filter itself rather than hoping for one.
   end
 end
