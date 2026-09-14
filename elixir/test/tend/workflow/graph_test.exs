@@ -8,6 +8,16 @@ defmodule Tend.Workflow.GraphTest do
   the port. It is covered here through `validate/3`'s `:prompt_validator`, the
   seam the prompt part plugs into, plus a test that pins what the default does
   until then.
+
+  The Go table is faithful but not complete: several of its cases are named for
+  a rule they do not actually isolate, so the rule could be wrong and the table
+  would still pass. The cases after it -- `"the hand-off cue"` and
+  `"rules the Go table names but does not isolate"` -- are not in
+  `graph_test.go`; each one is red if the rule it names is mutated, and every
+  expectation in them is Go's, taken from running the real `workflow.Validate`
+  over the same steps and edges. `"divergences from Go"` pins the two places
+  the port knowingly answers differently, so closing the gap is a visible
+  change rather than a silent one.
   """
 
   use ExUnit.Case, async: true
@@ -342,6 +352,114 @@ defmodule Tend.Workflow.GraphTest do
     ]
   end
 
+  # Every case below runs a two-step graph whose first step carries the prompt
+  # under test and whose second routes something back, so the only problems
+  # that can come out are the prompt mentions.
+  defp agent(id, name, prompt_md),
+    do: %Step{id: id, name: name, kind: :agent, prompt_md: prompt_md}
+
+  defp messages(steps, edges),
+    do: steps |> Graph.validate(edges) |> Enum.map(&Problem.format/1)
+
+  defp routed_elsewhere(prompt_md, outcomes) do
+    steps = [agent(1, "a", prompt_md), agent(2, "b", "Do it.")]
+
+    edges =
+      [%Edge{from_step_id: 1, outcome: "done", to_step_id: 2}] ++
+        Enum.map(
+          outcomes,
+          &%Edge{from_step_id: 2, outcome: &1, to_step_id: 1, max_iterations: 1}
+        )
+
+    messages(steps, edges)
+  end
+
+  # The Go table reaches the cue through "finish with ...", "finish_step with
+  # outcome `...`" and "set the outcome to ...", but every one of those cases
+  # is also carried by a quoted outcome or by the singular alternative, so each
+  # of `outcomes?`, `finish(?:_step)?` and the `;` in `[^.;\n]*` can be cut
+  # from the pattern with the table still green. go_parity_test.exs pins the
+  # literal on both sides; these pin what it means.
+  describe "the hand-off cue" do
+    test "the plural cue word introduces an outcome" do
+      assert routed_elsewhere("outcomes are escalate and approve", ["escalate"]) == [
+               ~s(a: prompt mentions "approve" but no edge routes it),
+               ~s(a: prompt mentions "escalate" but no edge routes it)
+             ]
+    end
+
+    test "finish_step introduces an outcome with no quoting at all" do
+      assert routed_elsewhere("finish_step escalate", ["escalate"]) == [
+               ~s(a: prompt mentions "escalate" but no edge routes it)
+             ]
+    end
+
+    test "a semicolon ends a cue, so what follows it is prose again" do
+      assert routed_elsewhere("finish now; escalate later", ["escalate"]) == []
+    end
+  end
+
+  describe "rules the Go table names but does not isolate" do
+    # The table's "a routed outcome containing a shorter one" routes only one
+    # outcome, so mask_outcomes' longest-first sort is unobservable there:
+    # reversing it leaves the table green. Two routed outcomes on one step, one
+    # a suffix of the other, make it observable -- masking "y" first would
+    # leave the "x" of "x y" visible and reported.
+    test "mask_outcomes blanks the longest routed outcome first" do
+      steps = [agent(1, "a", "finish with x y"), agent(2, "b", "Do it.")]
+
+      edges = [
+        %Edge{from_step_id: 1, outcome: "y", to_step_id: 2},
+        %Edge{from_step_id: 1, outcome: "x y", to_step_id: 2},
+        %Edge{from_step_id: 2, outcome: "x", to_step_id: 1, max_iterations: 1}
+      ]
+
+      assert messages(steps, edges) == []
+    end
+
+    # The table's "done is never vocabulary" case names done outside any cue
+    # and routes no done edge, so done never enters the vocabulary either way.
+    # It has to be named in a hand-off context, by a step that does not route
+    # it, while some other step's edge does -- otherwise letting done into the
+    # vocabulary changes nothing.
+    test "done named in a hand-off cue is still not vocabulary" do
+      assert done_is_not_vocabulary("finish with done") == []
+    end
+
+    test "done in backticks is not a mention either" do
+      assert done_is_not_vocabulary("Say `done` when finished.") == []
+    end
+  end
+
+  defp done_is_not_vocabulary(prompt_md) do
+    steps = [agent(1, "a", prompt_md), agent(2, "b", "Do it.")]
+
+    edges = [
+      %Edge{from_step_id: 1, outcome: "other", to_step_id: 2},
+      %Edge{from_step_id: 2, outcome: "done", to_step_id: 1, max_iterations: 1}
+    ]
+
+    messages(steps, edges)
+  end
+
+  describe "divergences from Go" do
+    # Go's RE2 folds Unicode under (?i); PCRE without UCP folds ASCII only, so
+    # these two graphs are the whole of the gap. See Tend.Workflow.Graph's
+    # module doc. Both assert what the port does, not what Go does -- the day
+    # the folding is closed, both go red and say so.
+    test "a pure-ASCII outcome diverges when the prompt carries a folding rune" do
+      # Go folds U+017F LATIN SMALL LETTER LONG S onto "s", reads the quoted
+      # "ſtop" as the routed-elsewhere outcome "stop", and reports
+      #   a: prompt mentions "stop" but no edge routes it
+      assert routed_elsewhere(~s(Say "ſtop" when done.), ["stop"]) == []
+    end
+
+    test "an outcome whose own letters are outside ASCII diverges when quoted" do
+      # Go reports: a: prompt mentions "café" but no edge routes it
+      assert routed_elsewhere(~s(Say "CAFÉ" when done.), ["café"]) == []
+    end
+  end
+
   describe "problem order" do
     test "is authoring order, and within a step edges before prompt mentions" do
       {steps, _edges} = review_loop()
@@ -401,6 +519,20 @@ defmodule Tend.Workflow.GraphTest do
              ]
 
       assert messages.(["block", "escalate"]) == messages.(["escalate", "block"])
+    end
+
+    test "holds past the 32 keys a map keeps in term order" do
+      # The case above has a five-entry vocabulary, and Elixir keeps a map of
+      # at most 32 keys in term order, so it would pass even if the port
+      # iterated the vocabulary rather than sorting it. Sixty outcomes, given
+      # shuffled, is past that: the sort in prompt_problems/4 is the only thing
+      # putting these in Go's order.
+      words = for i <- 0..59, do: "out#{String.pad_leading("#{i}", 2, "0")}"
+      shuffled = Enum.shuffle(words)
+
+      want = Enum.map(Enum.sort(words), &~s(a: prompt mentions "#{&1}" but no edge routes it))
+
+      assert routed_elsewhere("finish with " <> Enum.join(shuffled, " or "), shuffled) == want
     end
   end
 

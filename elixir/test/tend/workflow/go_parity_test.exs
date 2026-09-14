@@ -43,6 +43,16 @@ defmodule Tend.Workflow.GoParityTest do
 
   defp go_sources, do: Enum.map_join(@go_files, "\n", &go_source/1)
 
+  # The port's own source, for the checks that have to pin a literal on both
+  # sides rather than trusting that a Go-side grep also constrains Elixir.
+  @elixir_dir Path.expand("../../../lib/tend", __DIR__)
+
+  defp elixir_source(file) do
+    path = Path.join(@elixir_dir, file)
+    assert File.exists?(path), "expected the Elixir source at #{path}"
+    File.read!(path)
+  end
+
   # Every `ErrX = errors.New("...")` or `ErrX = fmt.Errorf("...")` in the files
   # this part covers, as {"ErrX", "message"}. Same rule as the task parity
   # test: which constructor built it is the author's choice, not a distinction
@@ -240,8 +250,24 @@ defmodule Tend.Workflow.GoParityTest do
     # The TUI's validate action renders a problem verbatim, so the message text
     # is the port's contract. These read the format strings out of Go's
     # Validate rather than trusting a copy of them here: a rule added on the Go
-    # side -- the permission-mode one under review when this landed, say --
-    # fails this test, which is how the port hears about it.
+    # side fails this test, which is how the port hears about it.
+    #
+    # One such rule is already known and owed. PR #75,
+    # feat/validate-permission-mode, was OPEN against main when this landed; it
+    # adds a seventh add(st, ...) to Validate, before the "%v" below:
+    #
+    #   "no permission mode: a headless step denies every tool call that would
+    #    need approval; set one on the step (acceptEdits, or bypassPermissions
+    #    for a step that runs commands)"
+    #
+    # This branch ports the committed graph.go only, so Tend.Workflow.Graph
+    # does not have that rule and this list does not carry that format.
+    # Whichever of #75 and this branch merges second turns this test red on
+    # every PR, by design -- a loud gap rather than a silent one. Closing it in
+    # the rebase: add the format to the list below, in Go's source order (fifth,
+    # ahead of "%v"), and add the clause it comes from at the head of
+    # Tend.Workflow.Graph's prompt_problems/4 agent body, ahead of the injected
+    # prompt check. Tend.Workflow.Step already carries permission_mode.
     test "Validate's message formats are the ones the port reproduces" do
       assert go_validate_formats() == [
                "unreachable: no edge leads here",
@@ -320,10 +346,16 @@ defmodule Tend.Workflow.GoParityTest do
     end
 
     test "the hand-off cue is the Go regexp, verbatim" do
-      # The port writes the same pattern as an Elixir sigil, so a change to
-      # either side has to be made on both.
-      assert go_source("graph.go") =~
-               "`(?i)\\b(?:finish(?:_step)?|outcomes?)\\b[^.;\\n]*`"
+      # Asserted on BOTH sides, so a change to either has to be made on both.
+      # Grepping only Go would leave @handoff_cue free to drift -- dropping
+      # the plural alternative, or the finish_step one, or the semicolon from
+      # the sentence terminators all pass every behavioural test the Go table
+      # ports, which is why graph_test.exs's "the hand-off cue" cases exist
+      # alongside this one.
+      pattern = ~S<(?i)\b(?:finish(?:_step)?|outcomes?)\b[^.;\n]*>
+
+      assert go_source("graph.go") =~ "`" <> pattern <> "`"
+      assert elixir_source("workflow/graph.ex") =~ "~r/" <> pattern <> "/"
     end
   end
 
