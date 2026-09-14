@@ -140,11 +140,17 @@ func newLiveRun(t *testing.T, s *store.Store, st workflow.RunState) liveRun {
 // gate step run current, the run waiting for review.
 func (l *liveRun) atGate(t *testing.T, s *store.Store) {
 	t.Helper()
+	l.atGateWith(t, s, "PR #7")
+}
+
+// atGateWith is atGate with the deliverable the gate is handed as input.
+func (l *liveRun) atGateWith(t *testing.T, s *store.Store, input string) {
+	t.Helper()
 	ctx := context.Background()
-	if err := s.FinishStepRun(ctx, l.stepRun.ID, "done", "PR #7"); err != nil {
+	if err := s.FinishStepRun(ctx, l.stepRun.ID, "done", input); err != nil {
 		t.Fatalf("FinishStepRun: %v", err)
 	}
-	sr, err := s.CreateStepRun(ctx, workflow.StepRun{RunID: l.run.ID, StepID: l.gate.ID, Input: "PR #7"})
+	sr, err := s.CreateStepRun(ctx, workflow.StepRun{RunID: l.run.ID, StepID: l.gate.ID, Input: input})
 	if err != nil {
 		t.Fatalf("CreateStepRun(gate): %v", err)
 	}
@@ -377,6 +383,78 @@ func TestRunViewShowsStepsAndLog(t *testing.T) {
 	m = drive(t, m, esc())
 	if m.(app).mode != modeList {
 		t.Error("esc did not leave the run view")
+	}
+}
+
+// Long log lines wrap to the log pane rather than running off its edge:
+// tab-indented code counts its tabs, and the lines are wrapped again when
+// the terminal narrows, so a word at the end of a long line stays on
+// screen either way.
+func TestRunViewLogWrapsToPane(t *testing.T) {
+	stubRunnerAlive(t, true)
+	m, s := newTestApp(t)
+	l := newLiveRun(t, s, workflow.RunRunning)
+	long := "The scheduler drops the tick when the queue is empty, which is why the second worker never wakes up and the run parks forever on the gate ENDMARK"
+	code := "\t\tif len(queue) == 0 {\n\t\t\treturn fmt.Errorf(\"scheduler: the queue drained before the second worker woke, so nothing ticks TABMARK\")"
+	fixture := stepLogFixture +
+		`{"type":"assistant","message":{"content":[{"type":"text","text":` + strconv.Quote(long) + `}]}}` + "\n" +
+		`{"type":"assistant","message":{"content":[{"type":"text","text":` + strconv.Quote(code) + `}]}}` + "\n"
+	if err := os.WriteFile(l.stepRun.LogPath, []byte(fixture), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m = drive(t, m, tea.WindowSizeMsg{Width: 140, Height: 40})
+	m = drive(t, m, refreshMsg{})
+	m = openRun(t, m)
+
+	check := func(width int) {
+		t.Helper()
+		content := ansi.Strip(m.View().Content)
+		for _, want := range []string{"ENDMARK", "TABMARK", "The scheduler drops the tick"} {
+			if !strings.Contains(content, want) {
+				t.Errorf("at width %d the log lost %q:\n%s", width, want, content)
+			}
+		}
+		if strings.Contains(content, "\t") {
+			t.Errorf("at width %d the view still carries a tab:\n%s", width, content)
+		}
+		for _, line := range strings.Split(content, "\n") {
+			if w := ansi.StringWidth(line); w > width {
+				t.Errorf("at width %d a view line is %d wide: %q", width, w, line)
+			}
+		}
+	}
+	check(140)
+
+	// Narrowing the terminal wraps the log again to the smaller pane.
+	m = drive(t, m, tea.WindowSizeMsg{Width: 96, Height: 40})
+	check(96)
+}
+
+// A gate's pane wraps too: the INPUT it shows is the previous step's
+// deliverable, often a long paragraph per line, and it must not be cut at
+// the pane's edge.
+func TestRunViewGateInputWrapsToPane(t *testing.T) {
+	stubRunnerAlive(t, true)
+	m, s := newTestApp(t)
+	l := newLiveRun(t, s, workflow.RunRunning)
+	l.atGateWith(t, s, "DISPATCH PASS 10 PRODUCED NO REVIEWABLE WAVE: the session was killed mid-flight and both implementing agents were stopped before committing, so the next pass starts from the holding commits GATEMARK\n\n\tfunc next() { return holding }")
+	m = drive(t, m, tea.WindowSizeMsg{Width: 140, Height: 40})
+	m = drive(t, m, refreshMsg{})
+	m = openRun(t, m)
+
+	content := ansi.Strip(m.View().Content)
+	for _, want := range []string{"gate is waiting for review", "INPUT", "DISPATCH PASS 10", "GATEMARK", "func next()"} {
+		if !strings.Contains(content, want) {
+			t.Errorf("gate pane lost %q:\n%s", want, content)
+		}
+	}
+	if strings.Contains(content, "\t") {
+		t.Errorf("gate pane still carries a tab:\n%s", content)
+	}
+	for _, line := range strings.Split(content, "\n") {
+		if w := ansi.StringWidth(line); w > 140 {
+			t.Errorf("a view line is %d wide: %q", w, line)
+		}
 	}
 }
 

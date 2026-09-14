@@ -530,16 +530,35 @@ func (lg *runLog) apply(msg runLogLoadedMsg) bool {
 
 // renderLogLines styles and wraps log lines to a pane: tool lines in the
 // accent when rendered (raw lines are left as they are).
+//
+// Tabs are expanded first. The wrapper and the viewport both measure a
+// tab as zero columns while the terminal draws it as up to eight, so a
+// line of tab-indented code -- agents print plenty -- measured as fitting
+// the pane and then ran past its edge.
 func renderLogLines(lines []string, raw bool, width int, s Styles) []string {
 	out := make([]string, 0, len(lines))
 	for _, l := range lines {
-		styled := l
+		styled := expandTabs(l)
 		if !raw && strings.HasPrefix(l, agent.ToolGlyph+" ") {
-			styled = s.Accent.Render(l)
+			styled = s.Accent.Render(styled)
 		}
 		out = append(out, strings.Split(ansi.Wrap(styled, max(width-2, 10), ""), "\n")...)
 	}
 	return out
+}
+
+// logTabWidth is the columns a tab expands to in the log pane.
+const logTabWidth = 4
+
+// expandTabs replaces tabs with spaces and drops carriage returns, the
+// two control characters agent output carries that the terminal would
+// draw differently than the wrapper measures them.
+func expandTabs(s string) string {
+	if !strings.ContainsAny(s, "\t\r") {
+		return s
+	}
+	s = strings.ReplaceAll(s, "\r", "")
+	return strings.ReplaceAll(s, "\t", strings.Repeat(" ", logTabWidth))
 }
 
 // renderRunLog rebuilds the log viewport's content from the selected
@@ -559,7 +578,9 @@ func (a *app) renderRunLog() {
 	case rv.log.path == "":
 		sr := rv.stepRuns[rv.cursor]
 		if rv.stepKinds[sr.StepID] == workflow.StepGate {
-			out = a.gatePaneLines(sr)
+			// A gate's input is the previous step's deliverable, prose
+			// as long as the agent cared to write: wrapped like a log.
+			out = renderLogLines(a.gatePaneLines(sr), true, w, a.styles)
 		} else {
 			out = []string{a.styles.Muted.Render("no log for this step yet")}
 		}
@@ -1371,7 +1392,11 @@ func (a app) runStepsLines(width int) []string {
 	if rv.runnerGone {
 		status += "  " + s.State[task.StateBlocked].Bold(true).Render("runner gone")
 	}
-	lines = append(lines, "  "+status)
+	// The header and status lines are cut to the pane: a line wider than
+	// the pane widens the whole column, and the frame with it, past the
+	// terminal's edge.
+	lines[1] = ansi.Truncate(lines[1], max(width, 1), g.Ellipsis)
+	lines = append(lines, ansi.Truncate("  "+status, max(width, 1), g.Ellipsis))
 	if rv.run.Error != "" {
 		for _, l := range strings.Split(ansi.Wrap(rv.run.Error, max(width-4, 10), ""), "\n") {
 			lines = append(lines, "  "+s.Error.Render(l))

@@ -2265,6 +2265,12 @@ func (a *app) resize() {
 	}
 	a.bodyHeight = max(a.height-chromeTop-bottomHeight, 1)
 	a.sizeRunViewport()
+	if a.mode == modeRun {
+		// The log is wrapped to the pane when rendered, not by the
+		// viewport, so a pane that changed width needs its lines
+		// wrapped again or the viewport cuts them at the new edge.
+		a.renderRunLog()
+	}
 	// A narrowing terminal can take the projects column away underneath
 	// the cursor; focus must not stay on a pane nobody can see.
 	if a.focus == paneProjects && !a.projectsVisible() {
