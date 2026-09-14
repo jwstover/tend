@@ -9,11 +9,12 @@ defmodule Tend.Template do
   the Elixir port speaks Go's template language rather than migrating anyone
   to EEx.
 
-  This module is part one of three: the lexer and the parser. Nothing
-  evaluates a template yet, so `parse/1` has no caller in the tree -- it is a
-  pure internal API with its own tests and no runtime side effects. The
-  renderer and the built-in functions land in their own sub-tasks and
-  pattern-match on the node set in `Tend.Template.AST`, which is closed and
+  This module is parts one and two of three: the lexer and parser, and the
+  renderer. `render/2` has no caller in the tree yet -- the workflow step
+  prompts that will call it land with their own sub-task -- so this is still
+  a pure internal API with its own tests and no runtime side effects. The
+  built-in functions are part three and slot into `Tend.Template.Renderer`
+  without touching the node set in `Tend.Template.AST`, which is closed and
   documented for exactly that reason.
 
   ## What is supported
@@ -32,6 +33,13 @@ defmodule Tend.Template do
       {{.Outcomes | len}}                        pipelines
       {{- .Input -}}                             trim markers
       1  -1.5  0x1f  'a'  "s"  `raw`  true  nil  literals
+
+  The last four lines of that table parse but do not yet *render*: function
+  calls, parenthesised sub-expressions, `|` pipelines and the variables a
+  `:=` binds are the built-ins sub-task's, and `render/2` refuses them with
+  `Tend.Template.RenderError` rather than guessing. `$` needs no declaration
+  and does resolve. Everything above them -- field chains, the cursor,
+  `{{if}}`, `{{range}}`, trim markers and the literals -- renders today.
 
   ## What is not, and why
 
@@ -72,12 +80,29 @@ defmodule Tend.Template do
       iex> {:error, error} = Tend.Template.parse("{{end}}")
       iex> Exception.message(error)
       "template: prompt:1:3: unexpected {{end}} at byte 2"
+
+  `render/2` returns either of the two, since it parses first:
+  `Tend.Template.ParseError` for a template that never had a chance, and
+  `Tend.Template.RenderError` for one that does not fit its data. The Go tree
+  wraps both in the same `ErrInvalidPrompt`, and the sub-task that ports
+  `RenderPrompt` will do the same with one `Tend.Error`.
+
+  ## Rendering against Elixir data
+
+  Go renders against a `PromptData` struct; this renders against any struct
+  or map, resolving `{{.Task.Title}}` to a `"Title"` string key, a `:Title`
+  atom key or an underscored `:title` one, first hit winning.
+  `Tend.Template.Renderer` documents the rule and the two shapes the data has
+  to keep for the output to stay Go's: an empty string is `""` and never
+  `nil`, an empty list is `[]` and never `nil`.
   """
 
   alias Tend.Template.AST
   alias Tend.Template.Lexer
   alias Tend.Template.ParseError
   alias Tend.Template.Parser
+  alias Tend.Template.RenderError
+  alias Tend.Template.Renderer
 
   @doc """
   Parses a `prompt_md` template into a `Tend.Template.AST` node list.
@@ -106,5 +131,36 @@ defmodule Tend.Template do
   @spec parse!(binary()) :: [AST.tree_node()]
   def parse!(source) when is_binary(source) do
     Parser.parse(source, Lexer.tokenize(source))
+  end
+
+  @doc """
+  Parses `source` and renders it against `data`.
+
+  This is `internal/workflow`'s `RenderPrompt` without the `PromptData`: any
+  struct or map will do, and a name the data does not have is an error rather
+  than an empty string.
+
+      iex> Tend.Template.render("Task {{.Task.ID}}: {{.Task.Title}}", %{task: %{id: 42, title: "Fix it"}})
+      {:ok, "Task 42: Fix it"}
+
+      iex> {:error, error} = Tend.Template.render("Hello {{.Nope}}", %{name: "me"})
+      iex> Exception.message(error)
+      ~s(template: prompt:1:9: executing "prompt" at <.Nope>: map has no entry for key "Nope")
+  """
+  @spec render(binary(), term()) ::
+          {:ok, binary()} | {:error, ParseError.t() | RenderError.t()}
+  def render(source, data) when is_binary(source) do
+    {:ok, render!(source, data)}
+  rescue
+    error in [ParseError, RenderError] -> {:error, error}
+  end
+
+  @doc """
+  Same as `render/2`, but raises `Tend.Template.ParseError` or
+  `Tend.Template.RenderError` instead of returning it.
+  """
+  @spec render!(binary(), term()) :: binary()
+  def render!(source, data) when is_binary(source) do
+    Renderer.render(source, parse!(source), data)
   end
 end
