@@ -32,8 +32,30 @@ defmodule Tend.Task.Brief do
   before `Format`). The zone is the machine's, read through `Tend.LocalTime`,
   so `render/1` is pure in its arguments but reads that zone, exactly as its
   Go counterpart does.
+
+  ## Divergences from Go
+
+  Go's timestamps are `time.Time`, whose zero value still formats, and its
+  `State` is a string, whose zero value still has a label. Here both are nil,
+  and nil renders as *nothing* rather than as Go's zero: a missing state is a
+  blank state, a missing log stamp is a blank stamp, and a missing date drops
+  its line the way Go drops a zero one. `render/1` never raises over a value
+  the struct's own defaults allow.
+
+  A `DateTime` before roughly 1970 raises out of `Tend.LocalTime.to_naive/1`,
+  where Go would format it; this is `Tend.LocalTime`'s behaviour, shared with
+  `Tend.Task.LogEntry` and `Tend.Task.Event`, and no task carries such a date.
+
+  Titles print through `Tend.Error.quote_go/1`, this port of Go's `%q`. It
+  agrees with `strconv.Quote` on every rule but one: whether a code point is
+  *printable* is read from the BEAM's Unicode tables, a newer edition than the
+  one Go's are built from, so the 5,812 code points the two editions disagree
+  on print as themselves here where Go still writes `\\uNNNN`. See
+  `Tend.Error.quote_go/1`, which documents the gap and carries the test that
+  measures it; no title a user types falls in it.
   """
 
+  alias Tend.Error
   alias Tend.LocalTime
   alias Tend.Task
   alias Tend.Task.BlockerCount
@@ -227,6 +249,13 @@ defmodule Tend.Task.Brief do
     [heading, Enum.map(shown, &"- #{stamp(&1.created_at)}: #{String.trim(&1.body)}\n")]
   end
 
+  # `%LogEntry{}`'s own default `created_at` is nil, so an entry built by hand
+  # rather than read from the store has no instant to stamp. Blank the stamp
+  # and keep the entry, the way `state_label/1` blanks a missing state: losing
+  # the note's text -- or the whole brief -- over a missing timestamp is worse
+  # than a line that reads `- : note`.
+  defp stamp(nil), do: ""
+
   defp stamp(%DateTime{} = at),
     do: Calendar.strftime(LocalTime.to_naive(at), "%Y-%m-%d %H:%M")
 
@@ -238,35 +267,14 @@ defmodule Tend.Task.Brief do
 
   # Go's zero State is the empty string, and Label leaves it alone; a task that
   # never came from the store renders a blank state rather than blowing up the
-  # whole brief.
+  # whole brief. See "Divergences from Go" above.
   defp state_label(nil), do: ""
   defp state_label(state), do: State.label(state)
 
-  # Go prints titles with %q. This is `strconv.Quote` over the text a title
-  # actually carries: the quote, the backslash and the control characters are
-  # escaped the way Go escapes them, and everything else is passed through.
-  #
-  # The one gap is a code point that is neither a control character nor
-  # printable by Unicode's rules -- a non-breaking space, a bidi mark -- which
-  # Go renders as \uXXXX and this passes through. Reproducing that would mean
-  # carrying Go's printability table, and a task title does not carry those.
-  defp quoted(title) do
-    escaped = for <<codepoint::utf8 <- title>>, into: "", do: escape(codepoint)
-    <<?", escaped::binary, ?">>
-  end
-
-  defp escape(?"), do: "\\\""
-  defp escape(?\\), do: "\\\\"
-  defp escape(?\a), do: "\\a"
-  defp escape(?\b), do: "\\b"
-  defp escape(?\f), do: "\\f"
-  defp escape(?\n), do: "\\n"
-  defp escape(?\r), do: "\\r"
-  defp escape(?\t), do: "\\t"
-  defp escape(?\v), do: "\\v"
-  defp escape(c) when c < 0x20 or c == 0x7F, do: "\\x" <> hex(c)
-  defp escape(c) when c in 0x80..0x9F, do: "\\u00" <> hex(c)
-  defp escape(c), do: <<c::utf8>>
-
-  defp hex(c), do: <<c>> |> Base.encode16(case: :lower)
+  # Go prints titles with %q, and `Tend.Error.quote_go/1` is this port's
+  # `strconv.Quote` -- the same verb, reached from the one place that carries
+  # it, rather than a second copy that would drift from it. Its one residual
+  # divergence, over which code points count as printable, is recorded under
+  # "Divergences from Go" above.
+  defp quoted(title), do: Error.quote_go(title)
 end

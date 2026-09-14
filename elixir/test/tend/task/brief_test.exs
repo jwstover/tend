@@ -327,6 +327,51 @@ defmodule Tend.Task.BriefTest do
              )
     end
 
+    # %q is `strconv.Quote`, not "escape the control characters": a rune that
+    # is unprintable by Unicode's rules is \uNNNN, one past U+FFFF is \UNNNNNNNN,
+    # and a byte that is not valid UTF-8 at all is \xNN on its own -- with the
+    # rest of the title still following it, not truncated at it. Verified
+    # against Go's %q over the same strings.
+    test "titles Go escapes past the control characters are escaped, not passed through or truncated" do
+      for {title, quoted} <- [
+            {"x" <> <<0xFF>> <> "y", ~S|"x\xffy"|},
+            {"a\u{A0}b", ~S|"a\u00a0b"|},
+            {"\u{FEFF}head", ~S|"\ufeffhead"|},
+            {"soft\u{AD}hyphen", ~S|"soft\u00adhyphen"|},
+            {"note \u{1D173}", ~S|"note \U0001d173"|},
+            {"café", ~S|"café"|}
+          ] do
+        brief = %Brief{
+          task: %Task{id: 1, title: "x", state: :todo},
+          blocking: [%Task{id: 2, title: title, state: :todo}]
+        }
+
+        assert String.contains?(Brief.render(brief), "- #2 #{quoted} (todo)\n"),
+               "title #{inspect(title)} did not render as #{quoted}"
+      end
+    end
+
+    # The preamble quotes the task's own title with the same verb, so an
+    # invalid byte there must not swallow the rest of the title either.
+    test "an invalid UTF-8 byte in the task's own title is escaped, not truncated" do
+      got = Brief.render(%Brief{task: %Task{id: 1, title: "x" <> <<0xFF>> <> "y", state: :todo}})
+
+      assert String.contains?(got, ~S|bound to tend task #1: "x\xffy".|)
+    end
+
+    # `%LogEntry{}`'s default `created_at` is nil, so an entry built by hand
+    # reaches the stamp with no instant. Blank the stamp and keep the note
+    # rather than taking the whole brief down, the way `state_label/1` blanks a
+    # missing state.
+    test "a log entry with no timestamp renders a blank stamp rather than raising" do
+      brief = %Brief{
+        task: %Task{id: 1, title: "x", state: :todo},
+        log: [%LogEntry{body: "note"}]
+      }
+
+      assert String.contains?(Brief.render(brief), "- : note\n")
+    end
+
     test "a body of nothing but whitespace reads as no description" do
       brief = %Brief{task: %Task{id: 1, title: "x", state: :todo, body_md: "   \n\n  "}}
 
