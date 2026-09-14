@@ -278,10 +278,17 @@ defmodule Tend.Template.Parity.Corpus do
   defp unescape(?b, rest), do: {"\b", rest}
   defp unescape(?f, rest), do: {"\f", rest}
   defp unescape(?v, rest), do: {"\v", rest}
-  defp unescape(?0, rest), do: {<<0>>, rest}
   defp unescape(?\\, rest), do: {"\\", rest}
   defp unescape(?", rest), do: {"\"", rest}
   defp unescape(?', rest), do: {"'", rest}
+
+  # Go's octal escape is exactly three digits -- `"\101"` is `"A"` and
+  # `"\000"` is a NUL -- so it cannot be read a digit at a time. Anything else
+  # starting with a digit is not a legal Go escape at all, and falls to the
+  # clause below that keeps the character as written.
+  defp unescape(digit, <<second, third, rest::binary>>)
+       when digit in ?0..?7 and second in ?0..?7 and third in ?0..?7,
+       do: {<<String.to_integer(<<digit, second, third>>, 8)>>, rest}
 
   defp unescape(?x, <<digits::binary-size(2), rest::binary>>),
     do: {<<String.to_integer(digits, 16)>>, rest}
