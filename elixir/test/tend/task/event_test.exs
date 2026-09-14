@@ -12,22 +12,16 @@ defmodule Tend.Task.EventTest do
     %Event{task_id: task_id, task_title: title, kind: :project, old: from, new: to}
   end
 
-  # Go's time.Date(..., time.FixedZone("test", -7*3600)): an instant that knows
-  # its own offset and nothing else.
-  defp at(year, month, day, hour) do
-    %DateTime{
-      year: year,
-      month: month,
-      day: day,
-      hour: hour,
-      minute: 0,
-      second: 0,
-      microsecond: {0, 0},
-      time_zone: "test",
-      zone_abbr: "test",
-      utc_offset: -7 * 3600,
-      std_offset: 0
-    }
+  # Go's window tests write their timestamps in a location and expect the same
+  # one back; the port's window is the machine's local one and its instants are
+  # UTC, so the instant a local wall clock names is computed here by the
+  # inverse of the conversion the module under test performs. Neither side
+  # hard-codes an offset, so these hold in whatever zone the suite runs under.
+  defp local(year, month, day, hour) do
+    [utc | _ambiguous] =
+      :calendar.local_time_to_universal_time_dst({{year, month, day}, {hour, 0, 0}})
+
+    utc |> NaiveDateTime.from_erl!() |> DateTime.from_naive!("Etc/UTC")
   end
 
   describe "the struct" do
@@ -241,14 +235,14 @@ defmodule Tend.Task.EventTest do
   end
 
   describe "last_workday_start/1" do
-    test "steps back over the weekend to the previous weekday's midnight" do
+    test "steps back over the weekend to the previous weekday" do
       cases = [
         # Monday morning reports Friday.
-        {at(2026, 7, 6, 9), at(2026, 7, 3, 0)},
+        {local(2026, 7, 6, 9), local(2026, 7, 3, 0)},
         # Tuesday reports Monday.
-        {at(2026, 7, 7, 9), at(2026, 7, 6, 0)},
+        {local(2026, 7, 7, 9), local(2026, 7, 6, 0)},
         # Sunday reports Friday too.
-        {at(2026, 7, 5, 9), at(2026, 7, 3, 0)}
+        {local(2026, 7, 5, 9), local(2026, 7, 3, 0)}
       ]
 
       for {now, want} <- cases do
@@ -258,33 +252,39 @@ defmodule Tend.Task.EventTest do
       end
     end
 
-    test "keeps the offset it was given" do
-      got = Event.last_workday_start(at(2026, 7, 7, 9))
+    test "opens the window at local midnight, the instant Go's does" do
+      got = Event.last_workday_start(local(2026, 7, 7, 9))
 
-      assert got.utc_offset == -7 * 3600
-      assert {got.hour, got.minute, got.second, got.microsecond} == {0, 0, 0, {0, 0}}
+      # Read back through the OS rather than the port, so the two conversions
+      # cannot agree on a shared mistake.
+      local_reading =
+        got
+        |> DateTime.to_naive()
+        |> NaiveDateTime.to_erl()
+        |> :calendar.universal_time_to_local_time()
+
+      assert local_reading == {{2026, 7, 6}, {0, 0, 0}}
     end
   end
 
   describe "window_label/2" do
     test "a window starting yesterday, or today, reads Yesterday" do
-      now = ~U[2026-07-06 09:00:00Z]
+      now = local(2026, 7, 6, 9)
 
-      assert Event.window_label(~U[2026-07-05 00:00:00Z], now) == "Yesterday"
-      assert Event.window_label(~U[2026-07-06 00:00:00Z], now) == "Yesterday"
+      assert Event.window_label(local(2026, 7, 5, 0), now) == "Yesterday"
+      assert Event.window_label(local(2026, 7, 6, 0), now) == "Yesterday"
     end
 
     test "a window starting within the past week reads as its weekday" do
-      assert Event.window_label(~U[2026-07-03 00:00:00Z], ~U[2026-07-06 09:00:00Z]) ==
-               "Since Friday"
+      assert Event.window_label(local(2026, 7, 3, 0), local(2026, 7, 6, 9)) == "Since Friday"
     end
 
     test "a window a week old or more reads as its date" do
       # Exactly seven days is already the date form.
-      assert Event.window_label(~U[2026-06-29 00:00:00Z], ~U[2026-07-06 00:00:00Z]) ==
+      assert Event.window_label(local(2026, 6, 29, 0), local(2026, 7, 6, 0)) ==
                "Since 2026-06-29"
 
-      assert Event.window_label(~U[2026-06-26 00:00:00Z], ~U[2026-07-06 09:00:00Z]) ==
+      assert Event.window_label(local(2026, 6, 26, 0), local(2026, 7, 6, 9)) ==
                "Since 2026-06-26"
     end
   end

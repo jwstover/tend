@@ -23,8 +23,17 @@ defmodule Tend.Task.Event do
   That is also why the struct's `kind` defaults to `""`: Go's zero value is
   `EventKind("")`, and unlike the atom-only enumerations (`Tend.Task.State`,
   `Tend.Task.SessionStatus`) this type can hold it faithfully.
+
+  ## Local time
+
+  The reporting window is a *local* one: `last_workday_start/1` opens it at
+  local midnight and `window_label/2` names it by the local day it opens on,
+  because Go's callers hand `LastWorkdayStart` a `time.Now()` in `time.Local`
+  and it answers in the same zone. Both read the machine's zone through
+  `Tend.LocalTime`, as `Tend.Task.LogEntry` does for the notes they sit beside.
   """
 
+  alias Tend.LocalTime
   alias Tend.Task.MovedItem
   alias Tend.Task.State
   alias Tend.Task.Summary
@@ -229,33 +238,25 @@ defmodule Tend.Task.Event do
   end
 
   @doc """
-  Midnight of the most recent weekday before `t`'s day, so a Monday standup
-  reports Friday.
+  When *local* midnight of the most recent weekday before `t` began, so a
+  Monday standup reports Friday.
 
-  The result keeps `t`'s own offset, which is what Go's
-  `time.Date(..., t.Location())` does for a fixed zone. The port has no time
-  zone database (see `Tend.Task.LogEntry`), so a named zone whose offset
-  changes overnight is resolved with `t`'s offset rather than midnight's; the
-  callers pass UTC or a fixed offset.
+  Both Go callers pass `time.Now()` -- a local wall clock -- and Go answers in
+  that same zone, so the day walked back from, and the midnight returned, are
+  local. `t` is an instant here (`DateTime.utc_now/0` is what a caller has, the
+  port carrying no time zone database), read as the machine's wall clock the
+  way notes are bucketed; see `Tend.LocalTime`. The result comes back in UTC,
+  which is the form the store and `window_label/2` want.
   """
   @spec last_workday_start(DateTime.t()) :: DateTime.t()
   def last_workday_start(%DateTime{} = t) do
-    day =
-      t
-      |> DateTime.to_date()
-      |> Date.add(-1)
-      |> skip_weekend()
-
-    %DateTime{
-      t
-      | year: day.year,
-        month: day.month,
-        day: day.day,
-        hour: 0,
-        minute: 0,
-        second: 0,
-        microsecond: {0, 0}
-    }
+    t
+    |> LocalTime.to_naive()
+    |> NaiveDateTime.to_date()
+    |> Date.add(-1)
+    |> skip_weekend()
+    |> NaiveDateTime.new!(~T[00:00:00])
+    |> LocalTime.from_naive()
   end
 
   defp skip_weekend(day) do
@@ -269,16 +270,19 @@ defmodule Tend.Task.Event do
   and the date otherwise.
 
   The elapsed days are whole days truncated toward zero, as Go's
-  `int(now.Sub(from).Hours() / 24)` is.
+  `int(now.Sub(from).Hours() / 24)` is. The weekday and the date name the
+  *local* day `from` falls on -- Go formats it in its own zone, which for the
+  window `last_workday_start/1` opens is the local one.
   """
   @spec window_label(DateTime.t(), DateTime.t()) :: String.t()
   def window_label(%DateTime{} = from, %DateTime{} = now) do
     days = div(DateTime.diff(now, from, :second), 86_400)
+    local = LocalTime.to_naive(from)
 
     cond do
       days <= 1 -> "Yesterday"
-      days < 7 -> "Since " <> Calendar.strftime(from, "%A")
-      true -> "Since " <> Date.to_iso8601(DateTime.to_date(from))
+      days < 7 -> "Since " <> Calendar.strftime(local, "%A")
+      true -> "Since " <> Date.to_iso8601(NaiveDateTime.to_date(local))
     end
   end
 end
