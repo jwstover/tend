@@ -36,7 +36,19 @@ defmodule Tend.Store.SQLParityTest do
     "set_task_title" => "setTaskTitle",
     "set_task_body" => "setTaskBody",
     "append_task_body" => "appendTaskBody",
-    "delete_task" => "deleteTask"
+    "delete_task" => "deleteTask",
+    "create_workflow" => "createWorkflow",
+    "get_workflow" => "getWorkflow",
+    "get_workflow_by_name" => "getWorkflowByName",
+    "list_workflows" => "listWorkflows",
+    "rename_workflow" => "renameWorkflow",
+    "set_workflow_description" => "setWorkflowDescription",
+    "delete_workflow" => "deleteWorkflow",
+    "list_active_run_ids_for_workflow" => "listActiveRunIDsForWorkflow",
+    "list_steps" => "listSteps",
+    "create_step_full" => "createStepFull",
+    "list_edges_for_workflow" => "listEdgesForWorkflow",
+    "upsert_edge" => "upsertEdge"
   }
 
   # The one statement that is not a byte-for-byte copy. sqlc folded the
