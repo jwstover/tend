@@ -35,7 +35,10 @@ defmodule Tend.Template.Parity do
     * **the recording against live Go** is tagged `:go` and is excluded when
       no Go toolchain is on the `PATH` -- so it runs by default on a machine
       that has Go. It is what stops the recording from quietly drifting away
-      from the Go it claims to be.
+      from the Go it claims to be, and it is what calls `record_live_check/0`
+      -- that call, and not the presence of a `go` binary, is what licenses
+      the banner to say the recording was checked. `mix test --exclude go` is
+      green on a machine with Go, and the banner has to say so.
     * **a real user `tend.db`** cannot be recorded -- the file is one person's
       machine -- so it is tagged `:tend_db` and excluded by default. To run
       it:
@@ -60,13 +63,36 @@ defmodule Tend.Template.Parity do
   @typedoc """
   What this machine can and cannot check, decided once and shared by the
   tests, the mix task and the banner so the three cannot disagree.
+
+  `go` is a *capability* -- is there a toolchain to render against -- and
+  `live_go` is a *fact*: did the `:go`-tagged test that renders through it
+  actually execute in this run. The two are not the same thing, and only the
+  second one licenses saying the recording was checked.
   """
   @type plan :: %{
           go: :available | :missing,
+          live_go: :ran | :not_run,
           repo_cases: non_neg_integer(),
           recorded: non_neg_integer(),
           tend_db: {:run, binary()} | {:skip, binary()}
         }
+
+  # Set by `record_live_check/0` from the `:go`-tagged test, read back by
+  # `plan/0`. `:persistent_term` rather than a process: the banner runs in
+  # `ExUnit.after_suite/1`, after the test process that recorded it is gone,
+  # and the value is written at most once per VM.
+  @live_check_key {__MODULE__, :live_check_ran}
+
+  @doc """
+  Records that the recording really was rendered against live Go in this run.
+
+  Called by the `:go`-tagged test in `Tend.Template.ParityTest`, which is the
+  only thing that does the comparison. Without it the banner can only report
+  that Go is *installed*, which is a claim `mix test --exclude go` falsifies
+  in one word.
+  """
+  @spec record_live_check() :: :ok
+  def record_live_check, do: :persistent_term.put(@live_check_key, true)
 
   @doc """
   What a parity run on this machine would cover.
@@ -79,11 +105,26 @@ defmodule Tend.Template.Parity do
   def plan do
     %{
       go: if(Go.available?(), do: :available, else: :missing),
+      live_go: live_go(),
       repo_cases: length(Corpus.repo_cases()),
       recorded: map_size(Corpus.golden()),
       tend_db: tend_db_plan()
     }
   end
+
+  # Two conditions, and both are needed. The recorded fact alone would still
+  # let `Banner.print/1` claim live Go when it is called from a test that has
+  # itself excluded the tag -- the `:go` test is async and has already run by
+  # then -- and the tag filter alone would still claim it under
+  # `--only some_other_tag`, where `:go` never appears in `:exclude` and the
+  # test never runs either.
+  defp live_go do
+    if live_check_ran?() and not go_tag_excluded?(), do: :ran, else: :not_run
+  end
+
+  defp live_check_ran?, do: :persistent_term.get(@live_check_key, false)
+
+  defp go_tag_excluded?, do: :go in Keyword.get(ExUnit.configuration(), :exclude, [])
 
   defp tend_db_plan do
     path = DBPath.resolve(nil)

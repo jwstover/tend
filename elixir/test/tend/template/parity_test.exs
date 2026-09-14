@@ -93,6 +93,11 @@ defmodule Tend.Template.ParityTest do
     test "is byte for byte what this Go toolchain produces today" do
       drift = Parity.recording_drift(Corpus.repo_cases())
 
+      # The banner reports what ran, and this test is the only thing that
+      # renders the corpus through live Go. Recorded before the assertion so a
+      # failing comparison is still reported as one that happened.
+      Parity.record_live_check()
+
       assert drift == [],
              """
              #{length(drift)} recorded case(s) no longer match the Go toolchain on this \
