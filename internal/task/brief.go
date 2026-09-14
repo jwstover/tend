@@ -3,6 +3,7 @@ package task
 import (
 	"fmt"
 	"strings"
+	"unicode/utf8"
 )
 
 // SessionBrief is everything a Claude Code session launched from a task
@@ -36,6 +37,19 @@ type SessionBrief struct {
 // where the work stands -- and drops the deep history, which a session
 // that needs it can still read over MCP.
 const briefLogLimit = 10
+
+// briefBodyLimit caps the bytes of the task body the brief carries. The
+// body is the one unbounded part of a brief: a task that has logged a few
+// sessions' worth of implementation notes and reviews runs to tens or
+// hundreds of KB, and the brief is sent as system prompt on every request
+// of the session, so an uncapped body would spend a large slice of the
+// context window on every turn (or, past the window, break the session
+// outright). 48KB is roughly 12k tokens: room for a long description and
+// several appended logs, small next to the window. The cut keeps both
+// ends of the body -- the original description at the head and the most
+// recent appended notes at the tail -- and drops the middle, saying so and
+// where to read the whole thing (mcp__tend__get_current_task).
+const briefBodyLimit = 48 << 10
 
 // SessionSystemPrompt renders a brief as the system prompt block an
 // interactive session gets (agent.LaunchOpts.AppendSystemPrompt). It says
@@ -135,11 +149,15 @@ func SessionSystemPrompt(b SessionBrief) string {
 		}
 	}
 
-	sb.WriteString("\n### Description\n\n")
-	if body := strings.TrimSpace(t.BodyMD); body != "" {
-		sb.WriteString(body + "\n")
-	} else {
-		sb.WriteString("(no description)\n")
+	body := strings.TrimSpace(t.BodyMD)
+	switch {
+	case body == "":
+		sb.WriteString("\n### Description\n\n(no description)\n")
+	case len(body) > briefBodyLimit:
+		fmt.Fprintf(&sb, "\n### Description (abridged: %d of %d bytes; the full body is one mcp__tend__get_current_task call away)\n\n", briefBodyLimit, len(body))
+		sb.WriteString(abridgeBody(body, briefBodyLimit) + "\n")
+	default:
+		sb.WriteString("\n### Description\n\n" + body + "\n")
 	}
 
 	if len(b.Log) > 0 {
@@ -156,6 +174,44 @@ func SessionSystemPrompt(b SessionBrief) string {
 	}
 
 	return sb.String()
+}
+
+// abridgeBody cuts a body longer than limit bytes down to its first and
+// last halves of the budget with a marker between them saying how much was
+// left out. Both cuts land on line boundaries where a newline falls within
+// the budget, so no markdown line is split mid-way, and on a rune
+// boundary otherwise, so the result is always valid UTF-8. The head keeps
+// the description the task was written with; the tail keeps the notes
+// appended most recently, which is where an in-progress task's current
+// state lives.
+func abridgeBody(body string, limit int) string {
+	if len(body) <= limit {
+		return body
+	}
+	half := limit / 2
+
+	head := body[:half]
+	if i := strings.LastIndexByte(head, '\n'); i > 0 {
+		head = head[:i]
+	} else {
+		for len(head) > 0 && !utf8.RuneStart(body[len(head)]) {
+			head = head[:len(head)-1]
+		}
+	}
+
+	tail := body[len(body)-half:]
+	if i := strings.IndexByte(tail, '\n'); i >= 0 {
+		tail = tail[i+1:]
+	} else {
+		for len(tail) > 0 && !utf8.RuneStart(tail[0]) {
+			tail = tail[1:]
+		}
+	}
+
+	omitted := len(body) - len(head) - len(tail)
+	return strings.TrimRight(head, "\n") +
+		fmt.Sprintf("\n\n[... %d bytes of the description omitted here to keep the system prompt within budget; read the full body with mcp__tend__get_current_task ...]\n\n", omitted) +
+		strings.TrimLeft(tail, "\n")
 }
 
 // briefRef renders a related task as `#12 "title" (state)`.
