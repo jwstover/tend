@@ -62,7 +62,14 @@ defmodule Tend.Store.SQLParityTest do
     "claim_session_recap" => "claimSessionRecap",
     "set_session_working_if_unchanged" => "setSessionWorkingIfUnchanged",
     "set_session_idle_if_unchanged" => "setSessionIdleIfUnchanged",
-    "set_session_ended_if_unchanged" => "setSessionEndedIfUnchanged"
+    "set_session_ended_if_unchanged" => "setSessionEndedIfUnchanged",
+    "create_child_task" => "createChildTask",
+    "list_child_tasks" => "listChildTasks",
+    "list_child_ids" => "listChildIDs",
+    "set_task_parent" => "setTaskParent",
+    "set_tasks_project" => "setTasksProject",
+    "create_task_event" => "createTaskEvent",
+    "get_project" => "getProject"
   }
 
   # The one statement that is not a byte-for-byte copy. sqlc folded the
@@ -72,7 +79,7 @@ defmodule Tend.Store.SQLParityTest do
   # See the comment above @set_task_state.
   @go_preamble %{"set_task_state" => ";\n\n"}
 
-  @gen_files ~w(tasks sessions workflows)
+  @gen_files ~w(tasks sessions workflows events projects)
 
   defp store_source do
     Corpus.repo_root() |> Path.join("elixir/lib/tend/store.ex") |> File.read!()
