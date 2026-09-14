@@ -31,7 +31,11 @@ defmodule Tend.Template.Parity do
       `test/fixtures/parity/repo_prompts.jsonl`, which is Go's own bytes
       captured by `--update`. It also re-scans the Go test files and fails if
       a template has appeared that the recording has no output for, which is
-      the signal to re-run `--update`.
+      the signal to re-run `--update`. The corpus is those templates plus
+      `Tend.Template.Parity.Corpus.extra_templates/0`, a short list of
+      constructs a stored prompt can use and the Go tests do not --
+      `{{range}}` with an `{{else}}` arm, mostly. What a corpus of typed data
+      still cannot reach is spelled out in `Tend.Template.Parity.Data`.
     * **the recording against live Go** is tagged `:go` and is excluded when
       no Go toolchain is on the `PATH` -- so it runs by default on a machine
       that has Go. It is what stops the recording from quietly drifting away

@@ -188,6 +188,21 @@
 {"data":"sample","ok":true,"output":"2 sub-tasks","template":"{{len .Subtasks}} sub-tasks"}
 {"data":"three","ok":true,"output":"0 sub-tasks","template":"{{len .Subtasks}} sub-tasks"}
 {"data":"zero","ok":true,"output":"0 sub-tasks","template":"{{len .Subtasks}} sub-tasks"}
+{"data":"full","ok":true,"output":"0:write the migration\n1:wire the store\n2:expose over MCP\n","template":"{{range $i, $s := .Subtasks}}{{$i}}:{{$s.Title}}\n{{else}}no subtasks\n{{end}}"}
+{"data":"one","ok":true,"output":"no subtasks\n","template":"{{range $i, $s := .Subtasks}}{{$i}}:{{$s.Title}}\n{{else}}no subtasks\n{{end}}"}
+{"data":"sample","ok":true,"output":"0:sample sub-task\n1:sample blocked sub-task\n","template":"{{range $i, $s := .Subtasks}}{{$i}}:{{$s.Title}}\n{{else}}no subtasks\n{{end}}"}
+{"data":"three","ok":true,"output":"no subtasks\n","template":"{{range $i, $s := .Subtasks}}{{$i}}:{{$s.Title}}\n{{else}}no subtasks\n{{end}}"}
+{"data":"zero","ok":true,"output":"no subtasks\n","template":"{{range $i, $s := .Subtasks}}{{$i}}:{{$s.Title}}\n{{else}}no subtasks\n{{end}}"}
+{"data":"full","ok":true,"output":"...","template":"{{range .Iteration}}.{{else}}not started{{end}}"}
+{"data":"one","ok":true,"output":"not started","template":"{{range .Iteration}}.{{else}}not started{{end}}"}
+{"data":"sample","ok":true,"output":".","template":"{{range .Iteration}}.{{else}}not started{{end}}"}
+{"data":"three","ok":true,"output":"not started","template":"{{range .Iteration}}.{{else}}not started{{end}}"}
+{"data":"zero","ok":true,"output":"not started","template":"{{range .Iteration}}.{{else}}not started{{end}}"}
+{"data":"full","ok":true,"output":"- approve\n- reject\n","template":"{{range .Outcomes}}- {{.}}\n{{else}}none\n{{end}}"}
+{"data":"one","ok":true,"output":"- approve\n","template":"{{range .Outcomes}}- {{.}}\n{{else}}none\n{{end}}"}
+{"data":"sample","ok":true,"output":"- done\n","template":"{{range .Outcomes}}- {{.}}\n{{else}}none\n{{end}}"}
+{"data":"three","ok":true,"output":"- a\n- b\n- c\n","template":"{{range .Outcomes}}- {{.}}\n{{else}}none\n{{end}}"}
+{"data":"zero","ok":true,"output":"none\n","template":"{{range .Outcomes}}- {{.}}\n{{else}}none\n{{end}}"}
 {"data":"full","ok":true,"output":"- approve\n- reject\n","template":"{{range .Outcomes}}- {{.}}\n{{end}}"}
 {"data":"one","ok":true,"output":"- approve\n","template":"{{range .Outcomes}}- {{.}}\n{{end}}"}
 {"data":"sample","ok":true,"output":"- done\n","template":"{{range .Outcomes}}- {{.}}\n{{end}}"}
