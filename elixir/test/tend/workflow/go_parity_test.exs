@@ -13,16 +13,18 @@ defmodule Tend.Workflow.GoParityTest do
 
   alias Tend.Workflow
   alias Tend.Workflow.Edge
+  alias Tend.Workflow.Graph
   alias Tend.Workflow.Run
   alias Tend.Workflow.RunState
   alias Tend.Workflow.Step
   alias Tend.Workflow.StepKind
   alias Tend.Workflow.StepRun
 
-  # The two files this part of the port covers. Their siblings (prompt.go,
-  # graph.go, handoff.go) belong to later parts and are deliberately not read.
+  # The files the workflow parts of the port cover so far. Their siblings
+  # (prompt.go, handoff.go) belong to the last part and are deliberately not
+  # read.
   @go_dir Path.expand("../../../../internal/workflow", __DIR__)
-  @go_files ["workflow.go", "status.go"]
+  @go_files ["workflow.go", "status.go", "graph.go"]
 
   # For the one check that has to look wider than a single part: every domain
   # package whose sentinels could have landed in Tend.Error.
@@ -87,9 +89,10 @@ defmodule Tend.Workflow.GoParityTest do
     test "the Go sources really do define the sentinels we think they do" do
       # Guards the regex itself: if it silently stopped matching, every other
       # assertion in this block would pass vacuously. All eleven are in
-      # workflow.go; status.go defines none.
+      # workflow.go; status.go and graph.go define none.
       assert length(go_sentinels()) == 11
       assert scan_sentinels(go_source("status.go")) == []
+      assert scan_sentinels(go_source("graph.go")) == []
     end
 
     test "each Go sentinel maps to exactly one atom, by the documented rule" do
@@ -231,5 +234,118 @@ defmodule Tend.Workflow.GoParityTest do
         assert RunState.session_status(state) == :error
       end
     end
+  end
+
+  describe "the graph problems" do
+    # The TUI's validate action renders a problem verbatim, so the message text
+    # is the port's contract. These read the format strings out of Go's
+    # Validate rather than trusting a copy of them here: a rule added on the Go
+    # side -- the permission-mode one under review when this landed, say --
+    # fails this test, which is how the port hears about it.
+    test "Validate's message formats are the ones the port reproduces" do
+      assert go_validate_formats() == [
+               "unreachable: no edge leads here",
+               "no edge leaves it; the run would end here, before %s",
+               "edge on %q leads to a step that no longer exists",
+               "%q loops back to %s with no max iterations",
+               # The prompt error, which the port takes from its injected
+               # prompt validator. See Tend.Workflow.Graph's module doc.
+               "%v",
+               "prompt mentions %q but no edge routes it"
+             ]
+    end
+
+    test "the workflow-level problem is the one Go returns for no steps" do
+      [_whole, message] =
+        Regex.run(~r/return \[\]Problem\{\{Msg: "([^"]*)"\}\}/, go_source("graph.go")) ||
+          flunk("no workflow-level Problem literal in graph.go")
+
+      assert [%{msg: ^message}] = Graph.validate([], [])
+    end
+
+    test "every message the port produces is one of Go's formats, and each format is used" do
+      patterns = Enum.map(go_validate_formats(), &format_to_regex/1)
+
+      steps = [
+        %Step{id: 1, name: "implement", kind: :agent, prompt_md: "finish with approve."},
+        %Step{id: 2, name: "review", kind: :agent, prompt_md: "Review it."},
+        %Step{id: 3, name: "ship", kind: :agent, prompt_md: "Open the PR."}
+      ]
+
+      edges = [
+        %Edge{from_step_id: 1, outcome: "reject", to_step_id: 1},
+        %Edge{from_step_id: 1, outcome: "done", to_step_id: 99}
+      ]
+
+      broken = fn _prompt -> {:error, "invalid prompt template: nope"} end
+      problems = Graph.validate(steps, edges, prompt_validator: broken)
+
+      for %{msg: msg} <- problems do
+        assert Enum.any?(patterns, &Regex.match?(&1, msg)),
+               "#{inspect(msg)} matches no format in graph.go"
+      end
+
+      for pattern <- patterns do
+        assert Enum.any?(problems, &Regex.match?(pattern, &1.msg)),
+               "no problem exercises #{inspect(Regex.source(pattern))}"
+      end
+    end
+
+    test "the vocabulary Validate seeds itself with is Go's conventionalOutcomes" do
+      [_whole, body] =
+        Regex.run(~r/conventionalOutcomes = \[\]string\{([^}]*)\}/, go_source("graph.go")) ||
+          flunk("no conventionalOutcomes in graph.go")
+
+      names =
+        body
+        |> String.split(",")
+        |> Enum.map(&String.trim/1)
+        |> Enum.reject(&(&1 == ""))
+
+      assert names == ["OutcomeApprove", "OutcomeReject"]
+
+      # Both are looked for in a prompt whether or not any edge names them,
+      # which is what makes them a seeded vocabulary rather than edge data.
+      step = %Step{
+        id: 1,
+        name: "review",
+        kind: :agent,
+        prompt_md: "finish with #{Workflow.outcome_approve()} or #{Workflow.outcome_reject()}."
+      }
+
+      assert [
+               %{msg: ~s(prompt mentions "approve" but no edge routes it)},
+               %{msg: ~s(prompt mentions "reject" but no edge routes it)}
+             ] = Graph.validate([step], [])
+    end
+
+    test "the hand-off cue is the Go regexp, verbatim" do
+      # The port writes the same pattern as an Elixir sigil, so a change to
+      # either side has to be made on both.
+      assert go_source("graph.go") =~
+               "`(?i)\\b(?:finish(?:_step)?|outcomes?)\\b[^.;\\n]*`"
+    end
+  end
+
+  # Every format string Validate hands to its `add` helper, in source order.
+  defp go_validate_formats do
+    ~r/add\(st, "((?:[^"\\]|\\.)*)"/
+    |> Regex.scan(go_source("graph.go"))
+    |> Enum.map(fn [_whole, format] -> format end)
+  end
+
+  # A Go format string as a regex over the message it produces. %q is a quoted
+  # string, %s and %v anything.
+  defp format_to_regex(format) do
+    pattern =
+      format
+      |> String.split(~r/%[sqv]/, include_captures: true)
+      |> Enum.map_join(fn
+        "%q" -> ~S{"(?:[^"\\]|\\.)*"}
+        verb when verb in ["%s", "%v"] -> ".+"
+        literal -> Regex.escape(literal)
+      end)
+
+    Regex.compile!("\\A" <> pattern <> "\\z")
   end
 end
