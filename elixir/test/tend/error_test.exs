@@ -147,6 +147,12 @@ defmodule Tend.ErrorTest do
     {:data_version_failed, :timeout}
   ]
 
+  # The task surface of the store builds these three as well. They are listed
+  # apart from @store_reasons because their last element is a domain value --
+  # a state, a priority, an id -- and not a cause the layer underneath handed
+  # back, so the put_cause/2 sweep below does not apply to them.
+  @task_surface_reasons [:priority_out_of_range, :task_not_found, :unknown_state]
+
   # The cause is the last element of every store reason.
   defp put_cause(reason, cause) do
     put_elem(reason, tuple_size(reason) - 1, cause)
@@ -166,8 +172,15 @@ defmodule Tend.ErrorTest do
       assert Error.message({:migration_failed, :up, 7, "add_workflows", "no such table"}) ==
                "migrating up 7_add_workflows: no such table"
 
+      # One clause serves two callers: the migrator puts the offending SQL in
+      # the second element, the task surface puts a call-site label ("inserting
+      # task") there, so the clause prints the element and then the cause
+      # rather than prefixing a verb that would only fit one of them.
       assert Error.message({:query_failed, "SELECT 1", "database is locked"}) ==
-               "running SELECT 1: database is locked"
+               "SELECT 1: database is locked"
+
+      assert Error.message({:query_failed, "inserting task", "database is locked"}) ==
+               "inserting task: database is locked"
 
       assert Error.message({:data_version_failed, :timeout}) ==
                "reading PRAGMA data_version: timeout"
@@ -186,7 +199,8 @@ defmodule Tend.ErrorTest do
         |> Enum.uniq()
         |> Enum.sort()
 
-      assert built == Enum.sort(Enum.map(@store_reasons, &elem(&1, 0)))
+      assert built ==
+               Enum.sort(@task_surface_reasons ++ Enum.map(@store_reasons, &elem(&1, 0)))
     end
 
     test "each renders whatever shape of cause the layer underneath hands back" do
