@@ -21,7 +21,10 @@ defmodule Tend.Template.RenderError do
     * **The type name is Elixir's.** Go names the Go type
       (`main.PromptData`, `string`, `[]main.PromptSubtask`); there is no such
       type here, so a struct is named by its module and everything else by
-      its Elixir type (`binary`, `integer`, `list`, `map`, `nil`).
+      its Elixir type (`binary`, `integer`, `list`, `map`, `nil`). This is
+      also the whole of the difference in `nil pointer evaluating nil.Title`,
+      where Go names the pointer's type (`*main.PromptTask.Title`) and an
+      Elixir `nil` has none to name.
     * **The column is 1-based.** Go's `ErrorContext` passes the raw byte
       offset as the column, so Go says `prompt:1:2` where this says
       `prompt:1:3`. `Tend.Template.ParseError` already counts columns that
@@ -70,12 +73,18 @@ defmodule Tend.Template.RenderError do
     * `:missing_key` -- a map has no such key; `map has no entry for key "X"`.
       This is the case Go's `missingkey=error` option actually governs; a
       struct field is an error in Go whatever the option says
-    * `:nil_data` -- a field was read off `nil`;
-      `nil data; no entry for key "X"`
+    * `:nil_data` -- a field was read off `nil`. Go splits this in two and so
+      does this: `nil data; no entry for key "X"` when the *root* is nil, and
+      `nil pointer evaluating nil.X` when the nil is partway down a chain
     * `:not_iterable` -- `{{range}}` over something that is not a list;
       `range can't iterate over V`
     * `:bad_command` -- a command that cannot be evaluated at all, such as
-      `{{nil}}` or an argument given to a non-function
+      `{{nil}}` or an argument given to something that is not a function.
+      Go has three wordings for the second, chosen by what the head of the
+      command is, and all three are reproduced: `X has arguments but cannot
+      be invoked as function` for a field, `X is not a method but has
+      arguments` for a map key, and `can't give argument to non-function X`
+      for a literal, `$`, the cursor or a parenthesised pipeline
     * `:unsupported` -- a construct the renderer does not implement yet.
       Every one of these belongs to the builtins-and-pipelines sub-task
       (functions, multi-stage pipelines, variable declarations); when that
