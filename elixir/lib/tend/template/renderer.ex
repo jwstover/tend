@@ -424,9 +424,14 @@ defmodule Tend.Template.Renderer do
     UndefinedFunctionError -> nil
   end
 
-  # Go's %v for a float is %g at the shortest precision that round-trips, so
-  # 1.0 prints as `1`. Exponent formatting past that is Erlang's, not Go's;
-  # no prompt has a float in it, and only a literal could put one there.
+  # Go's %v for a float is strconv's `g` at the shortest precision that
+  # round-trips, so `1.0` prints as `1` and `1.5` as `1.5`, both of which
+  # this matches. Outside the range where `g` stays in decimal form Go
+  # switches to an exponent -- `1e20` prints as `1e+20` and `1e-7` as
+  # `1e-07` -- and this does not: it prints the first in full and the second
+  # in Erlang's shortest form, `1.0e-7`. `PromptData` has no float field and
+  # only a literal in a prompt reaches this clause at all, so porting
+  # strconv's exponent rules is left to whoever first needs one.
   defp format_float(value) do
     truncated = trunc(value)
 
