@@ -4,8 +4,9 @@ defmodule Tend.Store.Row do
 
   A port of the mappers and null helpers at the bottom of
   `internal/store/store.go` (`toDomain`, `toDomainSlice`, `parseTime`,
-  `parseStatusTime`). Every part of the store port reads rows through here, so
-  the timestamp rules live in exactly one place.
+  `parseStatusTime`), plus `workflowToDomain` from the bottom of
+  `internal/store/workflows.go`. Every part of the store port reads rows
+  through here, so the timestamp rules live in exactly one place.
 
   Rows arrive as plain lists, in the column order the query's `SELECT` names
   them. That order is the contract: the sqlc-generated queries spell every
@@ -76,6 +77,7 @@ defmodule Tend.Store.Row do
 
   alias Tend.Task
   alias Tend.Task.State
+  alias Tend.Workflow
 
   # Anchored, and deliberately not built on NaiveDateTime.from_iso8601/1: that
   # function accepts a `T` separator, a trailing offset and a fractional
@@ -84,10 +86,12 @@ defmodule Tend.Store.Row do
   @status_time ~r/\A(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})\.(\d{3})\z/
 
   @typedoc """
-  A reason `to_task/1` can fail with.
+  A reason a mapper here can fail with.
 
   Both stand for a column whose stored value is not one the schema can
   produce, so both mean corruption rather than a user mistake.
+  `to_workflow/2` can only raise the first: `workflows` has no enumerated
+  column.
   """
   @type error ::
           {:invalid_timestamp, String.t(), String.t()}
@@ -144,16 +148,62 @@ defmodule Tend.Store.Row do
   silently dropped from a list the caller will treat as complete.
   """
   @spec to_tasks([list()]) :: {:ok, [Task.t()]} | {:error, error()}
-  def to_tasks(rows) when is_list(rows) do
+  def to_tasks(rows) when is_list(rows), do: all(rows, &to_task/1)
+
+  @doc """
+  Maps one `workflows` row -- the five columns every workflow query selects, in
+  order -- into a `Tend.Workflow`, with `step_count` supplied separately.
+
+  The counterpart of Go's `workflowToDomain`, whose second argument is the
+  count too. The count is not a column of `workflows`: only `ListWorkflows`
+  knows it, from the `LEFT JOIN` that groups `workflow_steps` by workflow, and
+  every other caller passes `0` -- a `Tend.Workflow` whose `step_count` is zero
+  means "nobody counted", exactly as the Go struct's does.
+  """
+  @spec to_workflow(list(), integer()) :: {:ok, Workflow.t()} | {:error, error()}
+  def to_workflow([id, name, description, created_at, updated_at], step_count)
+      when is_integer(step_count) do
+    with {:ok, created} <- stamp(created_at, "workflow #{id} created_at"),
+         {:ok, updated} <- stamp(updated_at, "workflow #{id} updated_at") do
+      {:ok,
+       %Workflow{
+         id: id,
+         name: name,
+         description: description,
+         created_at: created,
+         updated_at: updated,
+         step_count: step_count
+       }}
+    end
+  end
+
+  @doc """
+  Maps every row of the `ListWorkflows` statement, stopping at the first that
+  will not map.
+
+  Those rows carry a sixth column, the joined step count, which Go splits back
+  off into `workflowToDomain`'s second argument; this does the same split. The
+  all-or-nothing behaviour is `to_tasks/1`'s, for the same reason.
+  """
+  @spec to_workflows([list()]) :: {:ok, [Workflow.t()]} | {:error, error()}
+  def to_workflows(rows) when is_list(rows) do
+    all(rows, fn [id, name, description, created_at, updated_at, step_count] ->
+      to_workflow([id, name, description, created_at, updated_at], step_count)
+    end)
+  end
+
+  # The shared body of to_tasks/1 and to_workflows/1: map every row, stop at
+  # the first that will not map, keep the query's order.
+  defp all(rows, mapper) do
     rows
     |> Enum.reduce_while({:ok, []}, fn row, {:ok, acc} ->
-      case to_task(row) do
-        {:ok, task} -> {:cont, {:ok, [task | acc]}}
+      case mapper.(row) do
+        {:ok, value} -> {:cont, {:ok, [value | acc]}}
         {:error, reason} -> {:halt, {:error, reason}}
       end
     end)
     |> case do
-      {:ok, tasks} -> {:ok, Enum.reverse(tasks)}
+      {:ok, values} -> {:ok, Enum.reverse(values)}
       {:error, reason} -> {:error, reason}
     end
   end
@@ -218,12 +268,17 @@ defmodule Tend.Store.Row do
     {value, precision}
   end
 
-  defp stamp(value, id, column) do
+  # `context` is the "task 7 created_at" / "workflow 3 updated_at" label Go's
+  # toDomain and workflowToDomain each build with fmt.Errorf before wrapping
+  # parseTime's error.
+  defp stamp(value, context) do
     case parse_time(value) do
       {:ok, at} -> {:ok, at}
-      :error -> {:error, {:invalid_timestamp, "task #{id} #{column}", to_string(value)}}
+      :error -> {:error, {:invalid_timestamp, context, to_string(value)}}
     end
   end
+
+  defp stamp(value, id, column), do: stamp(value, "task #{id} #{column}")
 
   defp optional_stamp(nil, _id, _column), do: {:ok, nil}
   defp optional_stamp(value, id, column), do: stamp(value, id, column)
