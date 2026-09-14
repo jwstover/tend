@@ -14,22 +14,35 @@ defmodule Tend.Template.Parity.BannerTest do
     go: :available,
     live_go: :ran,
     repo_cases: 230,
+    repo_compared: 230,
     recorded: 230,
-    tend_db: {:run, "/home/me/.local/share/tend/tend.db"}
+    tend_db: {:run, "/home/me/.local/share/tend/tend.db"},
+    tend_db_compared: 85
   }
 
   @without_go %{
     go: :missing,
     live_go: :not_run,
     repo_cases: 230,
+    repo_compared: 230,
     recorded: 230,
-    tend_db: {:skip, "no Go toolchain on the PATH"}
+    tend_db: {:skip, "no Go toolchain on the PATH"},
+    tend_db_compared: :not_run
   }
 
   # Go on the PATH, and nothing in the run rendered anything through it:
   # `mix test --exclude go`, `--only some_other_tag`, or any `mix test FILE`
   # that does not include the `:go`-tagged test.
-  @go_not_run %{@with_go | live_go: :not_run, tend_db: {:run, "/home/me/tend.db"}}
+  @go_not_run %{
+    @with_go
+    | live_go: :not_run,
+      tend_db: {:run, "/home/me/tend.db"},
+      tend_db_compared: 85
+  }
+
+  # `mix test --only go`: live Go rendered the recording, every capability is
+  # present, and `Tend.Template` rendered nothing at all.
+  @corpus_not_run %{@with_go | repo_compared: :not_run}
 
   describe "with no Go toolchain" do
     test "refuses to let the run be read as a passing parity check" do
@@ -62,7 +75,9 @@ defmodule Tend.Template.Parity.BannerTest do
     end
 
     test "distinguishes a tend.db half that ran from one that was not asked for" do
-      assert Banner.text(@with_go, true) =~ "every prompt_md row in /home/me"
+      assert Banner.text(@with_go, true) =~
+               "85 comparison(s) over every prompt_md row in /home/me"
+
       assert Banner.text(@with_go, false) =~ "did not run -- not asked for"
     end
 
@@ -70,6 +85,36 @@ defmodule Tend.Template.Parity.BannerTest do
       plan = %{@with_go | tend_db: {:skip, "no database at /nope/tend.db"}}
 
       assert Banner.text(plan, true) =~ "did not run -- no database at /nope/tend.db"
+    end
+
+    test "reports a readable tend.db nothing rendered as a skip, not as coverage" do
+      # `mix test --include tend_db SOME_OTHER_FILE`: asked for, readable,
+      # and no row was ever rendered.
+      plan = %{@with_go | tend_db_compared: :not_run}
+      text = Banner.text(plan, true)
+
+      refute text =~ "every prompt_md row in"
+      assert text =~ "did not run -- no test in this run rendered a row from /home/me"
+    end
+  end
+
+  describe "with a corpus nothing in the run rendered" do
+    test "does not claim the fixtures were compared" do
+      text = Banner.text(@corpus_not_run, false)
+
+      refute text =~ "230 case(s) vs the recording"
+      refute text =~ "230 case(s) compared"
+      assert text =~ "did not run -- nothing in this run compared the corpus"
+      assert text =~ "(230 case(s) were available)."
+    end
+
+    test "refuses the full-confidence headline even though live Go ran" do
+      text = Banner.text(@corpus_not_run, false)
+
+      assert text =~ "NOT A PARITY RUN"
+      assert text =~ "nothing in this run rendered the corpus through Tend.Template"
+      refute text =~ "Tend.Template <-> Go text/template parity"
+      assert text =~ "does NOT mean Tend.Template matches Go"
     end
   end
 

@@ -53,6 +53,12 @@ defmodule Tend.Template.ParityTest do
     test "renders to the same bytes Go rendered", %{comparisons: comparisons} do
       rendered = Enum.filter(comparisons, &match?({:ok, _output}, &1.go))
 
+      # This test is the only thing that renders the corpus through
+      # `Tend.Template`, so the banner reports its count rather than the
+      # scanner's. Recorded before the assertions so a failing comparison is
+      # still reported as one that happened.
+      Parity.record_repo_comparison(length(comparisons))
+
       # Without a floor this test passes on an empty corpus, which is the one
       # way a parity harness can be wrong and still be green.
       assert length(rendered) > 100,
@@ -127,6 +133,11 @@ defmodule Tend.Template.ParityTest do
           assert {:ok, cases, rows} = Corpus.db_cases(path)
           assert rows > 0, "#{path} has no workflow_steps rows to compare"
           comparisons = Parity.compare(cases)
+
+          # Only this branch rendered anything, so only this branch licenses
+          # the banner to report the tend.db half as covered.
+          Parity.record_tend_db_comparison(length(comparisons))
+
           assert length(comparisons) == rows * length(Data.names())
 
           for comparison <- comparisons do

@@ -35,7 +35,10 @@ defmodule Tend.Template.Parity do
       `Tend.Template.Parity.Corpus.extra_templates/0`, a short list of
       constructs a stored prompt can use and the Go tests do not --
       `{{range}}` with an `{{else}}` arm, mostly. What a corpus of typed data
-      still cannot reach is spelled out in `Tend.Template.Parity.Data`.
+      still cannot reach is spelled out in `Tend.Template.Parity.Data`. It
+      calls `record_repo_comparison/1`, and that count -- not the scanner's
+      -- is what the banner reports, because `mix test --only go` finds the
+      whole corpus and renders none of it.
     * **the recording against live Go** is tagged `:go` and is excluded when
       no Go toolchain is on the `PATH` -- so it runs by default on a machine
       that has Go. It is what stops the recording from quietly drifting away
@@ -51,7 +54,9 @@ defmodule Tend.Template.Parity do
 
       It renders every `prompt_md` row in `$TEND_DB`, or in the database
       `Tend.DBPath` resolves to, through both engines. With no such file, or
-      no Go, the test skips rather than fails -- and the banner says so.
+      no Go, the test skips rather than fails -- and the banner says so,
+      because only the branch that really rendered rows calls
+      `record_tend_db_comparison/1`.
   """
 
   alias Tend.DBPath
@@ -68,24 +73,32 @@ defmodule Tend.Template.Parity do
   What this machine can and cannot check, decided once and shared by the
   tests, the mix task and the banner so the three cannot disagree.
 
-  `go` is a *capability* -- is there a toolchain to render against -- and
-  `live_go` is a *fact*: did the `:go`-tagged test that renders through it
-  actually execute in this run. The two are not the same thing, and only the
-  second one licenses saying the recording was checked.
+  Three of the five fields are *capabilities* -- what this machine could
+  check -- and three are *facts* about this particular run. `go`,
+  `repo_cases` and `tend_db` say a toolchain is installed, a corpus was
+  found and a database is readable; `live_go`, `repo_compared` and
+  `tend_db_compared` say what actually executed. Only the second group
+  licenses claiming anything was compared: `mix test --exclude go`,
+  `mix test --only go` and `mix test --include tend_db SOME_OTHER_FILE` are
+  each a green run with every capability present and nothing rendered.
   """
   @type plan :: %{
           go: :available | :missing,
           live_go: :ran | :not_run,
           repo_cases: non_neg_integer(),
+          repo_compared: non_neg_integer() | :not_run,
           recorded: non_neg_integer(),
-          tend_db: {:run, binary()} | {:skip, binary()}
+          tend_db: {:run, binary()} | {:skip, binary()},
+          tend_db_compared: non_neg_integer() | :not_run
         }
 
-  # Set by `record_live_check/0` from the `:go`-tagged test, read back by
-  # `plan/0`. `:persistent_term` rather than a process: the banner runs in
-  # `ExUnit.after_suite/1`, after the test process that recorded it is gone,
-  # and the value is written at most once per VM.
+  # Set by the `record_*` functions below from the tests that do the work,
+  # read back by `plan/0`. `:persistent_term` rather than a process: the
+  # banner runs in `ExUnit.after_suite/1`, after the test processes that
+  # recorded them are gone, and each value is written at most once per VM.
   @live_check_key {__MODULE__, :live_check_ran}
+  @repo_compared_key {__MODULE__, :repo_cases_compared}
+  @tend_db_compared_key {__MODULE__, :tend_db_cases_compared}
 
   @doc """
   Records that the recording really was rendered against live Go in this run.
@@ -97,6 +110,29 @@ defmodule Tend.Template.Parity do
   """
   @spec record_live_check() :: :ok
   def record_live_check, do: :persistent_term.put(@live_check_key, true)
+
+  @doc """
+  Records how many repo-fixture cases this run compared against the recording.
+
+  Called by the untagged byte-equality test in `Tend.Template.ParityTest`.
+  The same argument as `record_live_check/0`, one axis over: `repo_cases` is
+  how many cases the scanner found, which `mix test --only go` reports in
+  full while `Tend.Template` renders nothing.
+  """
+  @spec record_repo_comparison(non_neg_integer()) :: :ok
+  def record_repo_comparison(count) when is_integer(count) and count >= 0,
+    do: :persistent_term.put(@repo_compared_key, count)
+
+  @doc """
+  Records how many `tend.db` cases this run compared through both engines.
+
+  Called by the `:tend_db`-tagged test in `Tend.Template.ParityTest`, and only
+  on the branch that really rendered rows -- a readable database plus
+  `--include tend_db` is a capability, not a comparison.
+  """
+  @spec record_tend_db_comparison(non_neg_integer()) :: :ok
+  def record_tend_db_comparison(count) when is_integer(count) and count >= 0,
+    do: :persistent_term.put(@tend_db_compared_key, count)
 
   @doc """
   What a parity run on this machine would cover.
@@ -111,8 +147,10 @@ defmodule Tend.Template.Parity do
       go: if(Go.available?(), do: :available, else: :missing),
       live_go: live_go(),
       repo_cases: length(Corpus.repo_cases()),
+      repo_compared: :persistent_term.get(@repo_compared_key, :not_run),
       recorded: map_size(Corpus.golden()),
-      tend_db: tend_db_plan()
+      tend_db: tend_db_plan(),
+      tend_db_compared: :persistent_term.get(@tend_db_compared_key, :not_run)
     }
   end
 
