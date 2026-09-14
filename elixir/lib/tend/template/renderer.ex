@@ -38,6 +38,14 @@ defmodule Tend.Template.Renderer do
     * a list field must hold `[]` when it is empty, never `nil`, or
       `{{range}}` over it raises instead of taking the `{{else}}` arm --
       again exactly as Go treats an untyped nil.
+    * a `{{range}}` target must be a list or an integer. Go 1.22 added the
+      integer case -- `{{range 3}}` iterates 0, 1, 2 -- and `PromptData`'s
+      `Iteration` is an `int64`, so `{{range .Iteration}}` is a prompt a user
+      can already have stored; it renders here exactly as Go renders it. Go
+      also ranges over a *map*, which no field of `PromptData` is, so that
+      one still raises `:not_iterable` rather than inventing an iteration
+      order (Go's is sorted by key). Go does **not** range over a string, and
+      neither does this: `{{range .Cwd}}` is an error in both.
 
   The prompt-data structs are the workflow sub-task's to define; this is the
   contract they have to meet.
@@ -100,6 +108,16 @@ defmodule Tend.Template.Renderer do
   end
 
   defp iterable(items, _node, _state) when is_list(items), do: items
+
+  # Go 1.22 gave `range` an integer case: `{{range 3}}` iterates 0, 1, 2 with
+  # the cursor bound to the index. `PromptData.Iteration` is an `int64`, so
+  # `{{range .Iteration}}` is a prompt a user can already have stored.
+  defp iterable(count, _node, _state) when is_integer(count) and count > 0,
+    do: Enum.to_list(0..(count - 1))
+
+  # Go's `walkRange` breaks before the first iteration when the integer is
+  # `<= 0`, which lands on the {{else}} arm exactly as an empty list does.
+  defp iterable(count, _node, _state) when is_integer(count), do: []
 
   defp iterable(value, node, state) do
     raise RenderError.new(
