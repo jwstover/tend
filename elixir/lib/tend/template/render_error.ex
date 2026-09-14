@@ -50,21 +50,19 @@ defmodule Tend.Template.RenderError do
     * `line` -- its 1-based line, counting `\\n`
     * `column` -- its 1-based column, in bytes from the start of the line
 
-  ## Folding into `Tend.Error`
+  ## Folded into `Tend.Error`
 
-  `Tend.Error` does not exist on this branch (it arrives with the task-core
-  sub-task), so this is a free-standing exception rather than a `Tend.Error`
-  variant, exactly as `Tend.Template.ParseError` is. When the two meet, the
-  workflow prompt sub-task wraps *both* of them the same way: as a
-  `Tend.Error` whose reason is
+  This stays a free-standing exception, exactly as `Tend.Template.ParseError`
+  does, and `Tend.Workflow.Prompt` wraps *both* of them the same way:
 
-      :invalid_prompt
+      {:error, {:invalid_prompt, error}}
 
-  -- the Elixir counterpart of `ErrInvalidPrompt` -- carrying this struct as
-  its cause and prepending `invalid prompt template: ` to
-  `Exception.message/1` here. That wrapper is the only atom this folds into;
-  `reason` below stays internal to the template tree and is there so a caller
-  can tell the causes apart without matching on message text.
+  -- `:invalid_prompt` being the Elixir counterpart of `ErrInvalidPrompt` --
+  carrying this struct as its cause, with `Tend.Error.message/1` prepending
+  `invalid prompt template: ` to `Exception.message/1` here. That wrapper is
+  the only atom this folds into; `reason` below stays internal to the template
+  tree and is there so a caller can tell the causes apart without matching on
+  message text.
 
   The `reason` atoms, verbatim:
 
