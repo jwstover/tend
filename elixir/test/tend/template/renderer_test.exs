@@ -489,30 +489,22 @@ defmodule Tend.Template.RendererTest do
     end
   end
 
-  describe "deferred to the builtins sub-task" do
-    # These all parse. None of them render yet, and each fails with the
-    # reason that says so rather than falling off the end of a clause.
-    @deferred [
-      {"{{len .Subtasks}} sub-tasks", ~s(function "len" not defined)},
-      {"{{if and (ne .Cwd \"x\") (not .Iteration)}}y{{end}}", ~s(function "and" not defined)},
-      {"{{.Outcomes | len}}", "multi-stage pipelines are not supported yet"},
-      {"{{range $i, $o := .Outcomes}}{{$o}}{{end}}",
-       "variable declaration $i is not supported yet"},
-      {"{{$x := .Cwd}}{{$x}}", "variable declaration $x is not supported yet"}
+  describe "the constructs the builtins sub-task added" do
+    # These used to be the renderer's "not supported yet" list. They render
+    # now; `Tend.Template.FuncsTest` and `Tend.Template.VariablesTest` pin
+    # each one against Go, and this is the summary that says the gap is
+    # closed.
+    @once_deferred [
+      {"{{len .Subtasks}} sub-tasks", "3 sub-tasks"},
+      {"{{if and (ne .Cwd \"x\") (not .Iteration)}}y{{else}}n{{end}}", "n"},
+      {"{{.Outcomes | len}}", "2"},
+      {"{{range $i, $o := .Outcomes}}{{$o}}{{end}}", "approvereject"},
+      {"{{$x := .Cwd}}{{$x}}", "/home/me/proj"}
     ]
 
-    for {source, detail} <- @deferred do
-      test "#{inspect(source)} is refused with a reason, not a MatchError" do
-        assert {:error, %RenderError{reason: :unsupported} = error} =
-                 Template.render(unquote(source), @full)
-
-        assert error.detail == unquote(detail)
-      end
-    end
-
-    test "the deferred failures still parse, so this is a renderer gap and not a parser one" do
-      for {source, _detail} <- @deferred do
-        assert {:ok, _nodes} = Template.parse(source)
+    for {source, want} <- @once_deferred do
+      test "#{inspect(source)} renders" do
+        assert Template.render(unquote(source), @full) == {:ok, unquote(want)}
       end
     end
   end
