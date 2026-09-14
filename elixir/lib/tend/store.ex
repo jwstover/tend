@@ -31,6 +31,7 @@ defmodule Tend.Store do
 
   alias Exqlite.Sqlite3
   alias Tend.Store.Migrator
+  alias Tend.Store.Watcher
 
   @typedoc """
   An open store: the connection, and the path it was opened on.
@@ -87,6 +88,20 @@ defmodule Tend.Store do
           {:error, reason}
       end
     end
+  end
+
+  @doc """
+  Starts a `Tend.Store.Watcher` on the file this store was opened on.
+
+  The port of Go's `(*Store).Watch`. The watcher gets its own connection, so
+  it shares nothing with this one and neither closing ends the other; `opts`
+  are `Tend.Store.Watcher.start_link/1`'s, minus `:path`.
+
+  Nothing in the port calls this yet -- there is no UI to reload.
+  """
+  @spec watch(t(), keyword()) :: GenServer.on_start()
+  def watch(%__MODULE__{path: path}, opts \\ []) do
+    opts |> Keyword.put(:path, path) |> Watcher.start_link()
   end
 
   @doc """
