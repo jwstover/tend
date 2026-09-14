@@ -184,6 +184,19 @@ defmodule Tend.Template.Renderer do
   defp iterations(items, _node, _state) when is_list(items),
     do: items |> Enum.with_index() |> Enum.map(fn {element, index} -> {index, element} end)
 
+  # Go's `walkRange` has a `case reflect.Invalid: break` whose own comment
+  # reads "an invalid value is likely a nil map, etc. and acts like an empty
+  # map", so a nil interface falls to the {{else}} arm rather than erroring --
+  # and so does a nil slice and a nil map, which reach the Slice and Map cases
+  # with length zero. Go 1.26.4, "{{range .Outcomes}}x{{else}}none{{end}}":
+  # "none" for a nil `any` field, a nil `[]string` field and a nil map alike.
+  #
+  # It has to sit above the unguarded catch-all below, which is where the
+  # `:not_iterable` raise lives; that is the only constraint on where it goes.
+  # The integer clause it happens to precede is guarded `when is_integer/1`,
+  # so a nil never enters that one whatever the order.
+  defp iterations(nil, _node, _state), do: []
+
   # Go 1.22 gave `range` an integer case: `{{range 3}}` iterates 0, 1, 2 with
   # the cursor bound to the index. `PromptData.Iteration` is an `int64`, so
   # `{{range .Iteration}}` is a prompt a user can already have stored.

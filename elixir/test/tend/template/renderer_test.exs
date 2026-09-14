@@ -321,6 +321,39 @@ defmodule Tend.Template.RendererTest do
       assert Template.render("{{range .Subtasks}}x{{end}}", @zero) == {:ok, ""}
     end
 
+    test "a nil takes the {{else}} arm, the way Go's reflect.Invalid case does" do
+      # Go 1.26.4, "{{range .Outcomes}}x{{else}}none{{end}}" => "none" for a
+      # nil `any` field, a nil `[]string` field and a nil map alike; with no
+      # {{else}} arm, "[{{range .Outcomes}}x{{end}}]" => "[]". An Elixir nil
+      # models Go's nil interface, and walkRange's `case reflect.Invalid:
+      # break` sends that to the {{else}} arm rather than to an error.
+      nil_list = %{"Outcomes" => nil}
+
+      assert Template.render("{{range .Outcomes}}x{{else}}none{{end}}", nil_list) == {:ok, "none"}
+      assert Template.render("[{{range .Outcomes}}x{{end}}]", nil_list) == {:ok, "[]"}
+    end
+
+    test "a nil reaches the {{else}} arm before the loop variables are counted" do
+      # Go 1.26.4, against a nil `any` field:
+      #
+      #   {{range $i, $o := .Outcomes}}{{$i}}{{$o}}{{else}}none{{end}} => "none"
+      #   {{range $o := .Outcomes}}{{$o}}{{else}}none{{end}}           => "none"
+      #
+      # The more-than-one-variable error lives inside walkRange's integer
+      # case, so nil never meets it -- unlike `{{range $i, $v := 0}}`, which
+      # is an error in Go and here (see Tend.Template.VariablesTest).
+      nil_list = %{"Outcomes" => nil}
+
+      assert Template.render(
+               "{{range $i, $o := .Outcomes}}{{$i}}{{$o}}{{else}}none{{end}}",
+               nil_list
+             ) ==
+               {:ok, "none"}
+
+      assert Template.render("{{range $o := .Outcomes}}{{$o}}{{else}}none{{end}}", nil_list) ==
+               {:ok, "none"}
+    end
+
     test "$ still reaches the root from inside the loop" do
       assert Template.render("{{range .Outcomes}}{{$.Cwd}}:{{.}} {{end}}", @full) ==
                {:ok, "/home/me/proj:approve /home/me/proj:reject "}
