@@ -111,11 +111,23 @@ defmodule Tend.Workflow do
   end
 
   # Go lowers with strings.ToLower, which walks runes applying Unicode's
-  # *simple* mapping. String.downcase/1 applies the full mapping, and over the
-  # whole codepoint space the two differ on exactly one character: U+0130
-  # (dotted capital I), which Go lowers to "i" and Elixir lowers to "i" +
-  # U+0307. `Tend.Task.Project` folds the same way for the same reason; the
-  # fold is duplicated rather than shared because this tree depends on nothing.
+  # *simple* mapping. String.downcase/1 applies the full mapping, and the two
+  # differ on U+0130 (dotted capital I) -- Go lowers it to "i", Elixir to "i" +
+  # U+0307 -- plus any character cased after Go's `unicode.Version`, which
+  # trails OTP's `:unicode_util.spec_version/0` by a release or more. Only the
+  # U+0130 divergence is a mapping difference rather than data-version skew,
+  # and only it is foldable without reimplementing the table.
+  #
+  # Invalid UTF-8 also diverges, and is left alone deliberately: Go's ToLower
+  # goes through strings.Map, which substitutes U+FFFD per invalid *byte*,
+  # while String.downcase/1 passes the byte through. String.replace_invalid/1
+  # would not close the gap -- it collapses a truncated multi-byte sequence to
+  # one U+FFFD where Go emits one per byte -- so it would trade a visible
+  # divergence for a hidden one. Outcomes reaching here are valid UTF-8.
+  #
+  # `Tend.Task.Project` folds the same way for the same reason; the fold is
+  # duplicated rather than shared because this tree depends on nothing, exactly
+  # as Go calls strings.ToLower separately in each package.
   defp lower(s), do: s |> String.replace("İ", "i") |> String.downcase()
 
   @doc """
