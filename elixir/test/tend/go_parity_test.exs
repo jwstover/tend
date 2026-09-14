@@ -86,7 +86,9 @@ defmodule Tend.GoParityTest do
         end)
         |> Enum.sort()
 
-      assert expected == Tend.Error.sentinels()
+      # Containment, not equality: Tend.Error is one map for the whole port, so
+      # it also lists the sentinels of the Go packages other parity tests cover.
+      assert expected -- Tend.Error.sentinels() == []
       assert length(Enum.uniq(expected)) == length(expected)
     end
 
