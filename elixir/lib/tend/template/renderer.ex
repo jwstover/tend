@@ -67,17 +67,23 @@ defmodule Tend.Template.Renderer do
     * a string field must hold `""` when it is empty, never `nil`. Go's
       zero string prints as nothing; an Elixir `nil` prints as `<no value>`,
       which is what Go prints for a nil interface.
-    * a list field must hold `[]` when it is empty, never `nil`, or
-      `{{range}}` over it raises instead of taking the `{{else}}` arm --
-      again exactly as Go treats an untyped nil.
-    * a `{{range}}` target must be a list or an integer. Go 1.22 added the
-      integer case -- `{{range 3}}` iterates 0, 1, 2 -- and `PromptData`'s
-      `Iteration` is an `int64`, so `{{range .Iteration}}` is a prompt a user
-      can already have stored; it renders here exactly as Go renders it. Go
-      also ranges over a *map*, which no field of `PromptData` is, so that
-      one still raises `:not_iterable` rather than inventing an iteration
-      order (Go's is sorted by key). Go does **not** range over a string, and
-      neither does this: `{{range .Cwd}}` is an error in both.
+    * a list field should hold `[]` when it is empty rather than `nil`, but
+      `{{range}}` is not where it matters: `{{range}}` over a `nil` takes the
+      `{{else}}` arm, exactly as Go does for a nil slice, a nil map and a nil
+      interface alike. Printing it is where the two spellings part --
+      `{{.Outcomes}}` is `[]` for Go's nil *slice* and `<no value>` for its
+      nil interface, and an Elixir `nil` is the latter, as is `{{len}}`'s
+      `len of nil pointer` against a `0`.
+    * a `{{range}}` target must be a list, an integer or `nil`. Go 1.22
+      added the integer case -- `{{range 3}}` iterates 0, 1, 2 -- and
+      `PromptData`'s `Iteration` is an `int64`, so `{{range .Iteration}}` is
+      a prompt a user can already have stored; it renders here exactly as Go
+      renders it. Go also ranges over a *map*, which no field of `PromptData`
+      is, so a map -- empty or not -- still raises `:not_iterable` here
+      rather than inventing an iteration order (Go's is sorted by key); that
+      one is a real divergence and the only one `{{range}}` has left. Go does
+      **not** range over a string, and neither does this: `{{range .Cwd}}` is
+      an error in both.
 
   The prompt-data structs are the workflow sub-task's to define; this is the
   contract they have to meet.
