@@ -71,10 +71,20 @@ type LaunchOpts struct {
 	// to the default system prompt rather than replacing it. The workflow
 	// runner uses it to state the finish_step hand-off contract for a
 	// headless step (workflow.StepSystemPrompt) without touching the
-	// author's prompt_md; the TUI uses it to brief an interactive session
-	// on the task it is bound to (task.SessionSystemPrompt). Honoured by
-	// every builder here; "" adds nothing.
+	// author's prompt_md. Honoured by every builder here; "" adds nothing.
+	//
+	// This is the inline form, so its length rides on the argv. Fine for
+	// a headless step, which the runner execs directly; not for anything
+	// wrapped in tmux, whose 16KB command cap the block can exceed (see
+	// WriteSystemPrompt). Interactive launches use AppendSystemPromptFile.
 	AppendSystemPrompt string
+	// AppendSystemPromptFile is claude's --append-system-prompt-file: the
+	// same block read from a file instead of the argv. The TUI writes the
+	// task brief (task.SessionSystemPrompt) there with WriteSystemPrompt
+	// so a brief of any length reaches a tmux-wrapped claude. Honoured by
+	// every builder here; "" adds nothing. Both forms may be set; claude
+	// takes both.
+	AppendSystemPromptFile string
 }
 
 // LaunchCmdWith is LaunchCmd plus the step-level options a workflow run
@@ -95,15 +105,26 @@ func LaunchCmdWith(cwd, sessionID, label, mcpConfigPath, settingsPath string, op
 	if opts.PermissionMode != "" {
 		args = append(args, "--permission-mode", opts.PermissionMode)
 	}
-	if opts.AppendSystemPrompt != "" {
-		args = append(args, "--append-system-prompt", opts.AppendSystemPrompt)
-	}
+	args = appendSystemPromptArgs(args, opts)
 	if opts.Prompt != "" {
 		args = append(args, opts.Prompt)
 	}
 	c := exec.Command(binary, args...)
 	c.Dir = cwd
 	return c
+}
+
+// appendSystemPromptArgs adds the --append-system-prompt flag pairs a
+// LaunchOpts asks for, inline first then file, each only when set. Shared
+// by every builder so the two forms cannot drift apart between them.
+func appendSystemPromptArgs(args []string, opts LaunchOpts) []string {
+	if opts.AppendSystemPrompt != "" {
+		args = append(args, "--append-system-prompt", opts.AppendSystemPrompt)
+	}
+	if opts.AppendSystemPromptFile != "" {
+		args = append(args, "--append-system-prompt-file", opts.AppendSystemPromptFile)
+	}
+	return args
 }
 
 // ResumeCmd builds the command to reopen an existing session by its
@@ -116,11 +137,12 @@ func ResumeCmd(cwd, externalID, mcpConfigPath, settingsPath string) *exec.Cmd {
 }
 
 // ResumeCmdWith is ResumeCmd plus a system prompt block
-// (LaunchOpts.AppendSystemPrompt), which claude accepts on a --resume as
-// it does on a launch. The TUI passes a fresh task brief here so a session
-// picked up after a break sees the task as it stands now, not only as it
-// was when the session began. The other LaunchOpts fields are ignored: a
-// resumed session already has its model, mode and first turn.
+// (LaunchOpts.AppendSystemPrompt / AppendSystemPromptFile), which claude
+// accepts on a --resume as it does on a launch. The TUI passes a fresh
+// task brief here so a session picked up after a break sees the task as
+// it stands now, not only as it was when the session began. The other
+// LaunchOpts fields are ignored: a resumed session already has its model,
+// mode and first turn.
 func ResumeCmdWith(cwd, externalID, mcpConfigPath, settingsPath string, opts LaunchOpts) *exec.Cmd {
 	args := []string{"--resume", externalID}
 	if mcpConfigPath != "" {
@@ -129,9 +151,7 @@ func ResumeCmdWith(cwd, externalID, mcpConfigPath, settingsPath string, opts Lau
 	if settingsPath != "" {
 		args = append(args, "--settings", settingsPath)
 	}
-	if opts.AppendSystemPrompt != "" {
-		args = append(args, "--append-system-prompt", opts.AppendSystemPrompt)
-	}
+	args = appendSystemPromptArgs(args, opts)
 	c := exec.Command(binary, args...)
 	c.Dir = cwd
 	return c

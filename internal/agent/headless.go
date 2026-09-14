@@ -98,9 +98,7 @@ func headlessCmd(ctx context.Context, cwd string, sessionArgs []string, mcpConfi
 	if opts.PermissionMode != "" {
 		args = append(args, "--permission-mode", opts.PermissionMode)
 	}
-	if opts.AppendSystemPrompt != "" {
-		args = append(args, "--append-system-prompt", opts.AppendSystemPrompt)
-	}
+	args = appendSystemPromptArgs(args, opts)
 	args = append(args, opts.Prompt)
 
 	c := exec.CommandContext(ctx, binary, args...)

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func i64(v int64) *int64   { return &v }
@@ -105,6 +106,85 @@ func TestSessionSystemPromptParentIDOnly(t *testing.T) {
 	got := SessionSystemPrompt(SessionBrief{Task: Task{ID: 2, Title: "child", State: StateTodo, ParentID: i64(9)}})
 	if !strings.Contains(got, "- Parent task: #9\n") {
 		t.Errorf("prompt does not name the parent by id\n---\n%s", got)
+	}
+}
+
+// A body past the byte cap is abridged rather than carried whole: the
+// heading says so and where the full text is, the head (the original
+// description) and the tail (the latest appended notes) both survive, the
+// middle is replaced by a marker, and the section stays within budget.
+func TestSessionSystemPromptAbridgesLongBody(t *testing.T) {
+	var body strings.Builder
+	body.WriteString("## Original description\n\nThe first line is the point.\n\n")
+	for i := 0; body.Len() < briefBodyLimit*3; i++ {
+		fmt.Fprintf(&body, "## Log %d\n\nSomething happened in session %d and it was noted at length.\n\n", i, i)
+	}
+	body.WriteString("## Latest note\n\nThe tail is where the current state lives.\n")
+	full := strings.TrimSpace(body.String())
+
+	got := SessionSystemPrompt(SessionBrief{Task: Task{ID: 1, Title: "long", State: StateDoing, BodyMD: body.String()}})
+
+	heading := fmt.Sprintf("### Description (abridged: %d of %d bytes; the full body is one mcp__tend__get_current_task call away)", briefBodyLimit, len(full))
+	for _, want := range []string{
+		heading,
+		"## Original description\n\nThe first line is the point.\n",
+		"bytes of the description omitted here to keep the system prompt within budget; read the full body with mcp__tend__get_current_task",
+		"## Latest note\n\nThe tail is where the current state lives.\n",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("prompt missing %q\n---\n%s", want, got[:min(len(got), 600)])
+		}
+	}
+	section := got[strings.Index(got, "### Description"):]
+	if len(section) > briefBodyLimit+len(heading)+300 {
+		t.Errorf("abridged section is %d bytes, want about %d", len(section), briefBodyLimit)
+	}
+	// A block halfway through a body three times the cap sits well past
+	// the head half and well before the tail half: the dropped middle.
+	mid := fmt.Sprintf("## Log %d\n", strings.Count(full, "## Log ")/2)
+	if strings.Contains(got, mid) {
+		t.Errorf("prompt kept %q, a middle section that should have been dropped", mid)
+	}
+}
+
+// A body at or under the cap is carried verbatim under the plain heading.
+func TestSessionSystemPromptKeepsBodyAtCap(t *testing.T) {
+	body := strings.Repeat("x", briefBodyLimit)
+	got := SessionSystemPrompt(SessionBrief{Task: Task{ID: 1, Title: "x", State: StateTodo, BodyMD: body}})
+	if !strings.Contains(got, "### Description\n\n"+body+"\n") {
+		t.Errorf("a body exactly at the cap should be verbatim")
+	}
+	if strings.Contains(got, "abridged") {
+		t.Errorf("a body at the cap should not be marked abridged")
+	}
+}
+
+// The cuts land on line boundaries when a newline is in reach, and never
+// split a multi-byte rune when it is not.
+func TestAbridgeBody(t *testing.T) {
+	lines := "line one\nline two\nline three\nline four\nline five\nline six\n"
+	got := abridgeBody(lines, 24)
+	if !strings.HasPrefix(got, "line one\n") || strings.Contains(got, "line t\n") {
+		t.Errorf("head not cut on a line boundary:\n%s", got)
+	}
+	if !strings.HasSuffix(got, "line six\n") || strings.Contains(got, "\nix\n") {
+		t.Errorf("tail not cut on a line boundary:\n%s", got)
+	}
+	if !strings.Contains(got, "omitted here") {
+		t.Errorf("marker missing:\n%s", got)
+	}
+
+	runes := strings.Repeat("é", 100) // 200 bytes, no newline anywhere
+	got = abridgeBody(runes, 51)      // odd budget: 25-byte halves would split a rune
+	if !utf8.ValidString(got) {
+		t.Errorf("abridged body is not valid UTF-8: %q", got)
+	}
+	if !strings.HasPrefix(got, "éééééééééééé") || !strings.HasSuffix(got, "éééééééééééé") {
+		t.Errorf("both ends should keep whole runes: %q", got)
+	}
+
+	if got := abridgeBody("short", 100); got != "short" {
+		t.Errorf("a body within the limit should come back untouched, got %q", got)
 	}
 }
 

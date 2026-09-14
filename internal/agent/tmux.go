@@ -140,6 +140,36 @@ func serverArgs(configPath string) []string {
 	return []string{"-L", SocketName, "-f", configPath}
 }
 
+// tmuxCommandLimit is how many bytes of command arguments a tmux client
+// can hand its server. tmux packs the argv after its global options
+// (everything from `new-session` on, each argument plus its NUL) into a
+// single imsg of MAX_IMSGSIZE = 16384 bytes, less a small header, and a
+// client asked for more prints "command too long" and exits 1 without the
+// server ever seeing the command. Measured against tmux 3.7b: 16342 bytes
+// of arguments went through, 16542 did not. The margin below covers the
+// header and any drift between versions.
+const tmuxCommandLimit = 16384 - 256
+
+// CommandFitsTmux reports whether a command WrapTmux or StartDetached
+// built is short enough for tmux to accept: the arguments after tend's
+// server options, each counted with its terminating NUL, within
+// tmuxCommandLimit. A caller that finds it does not fit should run the
+// inner command directly rather than through tmux — losing backgrounding
+// for that one session beats a launch that dies on the spot. Since the
+// task brief moved to a file (WriteSystemPrompt) nothing tend builds
+// comes near the cap, so this is the guard behind the fix, not the fix.
+func CommandFitsTmux(wrapped *exec.Cmd) bool {
+	args := wrapped.Args
+	if skip := 1 + len(serverArgs("")); len(args) > skip {
+		args = args[skip:]
+	}
+	size := 0
+	for _, a := range args {
+		size += len(a) + 1
+	}
+	return size <= tmuxCommandLimit
+}
+
 // WrapTmux rewrites a direct claude command into one that runs it inside
 // a named tmux session on tend's dedicated server, attached — so the
 // first run is indistinguishable from handing the terminal straight to

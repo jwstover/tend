@@ -228,6 +228,13 @@ func (a app) sessionBriefPrompt(taskID int64) string {
 // tmux isn't installed or its config can't be written — launch and
 // resume then behave exactly as they would without tmux, just without
 // backgrounding. tmux is a capability here, never a requirement.
+//
+// The same fallback covers a command tmux would refuse: its client hands
+// the server the whole argv in one 16KB message and exits 1 with "command
+// too long" past that (agent.CommandFitsTmux). That was how a task brief
+// of a few tens of KB used to kill every launch on the task before claude
+// ran. The brief now travels by file, so the check should never trip, but
+// running claude directly is the right degradation if it ever does.
 func wrapInTmux(c *exec.Cmd, externalID string) (wrapped *exec.Cmd, name, confPath string) {
 	if !agent.TmuxInstalled() {
 		return c, "", ""
@@ -237,7 +244,11 @@ func wrapInTmux(c *exec.Cmd, externalID string) (wrapped *exec.Cmd, name, confPa
 		return c, "", ""
 	}
 	name = agent.SessionName(externalID)
-	return agent.WrapTmux(c, name, confPath), name, confPath
+	wrapped = agent.WrapTmux(c, name, confPath)
+	if !agent.CommandFitsTmux(wrapped) {
+		return c, "", ""
+	}
+	return wrapped, name, confPath
 }
 
 // launchSessionCmd pins a fresh session id, writes the session's store
@@ -281,20 +292,24 @@ func (a app) launchSessionCmd(taskID int64, cwd, label string) tea.Cmd {
 		}
 		mcpPath, mcpCleanup, _ := agent.WriteMCPConfig(taskID, 0, a.dbPath)
 		hooksPath, hooksCleanup, _ := agent.WriteHookSettings(a.dbPath)
-		opts := agent.LaunchOpts{AppendSystemPrompt: a.sessionBriefPrompt(taskID)}
+		// The brief goes by file, not argv: inline it would ride through
+		// tmux's 16KB command cap and kill the launch on any task with a
+		// long body (agent.WriteSystemPrompt). Its file lives as long as
+		// the MCP config does, for the same reason.
+		briefPath, briefCleanup, _ := agent.WriteSystemPrompt(a.sessionBriefPrompt(taskID))
+		cleanup := func() { mcpCleanup(); hooksCleanup(); briefCleanup() }
+		opts := agent.LaunchOpts{AppendSystemPromptFile: briefPath}
 		c, tmuxName, confPath := wrapInTmux(agent.LaunchCmdWith(cwd, id, label, mcpPath, hooksPath, opts), id)
 
 		sess, err := a.store.CreateSession(a.ctx, taskID, id, cwd, label, tmuxName)
 		if err != nil {
-			mcpCleanup()
-			hooksCleanup()
+			cleanup()
 			return errMsg{err}
 		}
 		return tea.ExecProcess(c, func(err error) tea.Msg {
 			bg := err == nil && agent.HasSession(tmuxName, confPath)
 			if !bg {
-				mcpCleanup()
-				hooksCleanup()
+				cleanup()
 			}
 			return sessionFinishedMsg{
 				sessionRowID: sess.ID,
@@ -349,9 +364,10 @@ func (a app) abandonLaunchCmd(msg sessionFinishedMsg, status flash) tea.Cmd {
 // resume as a takeover (takeover.go): it rides on the returning message
 // so the takeover picker opens instead of the recap firing. systemPrompt
 // is the task brief (sessionBriefPrompt) the fresh `claude --resume`
-// gets as --append-system-prompt, so a session picked up later sees the
-// task as it stands now; the attach path has no new process to give it
-// to, and "" adds nothing.
+// gets as --append-system-prompt-file (written by agent.WriteSystemPrompt,
+// since inline it could exceed tmux's command cap), so a session picked
+// up later sees the task as it stands now; the attach path has no new
+// process to give it to, and "" adds nothing.
 func resumeSessionCmd(sess task.Session, dbPath, systemPrompt string, ref takeoverRef) tea.Cmd {
 	if err := agent.CheckInstalled(); err != nil {
 		return errCmd(err)
@@ -384,8 +400,9 @@ func resumeSessionCmd(sess task.Session, dbPath, systemPrompt string, ref takeov
 		}
 		mcpPath, mcpCleanup, _ := agent.WriteMCPConfig(sess.TaskID, stepRunID, dbPath)
 		hooksPath, hooksCleanup, _ := agent.WriteHookSettings(dbPath)
-		cleanup = func() { mcpCleanup(); hooksCleanup() }
-		opts := agent.LaunchOpts{AppendSystemPrompt: systemPrompt}
+		briefPath, briefCleanup, _ := agent.WriteSystemPrompt(systemPrompt)
+		cleanup = func() { mcpCleanup(); hooksCleanup(); briefCleanup() }
+		opts := agent.LaunchOpts{AppendSystemPromptFile: briefPath}
 		c, name, confPath = wrapInTmux(
 			agent.ResumeCmdWith(sess.Cwd, sess.ExternalID, mcpPath, hooksPath, opts), sess.ExternalID)
 	}

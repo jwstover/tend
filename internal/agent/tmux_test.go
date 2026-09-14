@@ -32,6 +32,43 @@ func TestWrapTmux(t *testing.T) {
 	}
 }
 
+// tmux takes the command arguments in one 16KB message and exits 1 with
+// "command too long" past that. A wrapped launch of ordinary size fits;
+// one carrying a task brief inline does not, which is why the brief goes
+// by file and why wrapInTmux falls back to a direct launch on the check.
+func TestCommandFitsTmux(t *testing.T) {
+	small := WrapTmux(LaunchCmd("/tmp/work", "abc-123", "fix the bug", "/tmp/mcp.json", "/tmp/hooks.json"), "tend-abc-123", "/cfg/tmux.conf")
+	if !CommandFitsTmux(small) {
+		t.Errorf("an ordinary launch should fit tmux's command cap: %v", small.Args)
+	}
+
+	brief := strings.Repeat("a body line the brief carries verbatim\n", 500) // ~20KB, a modest task body
+	inline := WrapTmux(LaunchCmdWith("/tmp/work", "abc-123", "fix the bug", "", "", LaunchOpts{AppendSystemPrompt: brief}), "tend-abc-123", "/cfg/tmux.conf")
+	if CommandFitsTmux(inline) {
+		t.Errorf("a %d-byte inline brief should not fit tmux's command cap", len(brief))
+	}
+
+	byFile := WrapTmux(LaunchCmdWith("/tmp/work", "abc-123", "fix the bug", "", "", LaunchOpts{AppendSystemPromptFile: "/tmp/tend-system-prompt-1.md"}), "tend-abc-123", "/cfg/tmux.conf")
+	if !CommandFitsTmux(byFile) {
+		t.Errorf("the same brief by file should fit: %v", byFile.Args)
+	}
+
+	// The server options tmux consumes before the command do not count.
+	size := 0
+	for _, a := range small.Args[1+len(serverArgs("")):] {
+		size += len(a) + 1
+	}
+	pad := strings.Repeat("x", tmuxCommandLimit-size-len("--append-system-prompt")-2)
+	edge := WrapTmux(LaunchCmdWith("/tmp/work", "abc-123", "fix the bug", "/tmp/mcp.json", "/tmp/hooks.json", LaunchOpts{AppendSystemPrompt: pad}), "tend-abc-123", "/cfg/tmux.conf")
+	if !CommandFitsTmux(edge) {
+		t.Errorf("a command exactly at the limit should fit")
+	}
+	over := WrapTmux(LaunchCmdWith("/tmp/work", "abc-123", "fix the bug", "/tmp/mcp.json", "/tmp/hooks.json", LaunchOpts{AppendSystemPrompt: pad + "x"}), "tend-abc-123", "/cfg/tmux.conf")
+	if CommandFitsTmux(over) {
+		t.Errorf("a command one byte over the limit should not fit")
+	}
+}
+
 // A label with spaces must survive as one argv element. Passing the
 // inner command after `--` is what guarantees that; a shell-string form
 // would split it and claude would see a truncated -n value.

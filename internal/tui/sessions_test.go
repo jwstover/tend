@@ -457,5 +457,32 @@ func TestSessionBriefPromptGathersTaskContext(t *testing.T) {
 	}
 }
 
+// A command tmux would refuse as too long is run directly instead of
+// wrapped: no tmux name, the inner command handed back as is. That is the
+// guard behind the brief's move to a file; with the brief inline, a task
+// with a long body used to die at launch with tmux's "command too long".
+// Holds with or without tmux installed, since both paths return no name.
+func TestWrapInTmuxRunsDirectWhenCommandTooLong(t *testing.T) {
+	brief := strings.Repeat("a body line the brief used to carry inline\n", 500)
+	inner := agent.LaunchCmdWith("/tmp/work", "abc-123", "fix the bug", "", "", agent.LaunchOpts{AppendSystemPrompt: brief})
+	wrapped, name, confPath := wrapInTmux(inner, "abc-123")
+	if wrapped != inner {
+		t.Errorf("oversized command was wrapped: %v", wrapped.Args[:min(len(wrapped.Args), 8)])
+	}
+	if name != "" || confPath != "" {
+		t.Errorf("oversized command got a tmux name %q / conf %q, want none", name, confPath)
+	}
+
+	// The same brief by file is small enough to wrap wherever tmux is.
+	byFile := agent.LaunchCmdWith("/tmp/work", "abc-123", "fix the bug", "", "", agent.LaunchOpts{AppendSystemPromptFile: "/tmp/tend-system-prompt-1.md"})
+	wrapped, name, _ = wrapInTmux(byFile, "abc-123")
+	if agent.TmuxInstalled() && name == "" {
+		t.Errorf("a by-file launch should be wrapped when tmux is installed: %v", wrapped.Args)
+	}
+	if !agent.TmuxInstalled() && wrapped != byFile {
+		t.Errorf("without tmux the command should come back as is")
+	}
+}
+
 // itoa renders a task id the way the brief does.
 func itoa(v int64) string { return strconv.FormatInt(v, 10) }

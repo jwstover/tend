@@ -361,6 +361,44 @@ func TestResumeCmdWithAppendSystemPrompt(t *testing.T) {
 	}
 }
 
+// The file form of the block is its own flag, placed with the inline form
+// when both are set, and is what an interactive launch actually uses: the
+// argv then carries a path, not the brief, whatever the brief's length.
+func TestLaunchCmdWithAppendSystemPromptFile(t *testing.T) {
+	c := LaunchCmdWith("/tmp/work", "abc-123", "fix the bug", "", "",
+		LaunchOpts{AppendSystemPromptFile: "/tmp/brief.md", Prompt: "go"})
+	want := []string{
+		binary, "--session-id", "abc-123", "-n", "fix the bug",
+		"--append-system-prompt-file", "/tmp/brief.md", "go",
+	}
+	if got := c.Args; !equalArgs(got, want) {
+		t.Errorf("Args = %v, want %v", got, want)
+	}
+
+	both := LaunchCmdWith("/tmp/work", "abc-123", "fix the bug", "", "",
+		LaunchOpts{AppendSystemPrompt: "inline", AppendSystemPromptFile: "/tmp/brief.md"})
+	want = []string{
+		binary, "--session-id", "abc-123", "-n", "fix the bug",
+		"--append-system-prompt", "inline", "--append-system-prompt-file", "/tmp/brief.md",
+	}
+	if got := both.Args; !equalArgs(got, want) {
+		t.Errorf("Args = %v, want %v", got, want)
+	}
+}
+
+// A resume takes the file form as it takes the inline one.
+func TestResumeCmdWithAppendSystemPromptFile(t *testing.T) {
+	c := ResumeCmdWith("/tmp/work", "abc-123", "/tmp/mcp.json", "",
+		LaunchOpts{AppendSystemPromptFile: "/tmp/brief.md"})
+	want := []string{
+		binary, "--resume", "abc-123", "--mcp-config", "/tmp/mcp.json",
+		"--append-system-prompt-file", "/tmp/brief.md",
+	}
+	if got := c.Args; !equalArgs(got, want) {
+		t.Errorf("Args = %v, want %v", got, want)
+	}
+}
+
 // The zero LaunchOpts leaves ResumeCmdWith exactly ResumeCmd.
 func TestResumeCmdWithZeroOptionsMatchesResumeCmd(t *testing.T) {
 	plain := ResumeCmd("/tmp/work", "abc-123", "/tmp/mcp.json", "")
