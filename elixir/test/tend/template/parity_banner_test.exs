@@ -12,6 +12,7 @@ defmodule Tend.Template.Parity.BannerTest do
 
   @with_go %{
     go: :available,
+    live_go: :ran,
     repo_cases: 230,
     recorded: 230,
     tend_db: {:run, "/home/me/.local/share/tend/tend.db"}
@@ -19,10 +20,16 @@ defmodule Tend.Template.Parity.BannerTest do
 
   @without_go %{
     go: :missing,
+    live_go: :not_run,
     repo_cases: 230,
     recorded: 230,
     tend_db: {:skip, "no Go toolchain on the PATH"}
   }
+
+  # Go on the PATH, and nothing in the run rendered anything through it:
+  # `mix test --exclude go`, `--only some_other_tag`, or any `mix test FILE`
+  # that does not include the `:go`-tagged test.
+  @go_not_run %{@with_go | live_go: :not_run, tend_db: {:run, "/home/me/tend.db"}}
 
   describe "with no Go toolchain" do
     test "refuses to let the run be read as a passing parity check" do
@@ -66,11 +73,35 @@ defmodule Tend.Template.Parity.BannerTest do
     end
   end
 
+  describe "with a Go toolchain nothing in the run used" do
+    test "does not claim the recording was checked against live Go" do
+      text = Banner.text(@go_not_run, false)
+
+      refute text =~ "checked against live Go"
+      assert text =~ "NOT A PARITY RUN"
+      assert text =~ "the live-Go check is not part of this run"
+      assert text =~ "RECORDED Go output"
+      assert text =~ "does NOT mean Tend.Template matches Go"
+    end
+
+    test "says Go is installed rather than telling the reader to install it" do
+      text = Banner.text(@go_not_run, false)
+
+      assert text =~ "Go is installed here"
+      refute text =~ "Re-run where Go is installed"
+    end
+
+    test "still reports a tend.db half that did run, because it did" do
+      assert Banner.text(@go_not_run, true) =~ "every prompt_md row in /home/me/tend.db"
+    end
+  end
+
   describe "the plan the banner reports on" do
     test "describes this machine, and agrees with itself" do
       plan = Parity.plan()
 
       assert plan.go in [:available, :missing]
+      assert plan.live_go in [:ran, :not_run]
       assert plan.repo_cases > 0, "the corpus scanner found no templates in the repo's Go tests"
       assert plan.recorded == plan.repo_cases
 
@@ -78,8 +109,23 @@ defmodule Tend.Template.Parity.BannerTest do
         %{go: :missing, tend_db: tend_db} ->
           assert tend_db == {:skip, "no Go toolchain on the PATH"}
 
-        %{go: :available} ->
-          assert match?({:run, _path}, plan.tend_db) or match?({:skip, _r}, plan.tend_db)
+        %{go: :available, tend_db: {:run, path}} ->
+          # Only claimed when everything the tend.db half needs is here.
+          assert File.exists?(path)
+          assert System.find_executable("sqlite3")
+
+        %{go: :available, tend_db: {:skip, reason}} ->
+          # Whatever the reason is, it cannot be the missing toolchain.
+          refute reason =~ "Go toolchain"
+      end
+    end
+
+    test "does not report live Go until the :go-tagged test has said it ran" do
+      # `Parity.plan/0` reads a fact recorded by that test, so a plan taken
+      # from a run that excluded it -- as this suite's own `--exclude go`
+      # invocation does -- cannot come back `:ran`.
+      if :go in Keyword.get(ExUnit.configuration(), :exclude, []) do
+        assert Parity.plan().live_go == :not_run
       end
     end
   end
