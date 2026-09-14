@@ -63,6 +63,8 @@ defmodule Tend.Template.ParseError do
   @enforce_keys [:detail, :token, :offset, :line, :column]
   defexception [:detail, :token, :offset, :line, :column]
 
+  alias Tend.Template.Position
+
   @impl true
   def message(%__MODULE__{} = error) do
     "template: prompt:#{error.line}:#{error.column}: #{error.detail} at byte #{error.offset}"
@@ -76,18 +78,9 @@ defmodule Tend.Template.ParseError do
   """
   @spec new(binary(), non_neg_integer(), String.t(), String.t()) :: t()
   def new(source, offset, token, detail) when is_binary(source) do
-    offset = offset |> max(0) |> min(byte_size(source))
-    {line, column} = line_and_column(source, offset)
+    offset = Position.clamp(source, offset)
+    {line, column} = Position.line_and_column(source, offset)
 
     %__MODULE__{detail: detail, token: token, offset: offset, line: line, column: column}
-  end
-
-  defp line_and_column(source, offset) do
-    before = binary_part(source, 0, offset)
-
-    case :binary.matches(before, "\n") do
-      [] -> {1, offset + 1}
-      matches -> {length(matches) + 1, offset - elem(List.last(matches), 0)}
-    end
   end
 end
