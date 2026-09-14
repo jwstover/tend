@@ -12,17 +12,13 @@ defmodule Tend.Task.LogEntry do
   ## Local time
 
   `created_at` is stored UTC, and the standup groups and stamps notes in *local*
-  time, so a note written at 23:30 does not surface under tomorrow. Go reads its
-  zone from `time.Local`; this port has no time zone database (`mix.exs` takes
-  no dependencies, and Elixir ships only a UTC-only one), so the conversion goes
-  through `:calendar.universal_time_to_local_time/1`, which asks the OS the same
-  question Go's `time.Local` does and honours `$TZ` the same way.
-
-  The consequence is that `split_notes_by_day/1` and `standup_markdown/4` are
-  pure in their arguments but read the machine's zone, exactly as their Go
-  counterparts do.
+  time, so a note written at 23:30 does not surface under tomorrow. The zone is
+  the machine's, read through `Tend.LocalTime` — so `split_notes_by_day/1` and
+  `standup_markdown/4` are pure in their arguments but read that zone, exactly
+  as their Go counterparts do through `time.Local`.
   """
 
+  alias Tend.LocalTime
   alias Tend.Task
   alias Tend.Task.DayNotes
   alias Tend.Task.NoteGroup
@@ -69,7 +65,7 @@ defmodule Tend.Task.LogEntry do
   end
 
   defp bucket(note, days) do
-    day = note.created_at |> local_naive() |> NaiveDateTime.to_date()
+    day = note.created_at |> LocalTime.to_naive() |> NaiveDateTime.to_date()
 
     case days do
       [%DayNotes{day: ^day} = last | rest] -> [%{last | notes: [note | last.notes]} | rest]
@@ -188,7 +184,7 @@ defmodule Tend.Task.LogEntry do
 
   defp render_note(%__MODULE__{} = note) do
     [first | rest] = String.split(note.body, "\n")
-    at = Calendar.strftime(local_naive(note.created_at), "%H:%M")
+    at = Calendar.strftime(LocalTime.to_naive(note.created_at), "%H:%M")
     ["  - #{at} — #{first}\n", Enum.map(rest, &"    #{&1}\n")]
   end
 
@@ -197,16 +193,5 @@ defmodule Tend.Task.LogEntry do
       [] -> when_none
       tasks -> Enum.map(tasks, &"- #{&1.title} (##{&1.id})\n")
     end
-  end
-
-  # Go's time.Time.Local(): the same instant read as the machine's wall clock.
-  defp local_naive(%DateTime{} = at) do
-    at
-    |> DateTime.shift_zone!("Etc/UTC")
-    |> DateTime.to_naive()
-    |> NaiveDateTime.truncate(:second)
-    |> NaiveDateTime.to_erl()
-    |> :calendar.universal_time_to_local_time()
-    |> NaiveDateTime.from_erl!()
   end
 end
