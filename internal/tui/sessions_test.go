@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
@@ -183,6 +184,200 @@ func TestSessionPickerEscDismisses(t *testing.T) {
 	m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyEscape})
 	if m.(app).sessionPickerOpen {
 		t.Error("picker still open after esc")
+	}
+}
+
+// pickerWithSessions opens the picker on a task holding one session per
+// label, created in order so ListSessionsForTask (last_active_at DESC, id
+// DESC) returns them last label first.
+func pickerWithSessions(t *testing.T, labels ...string) tea.Model {
+	t.Helper()
+	ctx := context.Background()
+	m, s := newTestApp(t)
+	parent, err := s.AddTask(ctx, "ongoing work")
+	if err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	for i, l := range labels {
+		if _, err := s.CreateSession(ctx, parent.ID, "ext-"+strconv.Itoa(i), "/tmp/work", l, ""); err != nil {
+			t.Fatalf("CreateSession: %v", err)
+		}
+	}
+	m = drive(t, m, refreshMsg{})
+	return stepR(t, m)
+}
+
+// sessionLabels returns n distinct labels, s-01 .. s-n, none a substring
+// of another so a view assertion on one cannot match a neighbour.
+func sessionLabels(n int) []string {
+	labels := make([]string, n)
+	for i := range labels {
+		labels[i] = fmt.Sprintf("s-%02d", i+1)
+	}
+	return labels
+}
+
+// Twenty-five sessions used to render as twenty-five rows and push the
+// box off the top of the screen. The picker now shows sessionPickerMaxRows
+// at a time, newest first, and says how many are scrolled off.
+func TestSessionPickerClampsToMaxRows(t *testing.T) {
+	m := pickerWithSessions(t, sessionLabels(25)...)
+	content := ansi.Strip(m.View().Content)
+	for _, want := range []string{"s-25", "s-16", "↓ 15 more"} {
+		if !strings.Contains(content, want) {
+			t.Errorf("picker missing %q:\n%s", want, content)
+		}
+	}
+	for _, dont := range []string{"s-15", "s-01", "↑"} {
+		if strings.Contains(content, dont) {
+			t.Errorf("picker shows %q, which should be scrolled off:\n%s", dont, content)
+		}
+	}
+	if got := strings.Count(content, "\n"); got > 29 {
+		t.Errorf("view is %d lines tall, want it to fit the 30-row terminal", got+1)
+	}
+}
+
+// Moving the highlight past the last visible row scrolls the window by
+// one, so the highlight is always on screen; the digit shortcuts renumber
+// with it.
+func TestSessionPickerScrollsWithTheHighlight(t *testing.T) {
+	m := pickerWithSessions(t, sessionLabels(25)...)
+	for range 11 { // 0 → 11: the eleventh session, one past the window
+		m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyDown})
+	}
+	a := m.(app)
+	if a.sessionPickerSel != 11 || a.sessionPickerTop != 1 {
+		t.Fatalf("sel, top = %d, %d; want 11, 1", a.sessionPickerSel, a.sessionPickerTop)
+	}
+	content := ansi.Strip(m.View().Content)
+	for _, want := range []string{"s-24", "s-15", "↑ 1 more", "↓ 14 more"} {
+		if !strings.Contains(content, want) {
+			t.Errorf("picker missing %q after scrolling:\n%s", want, content)
+		}
+	}
+	if strings.Contains(content, "s-25") {
+		t.Errorf("newest session still shown after the window scrolled past it:\n%s", content)
+	}
+
+	// Back up to the top row pulls the window back too.
+	for range 11 {
+		m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyUp})
+	}
+	a = m.(app)
+	if a.sessionPickerSel != 0 || a.sessionPickerTop != 0 {
+		t.Errorf("sel, top = %d, %d after moving back up; want 0, 0", a.sessionPickerSel, a.sessionPickerTop)
+	}
+}
+
+// A digit picks the row carrying that number in the window, not the n-th
+// session overall, so what the user reads is what they get.
+func TestSessionPickerDigitPicksVisibleRow(t *testing.T) {
+	m := pickerWithSessions(t, sessionLabels(25)...)
+	for range 11 {
+		m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyDown})
+	}
+	a := m.(app)
+	rows := a.sessionPickerMatches()
+	if got := rows[a.sessionPickerTop].Label; got != "s-24" {
+		t.Fatalf("first visible row is %q, want s-24", got)
+	}
+	m2, cmd := m.Update(keyPress('1'))
+	if m2.(app).sessionPickerOpen {
+		t.Error("picker still open after choosing a session by digit")
+	}
+	if cmd == nil {
+		t.Error("choosing a visible row by digit did not produce a resume command")
+	}
+}
+
+// A short terminal shows fewer rows still, so the picker's chrome (title,
+// filter, "+ new session", the overflow row) never leaves the screen.
+func TestSessionPickerFitsAShortTerminal(t *testing.T) {
+	m := pickerWithSessions(t, sessionLabels(25)...)
+	m = drive(t, m, tea.WindowSizeMsg{Width: 100, Height: 14})
+	content := ansi.Strip(m.View().Content)
+	for _, want := range []string{"claude sessions", "+ new session", "s-25", "s-21", "↓ 20 more"} {
+		if !strings.Contains(content, want) {
+			t.Errorf("picker missing %q on a 14-row terminal:\n%s", want, content)
+		}
+	}
+	if strings.Contains(content, "s-20") {
+		t.Errorf("sixth session shown on a terminal with room for five:\n%s", content)
+	}
+}
+
+// Typing narrows the list to the sessions whose label matches, and enter
+// resumes the highlighted match rather than the first session overall.
+func TestSessionPickerTypeToFilter(t *testing.T) {
+	m := pickerWithSessions(t, "alpha repo", "beta repo", "gamma repo")
+	for _, r := range "bta" { // a subsequence, not a substring
+		m = drive(t, m, keyPress(r))
+	}
+	a := m.(app)
+	if a.sessionPickerQuery != "bta" {
+		t.Fatalf("query = %q, want bta", a.sessionPickerQuery)
+	}
+	rows := a.sessionPickerMatches()
+	if len(rows) != 1 || rows[0].Label != "beta repo" {
+		t.Fatalf("matches = %+v, want just beta repo", rows)
+	}
+	content := ansi.Strip(m.View().Content)
+	if !strings.Contains(content, "beta repo") || strings.Contains(content, "alpha repo") {
+		t.Errorf("filtered picker should show beta and not alpha:\n%s", content)
+	}
+
+	m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyDown}) // onto the one match
+	m2, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if m2.(app).sessionPickerOpen {
+		t.Error("picker still open after enter on a filtered match")
+	}
+	if cmd == nil {
+		t.Error("enter on a filtered match did not produce a resume command")
+	}
+}
+
+// A filter nothing matches says so, keeps "+ new session" reachable, and
+// backspace brings the list back.
+func TestSessionPickerNoMatchThenBackspace(t *testing.T) {
+	m := pickerWithSessions(t, "alpha repo", "beta repo")
+	for _, r := range "zzz" {
+		m = drive(t, m, keyPress(r))
+	}
+	content := ansi.Strip(m.View().Content)
+	if !strings.Contains(content, "no matching sessions") || !strings.Contains(content, "+ new session") {
+		t.Errorf("empty filter result should say so and keep the new row:\n%s", content)
+	}
+	for range 3 {
+		m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyBackspace})
+	}
+	a := m.(app)
+	if a.sessionPickerQuery != "" || len(a.sessionPickerMatches()) != 2 {
+		t.Errorf("query = %q with %d matches after backspacing; want the full list back",
+			a.sessionPickerQuery, len(a.sessionPickerMatches()))
+	}
+}
+
+func TestSessionPickerWindow(t *testing.T) {
+	cases := []struct {
+		name             string
+		sel, top, n, vis int
+		want             int
+	}{
+		{"new row keeps the window", 0, 3, 25, 10, 3},
+		{"inside the window", 5, 0, 25, 10, 0},
+		{"one past the bottom scrolls by one", 11, 0, 25, 10, 1},
+		{"far below jumps", 25, 0, 25, 10, 15},
+		{"above the window pulls it up", 2, 5, 25, 10, 1},
+		{"window never overruns the end", 25, 20, 25, 10, 15},
+		{"fewer rows than the window", 3, 2, 3, 10, 0},
+		{"no rows", 0, 0, 0, 10, 0},
+	}
+	for _, c := range cases {
+		if got := sessionPickerWindow(c.sel, c.top, c.n, c.vis); got != c.want {
+			t.Errorf("%s: sessionPickerWindow(%d, %d, %d, %d) = %d, want %d",
+				c.name, c.sel, c.top, c.n, c.vis, got, c.want)
+		}
 	}
 }
 

@@ -700,7 +700,9 @@ type app struct {
 	sessionPickerProjectID int64 // the task's project, for its default cwd
 	sessionPickerLabel     string
 	sessionPickerSessions  []task.Session
-	sessionPickerSel       int
+	sessionPickerQuery     string // type-to-filter over the session labels
+	sessionPickerSel       int    // 0 = "+ new session", k = the k-th matching session
+	sessionPickerTop       int    // first matching session row in the scroll window
 
 	// Command palette overlay: a fuzzy-matched command list anchored just
 	// above the footer.
