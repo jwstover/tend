@@ -234,16 +234,38 @@ defmodule Tend.Template.Parity.Go do
       input = Path.join(dir, "cases.jsonl")
       File.write!(input, Enum.map(cases, &(JSON.encode!(&1) <> "\n")))
 
-      case System.cmd("go", ["run", ".", input],
-             cd: dir,
-             stderr_to_stdout: false,
-             env: [{"GOWORK", "off"}]
-           ) do
-        {output, 0} -> output |> String.split("\n", trim: true) |> Enum.map(&JSON.decode!/1)
-        {output, status} -> raise "the Go parity driver exited #{status}: #{output}"
+      # `stderr_to_stdout: false` on the happy path on purpose: stdout is the
+      # JSONL this decodes, and anything Go says on stderr would corrupt it.
+      case run_driver(dir, input, false) do
+        {output, 0} ->
+          output |> String.split("\n", trim: true) |> Enum.map(&JSON.decode!/1)
+
+        {output, status} ->
+          raise "the Go parity driver exited #{status}:\n" <> detail(dir, input, output)
       end
     after
       File.rm_rf(dir)
     end
+  end
+
+  # A driver that fails to compile says so on stderr and nowhere else, so the
+  # message from the run above is empty exactly when it matters most. The
+  # failure is deterministic and the driver is a stdlib-only single file, so
+  # re-run it merged purely to build the message -- and fall back to the
+  # original output in the one case where the re-run does not fail the same
+  # way, rather than raising with a list of JSON results.
+  defp detail(dir, input, fallback) do
+    case run_driver(dir, input, true) do
+      {merged, status} when status != 0 -> String.trim(merged)
+      _recovered -> String.trim(fallback)
+    end
+  end
+
+  defp run_driver(dir, input, stderr_to_stdout?) do
+    System.cmd("go", ["run", ".", input],
+      cd: dir,
+      stderr_to_stdout: stderr_to_stdout?,
+      env: [{"GOWORK", "off"}]
+    )
   end
 end
