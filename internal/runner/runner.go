@@ -27,7 +27,9 @@
 //     (workflow.NudgePrompt), and if it still does not, the run fails
 //     naming the step and the outcomes it routes.
 //  5. Gate steps: create the step run, set the run waiting_review, and
-//     poll the step run until the TUI or CLI records a decision.
+//     poll the step run until the TUI or CLI records a decision. A
+//     message recorded with the decision reaches the next step as its
+//     Feedback, alongside the reviewed deliverable as its Input.
 //  6. paused and cancelled, written by the TUI or CLI, are honoured by
 //     polling the run's state between steps and while a step runs.
 //  7. A failed run retried (Retry: Store.RetryRun takes it back to paused
@@ -265,6 +267,14 @@ func (r *Runner) claim(ctx context.Context, runID int64, takeover bool) (workflo
 // the step itself) is the reject-style case: the target keeps the Input
 // it had and gets the hand-off as Feedback instead. Either way
 // max_iterations bounds how often the target runs.
+//
+// A gate is the exception on a forward edge: its deliverable is a human's
+// message about what it reviewed, not a replacement for it (tend task
+// #322, "approve with a message"). So the target gets the gate's own
+// Input -- the deliverable under review -- as Input, and the message as
+// Feedback; a gate decided with no message hands its Input on alone, as
+// before. On a loop-back a gate behaves like any step: the message is the
+// Feedback the earlier step reworks against.
 func (r *Runner) nextStep(ctx context.Context, run workflow.Run, wf workflow.Workflow, last *workflow.StepRun) (*workflow.Step, string, string, error) {
 	if last == nil {
 		steps, err := r.Store.ListSteps(ctx, wf.ID)
@@ -319,6 +329,9 @@ func (r *Runner) nextStep(ctx context.Context, run workflow.Run, wf workflow.Wor
 	}
 	if len(prior) > 0 && next.SortOrder <= from.SortOrder {
 		return &next, prior[len(prior)-1].Input, carry, nil
+	}
+	if from.Kind == workflow.StepGate {
+		return &next, last.Input, last.Deliverable, nil
 	}
 	return &next, carry, "", nil
 }
@@ -696,7 +709,11 @@ func (r *Runner) waitGate(ctx context.Context, run workflow.Run, step workflow.S
 			if err := r.Store.SetRunState(ctx, run.ID, workflow.RunRunning); err != nil {
 				return workflow.StepRun{}, err
 			}
-			r.logf("run %d: gate %q decided: %s", run.ID, step.Name, fin.Outcome)
+			note := ""
+			if strings.TrimSpace(fin.Deliverable) != "" {
+				note = " (with a message for the next step)"
+			}
+			r.logf("run %d: gate %q decided: %s%s", run.ID, step.Name, fin.Outcome, note)
 			return fin, nil
 		}
 		cur, err := r.Store.GetRun(ctx, run.ID)

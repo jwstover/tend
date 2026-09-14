@@ -42,9 +42,12 @@ type PromptSubtask struct {
 //
 //	{{.Task.Title}} {{.Task.Body}} {{.Task.ID}}
 //	{{.Cwd}}
-//	{{.Input}}      previous step's deliverable, "" for the first step
+//	{{.Input}}      previous step's deliverable, "" for the first step;
+//	                after a gate, the deliverable the gate reviewed
 //	{{.Feedback}}   deliverable of the step that routed here on a
-//	                reject-style outcome, "" otherwise
+//	                reject-style outcome, or the message a reviewer
+//	                attached to a gate decision that led here (approve
+//	                with a message), "" otherwise
 //	{{.Iteration}}  1-based count of this step within the run
 //	{{.Outcomes}}   allowed outcomes for this step, so a prompt can tell
 //	                the agent what finish_step accepts

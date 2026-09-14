@@ -14,9 +14,11 @@ type modalKind int
 const (
 	modalNone modalKind = iota
 	modalLog
-	// modalGateFeedback collects the reviewer's feedback for a gate
-	// decision (runview.go): target is the gate's step run, extra the
-	// outcome being recorded, and the text becomes the gate's deliverable.
+	// modalGateFeedback collects the reviewer's text for a gate decision
+	// (runview.go) -- the feedback on a reject, the optional message on
+	// an approve or any other outcome: target is the gate's step run,
+	// extra the outcome being recorded, and the text becomes the gate's
+	// deliverable.
 	modalGateFeedback
 	// modalTakeoverDeliverable collects the deliverable for a step finished
 	// by hand after a takeover (takeover.go): target is the step run, extra

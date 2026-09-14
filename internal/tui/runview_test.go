@@ -745,6 +745,116 @@ func TestRunViewGatePickerRejectAsksForFeedback(t *testing.T) {
 	}
 }
 
+// tend task #322: `A` on a waiting gate approves it with a message. It
+// opens the same modal `x` does, titled for the approve, and the text
+// submitted lands as the gate's deliverable -- what the runner hands the
+// next step as {{.Feedback}} alongside the reviewed input. esc backs out
+// with the gate untouched, and the pane advertises the key.
+func TestRunViewGateApproveWithMessage(t *testing.T) {
+	ctx := context.Background()
+	stubRunnerAlive(t, true)
+	m, s := newTestApp(t)
+	l := newLiveRun(t, s, workflow.RunRunning)
+	l.atGate(t, s)
+	m = drive(t, m, tea.WindowSizeMsg{Width: 140, Height: 40})
+	m = drive(t, m, refreshMsg{})
+	m = openRun(t, m)
+
+	if content := ansi.Strip(m.View().Content); !strings.Contains(content, "A approve with message") {
+		t.Errorf("gate pane does not offer approve with message:\n%s", content)
+	}
+
+	// esc cancels: no decision.
+	m = drive(t, m, keyPress('A'))
+	a := m.(app)
+	if !a.modal.Active() || a.modal.kind != modalGateFeedback || a.modal.extra != "approve" ||
+		!strings.Contains(a.modal.title, "approve review") || !strings.Contains(a.modal.title, "message") {
+		t.Fatalf("modal = %+v, want the gate message modal for approving the review gate", a.modal)
+	}
+	m = drive(t, m, esc())
+	if m.(app).modal.Active() {
+		t.Fatal("esc did not close the message modal")
+	}
+	if sr, _ := s.GetStepRun(ctx, l.stepRun.ID); sr.Finished() {
+		t.Fatal("a cancelled approve decided the gate")
+	}
+
+	// Submitting records approve with the text as the deliverable.
+	m = drive(t, m, keyPress('A'))
+	m = typeText(t, m, "merge it, but squash the commits first")
+	m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyEnter, Mod: tea.ModCtrl})
+	if a := m.(app); a.modal.Active() {
+		t.Fatal("modal still active after submit")
+	} else if !strings.Contains(a.status.text, "review: approve with a message") {
+		t.Errorf("status = %+v, want it to say the approve carried a message", a.status)
+	}
+	waitFor(t, "gate approved with a message", func() bool {
+		sr, err := s.GetStepRun(ctx, l.stepRun.ID)
+		return err == nil && sr.Finished() && sr.Outcome == "approve" && sr.Deliverable == "merge it, but squash the commits first"
+	})
+
+	// The decided gate shows what the reviewer said.
+	m = drive(t, m, refreshMsg{})
+	content := ansi.Strip(m.View().Content)
+	for _, want := range []string{"gate decided: approve", "FEEDBACK", "squash the commits"} {
+		if !strings.Contains(content, want) {
+			t.Errorf("decided gate pane missing %q:\n%s", want, content)
+		}
+	}
+}
+
+// ctrl+enter in the outcome picker decides on the highlighted outcome
+// with a message, the picker's counterpart of `A` for a gate whose edges
+// route outcomes beyond approve/reject.
+func TestRunViewGatePickerDecidesWithMessage(t *testing.T) {
+	ctx := context.Background()
+	stubRunnerAlive(t, true)
+	m, s := newTestApp(t)
+	l := newLiveRun(t, s, workflow.RunRunning)
+	edges, err := s.ListEdges(ctx, l.wf.ID)
+	if err != nil {
+		t.Fatalf("ListEdges: %v", err)
+	}
+	for _, e := range edges {
+		if e.FromStepID == l.gate.ID {
+			if err := s.DeleteEdge(ctx, e.ID); err != nil {
+				t.Fatalf("DeleteEdge: %v", err)
+			}
+		}
+	}
+	for _, outcome := range []string{"continue", "stop"} {
+		if _, err := s.SetEdge(ctx, l.gate.ID, outcome, l.agent.ID, nil); err != nil {
+			t.Fatalf("SetEdge(%s): %v", outcome, err)
+		}
+	}
+	l.atGate(t, s)
+	m = drive(t, m, tea.WindowSizeMsg{Width: 140, Height: 40})
+	m = drive(t, m, refreshMsg{})
+	m = openRun(t, m)
+
+	m = drive(t, m, keyPress('o'))
+	if content := ansi.Strip(m.View().Content); !strings.Contains(content, "decide with a message") {
+		t.Errorf("picker does not say how to attach a message:\n%s", content)
+	}
+	// continue is highlighted first (alphabetical); ctrl+enter asks for
+	// the message instead of deciding outright.
+	m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyEnter, Mod: tea.ModCtrl})
+	a := m.(app)
+	if a.gatePickerOpen || !a.modal.Active() || a.modal.kind != modalGateFeedback || a.modal.extra != "continue" ||
+		!strings.Contains(a.modal.title, "continue review") {
+		t.Fatalf("picker=%v modal=%+v, want the message modal for continue", a.gatePickerOpen, a.modal)
+	}
+	if sr, _ := s.GetStepRun(ctx, l.stepRun.ID); sr.Finished() {
+		t.Fatal("ctrl+enter decided the gate before the message was written")
+	}
+	m = typeText(t, m, "take the second option")
+	drive(t, m, tea.KeyPressMsg{Code: tea.KeyEnter, Mod: tea.ModCtrl})
+	waitFor(t, "gate decided as continue with a message", func() bool {
+		sr, err := s.GetStepRun(ctx, l.stepRun.ID)
+		return err == nil && sr.Finished() && sr.Outcome == "continue" && sr.Deliverable == "take the second option"
+	})
+}
+
 // The detail pane's WORKFLOWS row for a run waiting at a gate wears the
 // blocked glyph and points at the run view to decide it.
 func TestDetailPaneHighlightsWaitingGate(t *testing.T) {

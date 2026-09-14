@@ -609,14 +609,15 @@ func (a app) gatePaneLines(sr workflow.StepRun) []string {
 	return out
 }
 
-// gateKeyHints is the key line under a waiting gate: `a` and `x` when the
-// gate routes approve and reject (or has no edges, when either ends the
-// run), and `o` for the picker whenever it routes anything else.
+// gateKeyHints is the key line under a waiting gate: `a`/`A` and `x` when
+// the gate routes approve and reject (or has no edges, when either ends
+// the run), and `o` for the picker whenever it routes anything else.
 func gateKeyHints(s Styles, outcomes []string) string {
 	direct := func(o string) bool { return len(outcomes) == 0 || slices.Contains(outcomes, o) }
 	var parts []string
 	if direct(workflow.OutcomeApprove) {
 		parts = append(parts, s.FooterKey.Render("a")+s.Muted.Render(" approve"))
+		parts = append(parts, s.FooterKey.Render("A")+s.Muted.Render(" approve with message"))
 	}
 	if direct(workflow.OutcomeReject) {
 		parts = append(parts, s.FooterKey.Render("x")+s.Muted.Render(" reject with feedback"))
@@ -701,9 +702,11 @@ func (a app) handleRunViewKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, a.keys.PauseRun):
 		return a, a.pauseOrResumeRun()
 	case key.Matches(msg, a.keys.Approve):
-		return a, a.decideGate(workflow.OutcomeApprove)
+		return a, a.decideGate(workflow.OutcomeApprove, false)
+	case key.Matches(msg, a.keys.ApproveWithMessage):
+		return a, a.decideGate(workflow.OutcomeApprove, true)
 	case key.Matches(msg, a.keys.Reject):
-		return a, a.decideGate(workflow.OutcomeReject)
+		return a, a.decideGate(workflow.OutcomeReject, false)
 	case key.Matches(msg, a.keys.Outcome):
 		return a, a.pickGateOutcome()
 	case key.Matches(msg, a.keys.Takeover):
@@ -1036,12 +1039,13 @@ func (a app) waitingGate() (workflow.StepRun, flash, bool) {
 	return cur, flash{}, true
 }
 
-// decideGate is `a` and `x`: it settles the waiting gate on outcome when
-// the gate's edges route it. A gate that routes other outcomes instead
-// opens the outcome picker over the ones it does, so a decision never
-// silently ends the run for want of an edge. A gate with no edges at all
-// accepts anything -- ending the run is what its author asked for.
-func (a *app) decideGate(outcome string) tea.Cmd {
+// decideGate is `a`, `A` and `x`: it settles the waiting gate on outcome
+// when the gate's edges route it. withMessage (`A`) asks for a message to
+// send along first. A gate that routes other outcomes instead opens the
+// outcome picker over the ones it does, so a decision never silently ends
+// the run for want of an edge. A gate with no edges at all accepts
+// anything -- ending the run is what its author asked for.
+func (a *app) decideGate(outcome string, withMessage bool) tea.Cmd {
 	cur, why, ok := a.waitingGate()
 	if !ok {
 		return statusCmd(why)
@@ -1052,18 +1056,25 @@ func (a *app) decideGate(outcome string) tea.Cmd {
 		return statusCmd(flash{text: fmt.Sprintf("%s routes %s, not %s — pick one",
 			a.rv.stepNames[cur.StepID], strings.Join(outcomes, ", "), outcome)})
 	}
-	return a.applyGateOutcome(cur, outcome)
+	return a.applyGateOutcome(cur, outcome, withMessage)
 }
 
-// applyGateOutcome records outcome on the gate's step run. A reject asks
-// for feedback first (modalGateFeedback): the text becomes the gate's
-// deliverable, which the runner hands to the step the reject edge loops
-// back to as its {{.Feedback}}. Any other outcome is recorded at once
-// with no deliverable, so the gate passes its input through.
-func (a *app) applyGateOutcome(cur workflow.StepRun, outcome string) tea.Cmd {
+// applyGateOutcome records outcome on the gate's step run. A reject
+// always asks for feedback first (modalGateFeedback); any other outcome
+// asks only when withMessage is set (`A`, or ctrl+enter in the picker --
+// tend task #322). Either way the text becomes the gate's deliverable,
+// and runner.nextStep hands it to the next step as its {{.Feedback}}: on
+// a loop-back that is the rework brief, on a forward edge the reviewer's
+// note alongside the reviewed deliverable, which stays the {{.Input}}.
+// Without a message the outcome is recorded at once with no deliverable,
+// so the gate passes its input through alone.
+func (a *app) applyGateOutcome(cur workflow.StepRun, outcome string, withMessage bool) tea.Cmd {
 	name := a.rv.stepNames[cur.StepID]
-	if outcome == workflow.OutcomeReject {
+	switch {
+	case outcome == workflow.OutcomeReject:
 		return a.modal.Open(modalGateFeedback, true, fmt.Sprintf("reject %s — feedback for the next step", name), cur.ID, outcome)
+	case withMessage:
+		return a.modal.Open(modalGateFeedback, true, fmt.Sprintf("%s %s — message for the next step", outcome, name), cur.ID, outcome)
 	}
 	return a.finishGate(cur.ID, name, outcome, "")
 }
@@ -1073,8 +1084,11 @@ func (a *app) applyGateOutcome(cur workflow.StepRun, outcome string) tea.Cmd {
 // routes on the outcome.
 func (a app) finishGate(stepRunID int64, name, outcome, feedback string) tea.Cmd {
 	text := fmt.Sprintf("%s: %s", name, outcome)
-	if feedback != "" {
+	switch {
+	case feedback != "" && outcome == workflow.OutcomeReject:
 		text += " with feedback"
+	case feedback != "":
+		text += " with a message"
 	}
 	return a.mutate(flash{kind: flashDone, text: text}, func() error {
 		return a.store.FinishStepRun(a.ctx, stepRunID, outcome, feedback)
@@ -1113,12 +1127,15 @@ func (a *app) closeGatePicker() {
 
 // handleGatePickerKey owns the keyboard while the picker is open, in the
 // other pickers' mould: arrows or ctrl-n/ctrl-p move, a digit picks
-// directly, Enter picks the highlight, esc dismisses. A pick lands on the
-// gate the picker was opened for; if the run has moved on meanwhile
-// (someone else decided it), the pick is dropped rather than misapplied.
+// directly, Enter picks the highlight, esc dismisses. ctrl+enter (or
+// alt+enter, the modal's own submit chord) picks the highlight with a
+// message for the next step, the picker's counterpart of `A`. A pick
+// lands on the gate the picker was opened for; if the run has moved on
+// meanwhile (someone else decided it), the pick is dropped rather than
+// misapplied.
 func (a app) handleGatePickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	outcomes := a.gatePickerOutcomes
-	pick := func(idx int) (tea.Model, tea.Cmd) {
+	pick := func(idx int, withMessage bool) (tea.Model, tea.Cmd) {
 		stepRunID := a.gatePickerStepRunID
 		a.closeGatePicker()
 		if idx < 0 || idx >= len(outcomes) {
@@ -1131,14 +1148,17 @@ func (a app) handleGatePickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if cur.ID != stepRunID {
 			return a, statusCmd(flash{text: "the run moved on; the gate you were deciding is gone"})
 		}
-		return a, a.applyGateOutcome(cur, outcomes[idx])
+		return a, a.applyGateOutcome(cur, outcomes[idx], withMessage)
+	}
+	if key.Matches(msg, a.modal.submitMulti) {
+		return pick(a.gatePickerSel, true)
 	}
 	switch msg.String() {
 	case "esc":
 		a.closeGatePicker()
 		return a, nil
 	case "enter":
-		return pick(a.gatePickerSel)
+		return pick(a.gatePickerSel, false)
 	case "up", "ctrl+p", "k":
 		if a.gatePickerSel > 0 {
 			a.gatePickerSel--
@@ -1152,7 +1172,7 @@ func (a app) handleGatePickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 	if len(msg.Text) == 1 && msg.Text[0] >= '1' && msg.Text[0] <= '9' {
 		if idx := int(msg.Text[0] - '1'); idx < len(outcomes) {
-			return pick(idx)
+			return pick(idx, false)
 		}
 	}
 	return a, nil
@@ -1160,7 +1180,7 @@ func (a app) handleGatePickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 // gatePickerView renders the chooser: the gate named in the title, then
 // its outcomes numbered in edge order. reject is marked as the one that
-// asks for feedback.
+// asks for feedback; the footer says how to send a message with any other.
 func (a app) gatePickerView() string {
 	s, g := a.styles, a.styles.Glyphs
 	w := max(a.width, 20)
@@ -1200,6 +1220,7 @@ func (a app) gatePickerView() string {
 		}
 		lines = append(lines, row(content))
 	}
+	lines = append(lines, row(s.Muted.Render("ctrl+⏎ decide with a message for the next step")))
 	lines = append(lines, "  "+cb.Render(g.BoxBL+hbar+g.BoxBR))
 	return strings.Join(lines, "\n")
 }
@@ -1470,7 +1491,7 @@ func (a app) runViewHints() [][2]string {
 	case workflow.RunPaused:
 		hints = append(hints, [2]string{"p", "resume"}, [2]string{"t", "take over step"})
 	case workflow.RunWaitingReview:
-		hints = append(hints, [2]string{"a/x/o", "approve / reject / pick"}, [2]string{"p", "pause"})
+		hints = append(hints, [2]string{"a/A/x/o", "approve / with message / reject / pick"}, [2]string{"p", "pause"})
 	case workflow.RunRunning:
 		hints = append(hints, [2]string{"p", "pause"}, [2]string{"t", "take over step"})
 	case workflow.RunFailed:
