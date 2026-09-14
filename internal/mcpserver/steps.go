@@ -38,8 +38,9 @@ func registerStepTools(srv *mcp.Server, store Store, stepRunID int64) {
 		Name: "get_workflow_step",
 		Description: "Get the workflow step this session is executing: the workflow and step " +
 			"names, which iteration of the step this is, the input handed forward by the " +
-			"previous step, the feedback from the step that routed back here (if any), and " +
-			"the outcomes finish_step accepts.",
+			"previous step, the feedback (if any: what the step that routed back here said, " +
+			"or the message a reviewer attached when approving the gate before this step), " +
+			"and the outcomes finish_step accepts.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, stepOut, error) {
 		return fetchStep(ctx, store, stepRunID)
 	})

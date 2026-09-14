@@ -52,13 +52,14 @@ type keyMap struct {
 
 	// Run view (runview.go). j/k, tab, g/G, esc reuse the shared bindings;
 	// these are the run controls, each a write the CLI could make too.
-	CancelRun key.Binding // `cc` chord: write cancelled; the runner kills the step
-	PauseRun  key.Binding // pause a live run / resume a paused one / retry a failed one
-	Approve   key.Binding // approve the gate the run is waiting at
-	Reject    key.Binding // reject it, with feedback for the step it loops back to
-	Outcome   key.Binding // pick any of the gate's edge outcomes
-	Takeover  key.Binding // pause the run and resume the current step's session interactively (takeover.go)
-	RawLog    key.Binding // `v` (verbose): raw stream-json instead of the rendering
+	CancelRun          key.Binding // `cc` chord: write cancelled; the runner kills the step
+	PauseRun           key.Binding // pause a live run / resume a paused one / retry a failed one
+	Approve            key.Binding // approve the gate the run is waiting at
+	ApproveWithMessage key.Binding // approve it with a message the next step gets as its feedback
+	Reject             key.Binding // reject it, with feedback for the step it loops back to
+	Outcome            key.Binding // pick any of the gate's edge outcomes
+	Takeover           key.Binding // pause the run and resume the current step's session interactively (takeover.go)
+	RawLog             key.Binding // `v` (verbose): raw stream-json instead of the rendering
 
 	// Tree expansion in the list view.
 	ExpandToggle key.Binding // ⏎/Tab flips a branch (⏎ falls back to detail on leaves)
@@ -157,12 +158,13 @@ func defaultKeyMap() keyMap {
 		StepUp:   key.NewBinding(key.WithKeys("K"), key.WithHelp("K", "move up")),
 		Validate: key.NewBinding(key.WithKeys("v"), key.WithHelp("v", "validate")),
 
-		CancelRun: key.NewBinding(key.WithKeys("c"), key.WithHelp("cc", "cancel run")),
-		PauseRun:  key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "pause / resume / retry")),
-		Approve:   key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "approve gate")),
-		Reject:    key.NewBinding(key.WithKeys("x"), key.WithHelp("x", "reject gate")),
-		Outcome:   key.NewBinding(key.WithKeys("o"), key.WithHelp("o", "pick gate outcome")),
-		Takeover:  key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "take over step")),
+		CancelRun:          key.NewBinding(key.WithKeys("c"), key.WithHelp("cc", "cancel run")),
+		PauseRun:           key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "pause / resume / retry")),
+		Approve:            key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "approve gate")),
+		ApproveWithMessage: key.NewBinding(key.WithKeys("A"), key.WithHelp("A", "approve gate with message")),
+		Reject:             key.NewBinding(key.WithKeys("x"), key.WithHelp("x", "reject gate")),
+		Outcome:            key.NewBinding(key.WithKeys("o"), key.WithHelp("o", "pick gate outcome")),
+		Takeover:           key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "take over step")),
 		// `v` for verbose: `l` is "pane to the right" everywhere in the app,
 		// so it cannot double as a toggle in a log pane.
 		RawLog: key.NewBinding(key.WithKeys("v"), key.WithHelp("v", "raw log")),

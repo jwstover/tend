@@ -667,9 +667,9 @@ func TestWorkflowStatusShowsOneRun(t *testing.T) {
 // approve and reject settle the gate the run is waiting at with the same
 // one-shot write the TUI and finish_step make. A plain approve records an
 // empty deliverable so the runner passes the gate's input through (what
-// the TUI's `a` writes); --feedback becomes the deliverable, which a
-// forward edge hands on as the next step's input. A reject must carry
-// non-blank feedback.
+// the TUI's `a` writes); --feedback becomes the deliverable, which the
+// runner hands the next step as its feedback alongside the reviewed
+// input. A reject must carry non-blank feedback.
 func TestWorkflowApproveAndReject(t *testing.T) {
 	s := newFakeWorkflowStore()
 	wf := s.addWorkflow("ship", "implement", "review")

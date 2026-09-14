@@ -68,9 +68,11 @@ var ErrStepRunFinished = errors.New("step run already finished")
 const OutcomeDone = "done"
 
 // OutcomeApprove and OutcomeReject are the conventional gate outcomes: the
-// TUI's `a` and `x` keys write them, and a reject is the one that carries
-// the reviewer's feedback as its deliverable. They are conventions, not a
-// rule -- a gate routes whatever outcomes its edges name.
+// TUI's `a` and `x` keys write them. A reject always carries the
+// reviewer's feedback as its deliverable; an approve may carry a message
+// too (the TUI's `A`, the CLI's --feedback), which the next step gets as
+// its Feedback alongside the reviewed deliverable. They are conventions,
+// not a rule -- a gate routes whatever outcomes its edges name.
 const (
 	OutcomeApprove = "approve"
 	OutcomeReject  = "reject"

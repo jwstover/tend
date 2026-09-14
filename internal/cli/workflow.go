@@ -512,17 +512,17 @@ func runnerNote(run workflow.Run) string {
 
 // newWorkflowGateCmd builds `approve` and `reject`: the shell's way to
 // decide the gate a run is waiting at. The write is the same one-shot
-// FinishStepRun the TUI's `a`/`x` and the finish_step tool make; the
+// FinishStepRun the TUI's `a`/`A`/`x` and the finish_step tool make; the
 // runner polls the row and routes on the outcome. --feedback is the
-// gate's deliverable, and runner.nextStep decides what that means: on a
-// loop-back edge (the reject case) the target keeps its input and gets
-// the text as {{.Feedback}}; on a forward edge (the usual approve) the
-// text REPLACES the reviewed deliverable as the next step's {{.Input}}.
-// So reject requires non-blank feedback, and approve leaves it out by
-// default so the gate passes its input through unchanged, exactly as the
-// TUI's `a` does. A gate whose edges route other outcomes is refused
-// naming them, so a decision never silently ends the run for want of an
-// edge.
+// gate's deliverable, and runner.nextStep hands it to the next step as
+// its {{.Feedback}} either way: on a loop-back edge (the reject case) the
+// target keeps its input and reworks against the text; on a forward edge
+// (the usual approve) the text rides ALONGSIDE the reviewed deliverable,
+// which stays the next step's {{.Input}} (tend task #322). So reject
+// requires non-blank feedback, and approve leaves it out by default so
+// the gate passes its input through alone, exactly as the TUI's `a`
+// does. A gate whose edges route other outcomes is refused naming them,
+// so a decision never silently ends the run for want of an edge.
 func newWorkflowGateCmd(open openWorkflowStore, outcome string) *cobra.Command {
 	var feedback string
 	short := "Approve the gate a run is waiting at"
@@ -555,8 +555,9 @@ func newWorkflowGateCmd(open openWorkflowStore, outcome string) *cobra.Command {
 
 // optionalFeedbackUsage is --feedback's help on approve and decide, where
 // the flag may be left out.
-const optionalFeedbackUsage = "optional; becomes the gate's deliverable: the next step's {{.Input}} on a forward edge (replacing the reviewed deliverable), " +
-	"its {{.Feedback}} on a loop-back edge; omitted, the gate passes its input through unchanged as the TUI does"
+const optionalFeedbackUsage = "optional message for the next step; becomes the gate's deliverable and reaches the step as its {{.Feedback}}, " +
+	"alongside the reviewed deliverable as its {{.Input}} (on a loop-back edge, the step keeps its own input and reworks against the text); " +
+	"omitted, the gate passes its input through alone as the TUI's `a` does"
 
 // newWorkflowDecideCmd builds `decide <run-id> <outcome>`: approve/reject
 // for a gate whose edges route other outcomes (a "Needs human" gate that
