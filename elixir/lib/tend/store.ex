@@ -4,9 +4,9 @@ defmodule Tend.Store do
 
   A port of `internal/store`, built up in parts: opening the file and getting
   the schema onto it, the flat task surface on top of that, then the workflow
-  definition rows and the agent-session and tmux-session surface. Nothing calls
-  any of it yet -- the CLI commands, MCP tools and TUI views that would are
-  later phases.
+  definition rows, the agent-session and tmux-session surface, and the task
+  hierarchy and project assignment. Nothing calls any of it yet -- the CLI
+  commands, MCP tools and TUI views that would are later phases.
 
   Built on the raw `Exqlite.Sqlite3` API rather than Ecto. The Go store is
   hand-written SQL against a schema that two binaries have to agree on
@@ -21,7 +21,10 @@ defmodule Tend.Store do
   written inline as a module attribute -- copied **textually** from the
   like-named constant in `internal/store/gen/*.sql.go` so a reviewer can diff
   the two. Where a copy had to change, a comment above it says why; today
-  there is exactly one such place (`@set_task_state`).
+  there is exactly one such place (`@set_task_state`). One more is copied
+  verbatim but not handed to SQLite as written -- `@set_tasks_project` keeps
+  sqlc's `/*SLICE:ids*/?` marker so it still diffs, and `tasks_project_sql/1`
+  performs the same rewrite the generated method does on every call.
 
   Rows come back from those statements as plain lists and are turned into
   domain structs by `Tend.Store.Row`, the port of the mappers at the bottom of
@@ -50,6 +53,7 @@ defmodule Tend.Store do
   alias Tend.Store.Watcher
   alias Tend.Task
   alias Tend.Task.ChildCount
+  alias Tend.Task.Event
   alias Tend.Task.Priority
   alias Tend.Task.Project
   alias Tend.Task.Session
@@ -137,6 +141,13 @@ defmodule Tend.Store do
   """
   @spec close(t()) :: :ok | {:error, term()}
   def close(%__MODULE__{conn: conn}), do: Sqlite3.close(conn)
+
+  # What Go's `sql.ErrNoRows` prints, minus its `sql: ` prefix. exqlite reports
+  # no rows as an empty list rather than an error, so a read that requires a
+  # row has to say so itself; where the condition is worth a reason of its own
+  # it gets one (`{:task_not_found, id}`), and where only Go's wording
+  # distinguishes two call sites they wrap this instead.
+  @no_rows "no rows in result set"
 
   # -- the copied statements -------------------------------------------------
   #
@@ -466,6 +477,57 @@ defmodule Tend.Store do
   WHERE external_id = ? AND status_updated_at IS ?
   """
 
+  @create_child_task """
+  INSERT INTO tasks (title, parent_id, project_id)
+  SELECT ?1, p.id, p.project_id
+  FROM tasks p
+  WHERE p.id = ?2
+  RETURNING id, title, body_md, state, parent_id, priority, due, snooze_until, created_at, updated_at, completed_at, project_id
+  """
+
+  @list_child_tasks """
+  SELECT id, title, body_md, state, parent_id, priority, due, snooze_until, created_at, updated_at, completed_at, project_id
+  FROM tasks
+  WHERE parent_id = ?
+  ORDER BY id
+  """
+
+  @list_child_ids """
+  SELECT id
+  FROM tasks
+  WHERE parent_id = ?
+  """
+
+  @set_task_parent """
+  UPDATE tasks
+  SET parent_id  = ?1,
+      updated_at = datetime('now')
+  WHERE id = ?2
+  """
+
+  # The one statement that is not handed to SQLite as written: sqlc emits an
+  # `/*SLICE:ids*/?` marker and its generated method rewrites it into one `?`
+  # per id (or the literal `NULL` for an empty slice) before every call. The
+  # heredoc keeps the marker so it still diffs against the constant byte for
+  # byte, and `tasks_project_sql/1` does the same rewrite.
+  @set_tasks_project """
+  UPDATE tasks
+  SET project_id = ?1,
+      updated_at = datetime('now')
+  WHERE id IN (/*SLICE:ids*/?)
+  """
+
+  @create_task_event """
+  INSERT INTO task_events (task_id, task_title, kind, old_value, new_value)
+  VALUES (?, ?, ?, ?, ?)
+  """
+
+  @get_project """
+  SELECT id, name, sort_order, archived_at, created_at, updated_at, cwd
+  FROM projects
+  WHERE id = ?
+  """
+
   # -- capture ---------------------------------------------------------------
 
   @doc """
@@ -513,6 +575,30 @@ defmodule Tend.Store do
       when is_integer(project_id) and is_binary(body) do
     with {:ok, normalized} <- Task.normalize_title(title) do
       insert_task(store, @create_task_with_body, [normalized, body, project_id])
+    end
+  end
+
+  @doc """
+  Captures a sub-task under an existing task.
+
+  The child's `project_id` is copied off the parent by the statement itself
+  rather than passed in, so a sub-task can never sit in a different project
+  from its parent and the capture stays one round trip. The invariant that
+  buys is the one `set_parent/3` and `set_project/3` then have to preserve.
+
+  A parent id that is not there matches no row, so the insert writes nothing
+  and the `RETURNING` clause yields nothing; that is an error, exactly as Go's
+  `sql.ErrNoRows` from the same statement is.
+  """
+  @spec add_child(t(), integer(), String.t()) :: {:ok, Task.t()} | {:error, Tend.Error.t()}
+  def add_child(store, parent_id, title) when is_integer(parent_id) do
+    with {:ok, normalized} <- Task.normalize_title(title) do
+      insert_task(
+        store,
+        @create_child_task,
+        [normalized, parent_id],
+        "inserting sub-task of #{parent_id}"
+      )
     end
   end
 
@@ -578,6 +664,24 @@ defmodule Tend.Store do
   def list_inbox(store, project_id) do
     with {:ok, rows} <-
            query(store, @list_inbox_tasks, [project_filter(project_id)], "listing inbox tasks") do
+      Row.to_tasks(rows)
+    end
+  end
+
+  @doc """
+  The sub-tasks of a task, oldest first. One level only -- the tree is walked
+  by calling this again, or, for the id-only walk the hierarchy writes need,
+  by `subtree_ids/2`.
+  """
+  @spec list_children(t(), integer()) :: {:ok, [Task.t()]} | {:error, Tend.Error.t()}
+  def list_children(store, parent_id) when is_integer(parent_id) do
+    with {:ok, rows} <-
+           query(
+             store,
+             @list_child_tasks,
+             [parent_id],
+             "listing children of task #{parent_id}"
+           ) do
       Row.to_tasks(rows)
     end
   end
@@ -1219,6 +1323,248 @@ defmodule Tend.Store do
     )
   end
 
+  # -- hierarchy and project assignment ---------------------------------------
+  #
+  # The two writes that touch more than one row, and the only ones that log
+  # their own event rather than leaving it to a trigger. Both move a whole
+  # sub-tree, and a per-row trigger would fill the activity log with one entry
+  # per descendant for a single user action -- see the note in migration 00008
+  # (`project`) and the one it points at in 00015 (`parent`).
+
+  @doc """
+  Moves a task, and its whole sub-tree, into a project.
+
+  The sub-tree goes along because a child sitting in a different project from
+  its parent is incoherent -- the invariant `add_child/3`'s statement
+  establishes on the way in.
+
+  A move to where the task already is writes nothing and logs nothing,
+  mirroring the state trigger's `OLD <> NEW` guard. Otherwise one `project`
+  event is written for the one task the user moved, naming the project it left
+  and the one it joined. The names are *snapshotted*, the way `task_events`
+  snapshots `task_title`, so the log survives a project being renamed or
+  deleted.
+
+  Nothing calls this yet: the TUI and MCP callers are later phases.
+  """
+  @spec set_project(t(), integer(), integer()) :: :ok | {:error, Tend.Error.t()}
+  def set_project(store, task_id, project_id)
+      when is_integer(task_id) and is_integer(project_id) do
+    transaction(store, fn store ->
+      with {:ok, before} <- get_task(store, task_id) do
+        move_project(store, before, project_id)
+      end
+    end)
+  end
+
+  # Split out so the no-op guard reads as one line rather than a nested `if`.
+  defp move_project(_store, %Task{project_id: same}, same), do: :ok
+
+  defp move_project(store, %Task{} = before, project_id) do
+    with {:ok, ids} <- subtree_ids(store, before.id),
+         :ok <- reproject(store, ids, project_id, before.id),
+         {:ok, from} <- project_name(store, before.project_id),
+         {:ok, to} <- project_name(store, project_id) do
+      log_move(store, before, :project, from, to)
+    end
+  end
+
+  @doc """
+  Moves a task, and its whole sub-tree, under a new parent; a `nil` `parent_id`
+  promotes it to the top level.
+
+  The sub-tree follows the task's project too: when the new parent sits in a
+  different project, every descendant is re-projected in the same transaction,
+  preserving the invariant `add_child/3` establishes. A promotion changes no
+  project -- the task keeps the one it had.
+
+  Cycles are refused here rather than by a constraint, because SQLite has none
+  that could express "not one of my own descendants": a task cannot become its
+  own parent (`{:own_parent, id}`) nor a child of one of its own sub-tasks
+  (`{:own_subtask, id, parent_id}`). A refused move is refused before the
+  first write, and the transaction rolls back regardless, so the database is
+  left exactly as it was.
+
+  One `parent` event is written for the one task the user moved. Parent
+  *titles* are snapshotted, with `Tend.Task.Event.top_level_label/0` standing
+  in for "no parent", so the log reads after either parent is renamed or
+  deleted.
+
+  Nothing calls this yet: the TUI and MCP callers are later phases.
+  """
+  @spec set_parent(t(), integer(), integer() | nil) :: :ok | {:error, Tend.Error.t()}
+  def set_parent(store, task_id, parent_id)
+      when is_integer(task_id) and (is_integer(parent_id) or is_nil(parent_id)) do
+    transaction(store, fn store ->
+      with {:ok, before} <- get_task(store, task_id) do
+        if same_parent?(before.parent_id, parent_id) do
+          :ok
+        else
+          move_parent(store, before, parent_id)
+        end
+      end
+    end)
+  end
+
+  defp move_parent(store, %Task{} = before, parent_id) do
+    with {:ok, ids} <- subtree_ids(store, before.id),
+         {:ok, to_label, project_id} <- destination(store, before, parent_id, ids),
+         :ok <-
+           execute(
+             store,
+             @set_task_parent,
+             [parent_id, before.id],
+             "moving task #{before.id} under #{to_label}"
+           ),
+         :ok <- reparent_project(store, ids, project_id, before),
+         {:ok, from_label} <- previous_parent_label(store, before) do
+      log_move(store, before, :parent, from_label, to_label)
+    end
+  end
+
+  # Where the task is going: the label the event records, and the project the
+  # sub-tree ends up in. The cycle checks live here because they are exactly
+  # the questions "is there a destination at all?" answers.
+  defp destination(_store, %Task{} = before, nil, _ids) do
+    {:ok, Event.top_level_label(), before.project_id}
+  end
+
+  defp destination(store, %Task{} = before, parent_id, ids) do
+    cond do
+      parent_id == before.id ->
+        {:error, {:own_parent, before.id}}
+
+      parent_id in ids ->
+        {:error, {:own_subtask, before.id, parent_id}}
+
+      true ->
+        with {:ok, parent} <- load_task(store, parent_id, "loading parent task #{parent_id}") do
+          {:ok, parent.title, parent.project_id}
+        end
+    end
+  end
+
+  defp reparent_project(_store, _ids, same, %Task{project_id: same}), do: :ok
+
+  defp reparent_project(store, ids, project_id, %Task{} = before) do
+    reproject(store, ids, project_id, before.id)
+  end
+
+  defp previous_parent_label(_store, %Task{parent_id: nil}), do: {:ok, Event.top_level_label()}
+
+  defp previous_parent_label(store, %Task{parent_id: id}) do
+    with {:ok, old} <- load_task(store, id, "loading previous parent #{id}") do
+      {:ok, old.title}
+    end
+  end
+
+  # The port of Go's sameParent, which treats a NULL parent_id and a nil
+  # requested one as the same "top level". exqlite reads NULL as nil, so both
+  # sides are already the same shape and the comparison is the whole function.
+  defp same_parent?(have, want), do: have == want
+
+  # The port of Go's subtreeIDs: a task and every descendant, breadth-first.
+  # It stands in for the recursive CTE sqlc v1.31.1 cannot parse, and the port
+  # keeps the walk rather than writing the CTE Elixir *could* have, so the two
+  # trees issue the same statements in the same order against the same
+  # database.
+  #
+  # `seen` is the same cheap guard Go's is: set_parent/3 refuses the moves that
+  # would create a cycle, but this walks database rows, and a cycle from any
+  # other source would otherwise loop forever.
+  defp subtree_ids(store, root), do: expand(store, [root], MapSet.new([root]), [root])
+
+  # `queue` is the not-yet-expanded tail of the result; `acc` is the result so
+  # far, newest first.
+  defp expand(_store, [], _seen, acc), do: {:ok, Enum.reverse(acc)}
+
+  defp expand(store, [id | rest], seen, acc) do
+    with {:ok, kids} <- child_ids(store, id) do
+      fresh = kids |> Enum.uniq() |> Enum.reject(&MapSet.member?(seen, &1))
+
+      expand(
+        store,
+        rest ++ fresh,
+        MapSet.union(seen, MapSet.new(fresh)),
+        Enum.reverse(fresh, acc)
+      )
+    end
+  end
+
+  defp child_ids(store, id) do
+    with {:ok, rows} <- query(store, @list_child_ids, [id], "listing children of task #{id}") do
+      {:ok, Enum.map(rows, &hd/1)}
+    end
+  end
+
+  # One `UPDATE ... WHERE id IN (...)` over the whole sub-tree, the way Go's
+  # SetTasksProject does it: a statement per descendant would be the same write
+  # with more round trips and a wider window for a concurrent reader to see a
+  # half-moved tree.
+  defp reproject(store, ids, project_id, task_id) do
+    execute(
+      store,
+      tasks_project_sql(ids),
+      [project_id | ids],
+      "moving task #{task_id} to project #{project_id}"
+    )
+  end
+
+  # sqlc's `/*SLICE:ids*/?` rewrite, character for character: one `?` per id,
+  # or the literal `NULL` for an empty list, which matches no row. `?1` is
+  # already spoken for by the project id, and SQLite numbers a bare `?` one
+  # past the highest so far, so the ids bind as parameters 2..n+1 -- the order
+  # `[project_id | ids]` hands them over in.
+  defp tasks_project_sql([]) do
+    String.replace(@set_tasks_project, "/*SLICE:ids*/?", "NULL", global: false)
+  end
+
+  defp tasks_project_sql(ids) do
+    placeholders = Enum.map_join(ids, ",", fn _id -> "?" end)
+    String.replace(@set_tasks_project, "/*SLICE:ids*/?", placeholders, global: false)
+  end
+
+  # Go's projectName. A project id with no row is only reachable by asking for
+  # one that does not exist -- tasks.project_id carries no foreign key (see
+  # migration 00007) -- and Go reports it as the generated query's wrapped
+  # sql.ErrNoRows rather than as task.ErrProjectNotFound, which is what
+  # Store.GetProject (a later part of the port) returns. The generic wrap says
+  # the same thing here.
+  defp project_name(store, id) do
+    context = "loading project #{id}"
+
+    case query(store, @get_project, [id], context) do
+      {:ok, [[_id, name | _rest]]} -> {:ok, name}
+      {:ok, []} -> {:error, {:query_failed, context, @no_rows}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # get_task/2's shape with the caller's own label. get_task/2 names the "no
+  # rows" case itself because it is a caller-facing read; these two are Go's
+  # "loading parent task %d" and "loading previous parent %d", whose wording
+  # is the only thing that distinguishes them, so they wrap rather than invent
+  # two more reasons that would render identically.
+  defp load_task(store, id, context) do
+    case query(store, @get_task, [id], context) do
+      {:ok, [row]} -> Row.to_task(row)
+      {:ok, []} -> {:error, {:query_failed, context, @no_rows}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # The one event the store writes itself. `kind` is an atom from
+  # Tend.Task.Event, rendered back into the stored spelling the column's CHECK
+  # admits.
+  defp log_move(store, %Task{} = before, kind, from, to) do
+    execute(
+      store,
+      @create_task_event,
+      [before.id, before.title, Event.format_kind(kind), from, to],
+      "logging the move of task #{before.id}"
+    )
+  end
+
   # -- transactions ----------------------------------------------------------
 
   @doc """
@@ -1240,9 +1586,10 @@ defmodule Tend.Store do
   connection is long-lived, so a transaction left open by an unwinding caller
   would block every later write on it.
 
-  Nothing in the task surface is multi-statement; `delete_workflow/2` and
-  `duplicate_workflow/3` are its first callers, and the rest -- `SetProject`,
-  `SetParent`, `SetTags`, `DeleteProject` -- are later parts of the store port.
+  Nothing in the task surface is multi-statement; `delete_workflow/2`,
+  `duplicate_workflow/3`, `set_project/3` and `set_parent/3` are its callers
+  today, and the rest -- `SetTags`, `DeleteProject` -- are later parts of the
+  store port.
   """
   @spec transaction(t(), (t() -> result)) :: result | {:error, Tend.Error.t()} when result: var
   def transaction(%__MODULE__{} = store, fun) when is_function(fun, 1) do
@@ -1308,16 +1655,21 @@ defmodule Tend.Store do
   defp project_filter(nil), do: nil
   defp project_filter(id) when is_integer(id), do: id
 
-  defp insert_task(store, sql, params) do
-    with {:ok, row} <- insert_one(store, sql, params, "inserting task"), do: Row.to_task(row)
+  defp insert_task(store, sql, params, context \\ "inserting task") do
+    with {:ok, row} <- insert_one(store, sql, params, context), do: Row.to_task(row)
   end
 
-  # `INSERT ... RETURNING` yields exactly one row. Anything else means the
-  # statement above stopped being the insert it is copied from, which is worth
-  # an error rather than a match failure three frames away.
+  # `INSERT ... RETURNING` yields exactly one row -- unless the insert is
+  # `create_child_task`'s `INSERT ... SELECT`, which writes nothing when the
+  # parent id matches no row. That case is Go's `sql.ErrNoRows` and says so;
+  # any other count means the statement above stopped being the insert it is
+  # copied from, which is worth an error rather than a match failure three
+  # frames away. `context` is the Go call site's label, so a failed sub-task
+  # capture names the parent it was hung under.
   defp insert_one(store, sql, params, context) do
     case query(store, sql, params, context) do
       {:ok, [row]} -> {:ok, row}
+      {:ok, []} -> {:error, {:query_failed, context, @no_rows}}
       {:ok, rows} -> {:error, {:query_failed, context, {:rows_returned, length(rows)}}}
       {:error, reason} -> {:error, reason}
     end
