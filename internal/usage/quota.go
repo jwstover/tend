@@ -84,7 +84,7 @@ func ParseQuota(result string) (Quota, error) {
 		var resets time.Time
 		if clause := strings.TrimSpace(m[3]); clause != "" {
 			var ok bool
-			resets, ok = parseResetTime(clause)
+			resets, ok = ParseResetTime(clause)
 			if !ok {
 				q.Unparsed = append(q.Unparsed, line)
 				continue
@@ -104,7 +104,7 @@ func ParseQuota(result string) (Quota, error) {
 	return q, nil
 }
 
-// parseResetTime parses a reset clause into a local, tz-aware time. It
+// ParseResetTime parses a reset clause into a local, tz-aware time. It
 // reports false rather than guess when the clause has no zone suffix, the
 // zone does not load, or the date-time does not match a layout seen
 // before -- callers keep the raw line in Unparsed instead.
@@ -113,7 +113,7 @@ func ParseQuota(result string) (Quota, error) {
 // falls more than a day in the past, in which case the reset is read as
 // next year -- the only way a past-dated reset clause makes sense from a
 // service that only ever reports limits resetting soon.
-func parseResetTime(clause string) (time.Time, bool) {
+func ParseResetTime(clause string) (time.Time, bool) {
 	m := resetClause.FindStringSubmatch(clause)
 	if m == nil {
 		return time.Time{}, false

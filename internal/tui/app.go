@@ -576,7 +576,7 @@ type app struct {
 	bodyHeight    int   // rows between the chrome rules, set by resize
 	inboxCount    int64 // tasks awaiting triage, for the header nudge
 
-	// Claude subscription usage for the header gauges (quota.go).
+	// Claude subscription usage for the quota row under the header (quota.go).
 	// quotaLoaded is false until a poll reports limits; quotaStale marks a
 	// reading kept after a later poll failed.
 	quota       agent.Quota
@@ -2251,7 +2251,7 @@ func (a app) verticalDivider(focused bool) string {
 }
 
 func (a *app) resize() {
-	const chromeTop = 2 // header + top rule
+	const chromeTop = 3 // header + quota row + top rule
 	bottomHeight := 2   // bottom rule + footer line
 	if a.statePending {
 		// The list must shrink by exactly the panel's height; bubbles
@@ -2739,7 +2739,7 @@ func (a app) View() tea.View {
 		body = a.listBody()
 	}
 
-	frame := a.headerLine() + "\n" + a.ruleLine(splits, a.styles.Glyphs.TeeDown) + "\n" +
+	frame := a.headerLine() + "\n" + a.quotaLine() + "\n" + a.ruleLine(splits, a.styles.Glyphs.TeeDown) + "\n" +
 		body + "\n" + a.bottomChrome(splits)
 	if a.modal.Active() {
 		box := a.modal.View(a.styles)
@@ -2825,7 +2825,7 @@ func (a app) listBody() string {
 }
 
 // headerLine renders `  tend  ·  <view>` with the inbox nudge and shown
-// count right-aligned, and the Claude usage gauges after them.
+// count right-aligned.
 func (a app) headerLine() string {
 	s := a.styles
 	left := s.HeaderApp.Render("  tend") + s.HeaderSep.Render("  ·  ")
@@ -2900,31 +2900,11 @@ func (a app) headerLine() string {
 			s.CountLabel.Render(" shown") + "  "
 	}
 
-	// The usage gauges sit at the far right in every mode. When the line is
-	// too narrow they give ground in steps: first their bars, then the
-	// mode's own right-hand text, and only then the gauges themselves.
-	withQuota := func(right, quota string) string {
-		switch {
-		case quota == "":
-			return right
-		case right == "":
-			return quota + "  "
-		default:
-			return right + s.HeaderSep.Render("·") + "  " + quota + "  "
-		}
+	gap := a.width - lipgloss.Width(left) - lipgloss.Width(right)
+	if gap < 1 {
+		return left
 	}
-	full, compact := a.quotaChrome(true), a.quotaChrome(false)
-	for _, r := range []string{
-		withQuota(right, full),
-		withQuota(right, compact),
-		withQuota("", compact),
-		right,
-	} {
-		if gap := a.width - lipgloss.Width(left) - lipgloss.Width(r); gap >= 1 {
-			return left + strings.Repeat(" ", gap) + r
-		}
-	}
-	return left
+	return left + strings.Repeat(" ", gap) + right
 }
 
 // ruleLine draws a full-width horizontal rule, teed into each pane
@@ -3105,7 +3085,7 @@ func (a app) loadingFrame() string {
 	for len(lines) < h {
 		lines = append(lines, "")
 	}
-	return a.headerLine() + "\n" + a.ruleLine(nil, "") + "\n" +
+	return a.headerLine() + "\n" + a.quotaLine() + "\n" + a.ruleLine(nil, "") + "\n" +
 		strings.Join(lines[:h], "\n") + "\n" + a.ruleLine(nil, "") + "\n"
 }
 

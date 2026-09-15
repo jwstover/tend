@@ -11,17 +11,21 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/jwstover/tend/internal/usage"
 )
 
 // QuotaLimit is one of the subscription limits `/usage` reports: how much
 // of it is spent and, as claude words it, when it resets. Resets is kept
-// as claude's own text ("Sep 15, 3:30pm (America/New_York)") rather than
-// parsed, since nothing needs it as a time yet and its format is claude's
-// to change.
+// as claude's own text ("Sep 15, 3:30pm (America/New_York)") since its
+// format is claude's to change; ResetsAt is that text read as a time by
+// usage.ParseResetTime, zero when the clause has no zone suffix or an
+// unrecognized shape.
 type QuotaLimit struct {
-	Label   string
-	Percent int
-	Resets  string
+	Label    string
+	Percent  int
+	Resets   string
+	ResetsAt time.Time
 }
 
 // Quota is the account's subscription usage as `/usage` reports it.
@@ -110,6 +114,9 @@ func ParseQuota(out []byte) (Quota, error) {
 			continue
 		}
 		l := QuotaLimit{Label: m[1], Percent: pct, Resets: strings.TrimSpace(m[3])}
+		if l.Resets != "" {
+			l.ResetsAt, _ = usage.ParseResetTime(l.Resets)
+		}
 		switch {
 		case l.Label == "session" && q.Session == nil:
 			q.Session = &l

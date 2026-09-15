@@ -6,6 +6,7 @@ import (
 	"errors"
 	"slices"
 	"testing"
+	"time"
 )
 
 // usageJSON wraps result text in the shape `claude -p --output-format
@@ -92,11 +93,48 @@ func TestParseQuota(t *testing.T) {
 	}
 }
 
+// ResetsAt is only ever set from a clause with a zone suffix; the short
+// forms claude also prints ("4pm", "1pm", "Fri") have none, so they parse
+// to a percentage and label but no time.
+func TestParseQuotaResetsAt(t *testing.T) {
+	q, err := ParseQuota(usageJSON(t, false, realUsage))
+	if err != nil {
+		t.Fatalf("ParseQuota: %v", err)
+	}
+	if q.Session.ResetsAt.IsZero() {
+		t.Fatal("Session.ResetsAt not parsed")
+	}
+	ny, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatalf("LoadLocation: %v", err)
+	}
+	got := q.Session.ResetsAt.In(ny)
+	if got.Month().String() != "September" || got.Day() != 15 || got.Hour() != 15 || got.Minute() != 30 {
+		t.Errorf("Session.ResetsAt = %v, want Sep 15 15:30 %s", got, ny)
+	}
+
+	q, err = ParseQuota(usageJSON(t, false, "Current session: 100% used · resets 4pm\n"+
+		"Current week (all models): 20% used · resets Fri"))
+	if err != nil {
+		t.Fatalf("ParseQuota: %v", err)
+	}
+	if !q.Session.ResetsAt.IsZero() {
+		t.Errorf("Session.ResetsAt = %v, want zero for a clause with no zone", q.Session.ResetsAt)
+	}
+	if !q.Week.ResetsAt.IsZero() {
+		t.Errorf("Week.ResetsAt = %v, want zero for a clause with no zone", q.Week.ResetsAt)
+	}
+}
+
 func limitEq(a, b *QuotaLimit) bool {
 	if a == nil || b == nil {
 		return a == b
 	}
-	return *a == *b
+	// ResetsAt is parsed from Resets by the caller and not spelled out in
+	// most test cases' expectations, so it is compared separately.
+	x, y := *a, *b
+	x.ResetsAt, y.ResetsAt = time.Time{}, time.Time{}
+	return x == y
 }
 
 // An API-key login has no subscription limits; that is ErrNoQuota, which
