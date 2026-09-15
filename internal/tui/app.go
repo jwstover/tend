@@ -18,6 +18,7 @@ import (
 	"charm.land/glamour/v2"
 	"charm.land/lipgloss/v2"
 
+	"github.com/jwstover/tend/internal/agent"
 	"github.com/jwstover/tend/internal/jira"
 	"github.com/jwstover/tend/internal/task"
 	"github.com/jwstover/tend/internal/workflow"
@@ -165,6 +166,7 @@ func Run(ctx context.Context, s Store, watcher ChangeWatcher, dbPath string) err
 
 	p := tea.NewProgram(newApp(ctx, s, dbPath), tea.WithContext(ctx))
 	go runSessionPoller(pollCtx, s, p.Send)
+	startQuotaPoller(pollCtx, p.Send)
 	if watcher != nil {
 		go runChangeWatcher(pollCtx, watcher, changePollInterval, p.Send)
 	}
@@ -573,6 +575,13 @@ type app struct {
 	width, height int
 	bodyHeight    int   // rows between the chrome rules, set by resize
 	inboxCount    int64 // tasks awaiting triage, for the header nudge
+
+	// Claude subscription usage for the header gauges (quota.go).
+	// quotaLoaded is false until a poll reports limits; quotaStale marks a
+	// reading kept after a later poll failed.
+	quota       agent.Quota
+	quotaLoaded bool
+	quotaStale  bool
 
 	// Triage session: the cards still to process (head = current) and how
 	// many left the inbox since entering triage. Both reset on entry.
@@ -1063,6 +1072,9 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 		return a.Update(msg.inner)
+
+	case quotaMsg:
+		return a.applyQuota(msg), nil
 
 	case sessionsPolledMsg:
 		// Standup and workflows render no session markers, so there's
@@ -2813,7 +2825,7 @@ func (a app) listBody() string {
 }
 
 // headerLine renders `  tend  ·  <view>` with the inbox nudge and shown
-// count right-aligned.
+// count right-aligned, and the Claude usage gauges after them.
 func (a app) headerLine() string {
 	s := a.styles
 	left := s.HeaderApp.Render("  tend") + s.HeaderSep.Render("  ·  ")
@@ -2888,11 +2900,31 @@ func (a app) headerLine() string {
 			s.CountLabel.Render(" shown") + "  "
 	}
 
-	gap := a.width - lipgloss.Width(left) - lipgloss.Width(right)
-	if gap < 1 {
-		return left
+	// The usage gauges sit at the far right in every mode. When the line is
+	// too narrow they give ground in steps: first their bars, then the
+	// mode's own right-hand text, and only then the gauges themselves.
+	withQuota := func(right, quota string) string {
+		switch {
+		case quota == "":
+			return right
+		case right == "":
+			return quota + "  "
+		default:
+			return right + s.HeaderSep.Render("·") + "  " + quota + "  "
+		}
 	}
-	return left + strings.Repeat(" ", gap) + right
+	full, compact := a.quotaChrome(true), a.quotaChrome(false)
+	for _, r := range []string{
+		withQuota(right, full),
+		withQuota(right, compact),
+		withQuota("", compact),
+		right,
+	} {
+		if gap := a.width - lipgloss.Width(left) - lipgloss.Width(r); gap >= 1 {
+			return left + strings.Repeat(" ", gap) + r
+		}
+	}
+	return left
 }
 
 // ruleLine draws a full-width horizontal rule, teed into each pane

@@ -2,6 +2,7 @@ package tui
 
 import (
 	"image/color"
+	"os"
 
 	"charm.land/lipgloss/v2"
 
@@ -104,6 +105,14 @@ type glyphs struct {
 	ProgressOn, ProgressOff    string // triage progress segments (▰ ▱)
 	BoxTL, BoxTR, BoxBL, BoxBR string // triage card corners (┌ ┐ └ ┘)
 	ZeroMark                   string // inbox-zero celebration mark
+
+	// The header's usage gauges (quota.go). A gauge's end cells are drawn
+	// apart from its middle ones so a font with joined caps can draw one
+	// continuous rounded bar; the plain sets repeat one glyph throughout.
+	GaugeLeftOn, GaugeMidOn, GaugeRightOn    string
+	GaugeLeftOff, GaugeMidOff, GaugeRightOff string
+	// QuotaSession and QuotaWeek label the five-hour and weekly gauges.
+	QuotaSession, QuotaWeek string
 }
 
 func unicodeGlyphs() glyphs {
@@ -137,15 +146,44 @@ func unicodeGlyphs() glyphs {
 		ProgressOn: "▰", ProgressOff: "▱",
 		BoxTL: "┌", BoxTR: "┐", BoxBL: "└", BoxBR: "┘",
 		ZeroMark: "◖ ◗",
+
+		GaugeLeftOn: "▰", GaugeMidOn: "▰", GaugeRightOn: "▰",
+		GaugeLeftOff: "▱", GaugeMidOff: "▱", GaugeRightOff: "▱",
+		QuotaSession: "5h", QuotaWeek: "wk",
+	}
+}
+
+// nerdGlyphs is the unicode set with Nerd Font glyphs where a Nerd Font
+// draws something better. Every override is a single BMP private-use
+// codepoint, which measures one cell; the nf-md-* icons in plane 15 are
+// avoided because terminals disagree on their width.
+func nerdGlyphs() glyphs {
+	g := unicodeGlyphs()
+	// Fira Code's progress bar (extra-progress_{empty,full}_{left,mid,right}).
+	g.GaugeLeftOff, g.GaugeMidOff, g.GaugeRightOff = "", "", ""
+	g.GaugeLeftOn, g.GaugeMidOn, g.GaugeRightOn = "", "", ""
+	g.QuotaSession = "" // fa-hourglass_half
+	g.QuotaWeek = ""    // fa-calendar_days
+	return g
+}
+
+// glyphsFor picks the symbol set TEND_GLYPHS names: "nerd" for a terminal
+// with a Nerd Font, "ascii" for one without usable Unicode, anything else
+// the unicode set. Neither a Nerd Font nor broken Unicode can be detected
+// from inside the terminal, so this is the user's to say.
+func glyphsFor(name string) glyphs {
+	switch name {
+	case "nerd":
+		return nerdGlyphs()
+	case "ascii":
+		return asciiGlyphs()
+	default:
+		return unicodeGlyphs()
 	}
 }
 
 // asciiGlyphs is the documented fallback set for terminals without
-// usable Unicode.
-// TODO(owner): select via termenv capabilities at startup; for now the
-// unicode set is always used.
-//
-//nolint:unused // kept until capability detection wires it in
+// usable Unicode, selected with TEND_GLYPHS=ascii.
 func asciiGlyphs() glyphs {
 	return glyphs{
 		State: map[task.State]string{
@@ -177,6 +215,10 @@ func asciiGlyphs() glyphs {
 		ProgressOn: "#", ProgressOff: "·",
 		BoxTL: "+", BoxTR: "+", BoxBL: "+", BoxBR: "+",
 		ZeroMark: `\o/`,
+
+		GaugeLeftOn: "#", GaugeMidOn: "#", GaugeRightOn: "#",
+		GaugeLeftOff: "-", GaugeMidOff: "-", GaugeRightOff: "-",
+		QuotaSession: "5h", QuotaWeek: "wk",
 	}
 }
 
@@ -196,6 +238,11 @@ type Styles struct {
 	Rule       lipgloss.Style // ─ rules and the │ pane divider
 	FooterKey  lipgloss.Style // key hints — accent bold
 	FooterDesc lipgloss.Style // hint labels — muted
+
+	// Header usage gauges (quota.go), by how much of the limit is spent.
+	QuotaOK   lipgloss.Style // under 60% — dim fg
+	QuotaWarn lipgloss.Style // 60% and up — amber
+	QuotaHot  lipgloss.Style // over 80% — red
 
 	// List rows.
 	SelBar     lipgloss.Style // ▌ gutter bar
@@ -265,7 +312,7 @@ func newStyles(isDark bool) Styles {
 
 	return Styles{
 		Palette: p,
-		Glyphs:  unicodeGlyphs(),
+		Glyphs:  glyphsFor(os.Getenv("TEND_GLYPHS")),
 
 		HeaderApp:  fg(p.Accent).Bold(true),
 		HeaderSep:  fg(p.Faint),
@@ -277,7 +324,11 @@ func newStyles(isDark bool) Styles {
 		FooterKey:  fg(p.Accent).Bold(true),
 		FooterDesc: fg(p.Muted),
 
-		SelBar:     fg(p.Accent).Bold(true),
+		QuotaOK:   fg(p.FgDim),
+		QuotaWarn: fg(p.DueToday).Bold(true),
+		QuotaHot:  fg(p.Overdue).Bold(true),
+
+		SelBar:    fg(p.Accent).Bold(true),
 		Title:      fg(p.Fg),
 		TitleDone:  fg(p.Done).Strikethrough(true),
 		Caret:      fg(p.Muted),
