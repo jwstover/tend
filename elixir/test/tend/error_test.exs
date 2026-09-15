@@ -7,9 +7,10 @@ defmodule Tend.ErrorTest do
   # sources themselves, in Tend.GoParityTest. These are the module's own rules.
 
   describe "sentinels/0" do
-    test "lists the sentinels of the three ported files, sorted" do
+    test "lists the sentinels of the ported files, sorted" do
       assert Error.sentinels() == [
                :dependency_cycle,
+               :empty_note,
                :empty_project_name,
                :empty_title,
                :project_not_found,
