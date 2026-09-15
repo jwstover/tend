@@ -76,8 +76,10 @@ defmodule Tend.Template.RenderError do
     * `:nil_data` -- a field was read off `nil`. Go splits this in two and so
       does this: `nil data; no entry for key "X"` when the *root* is nil, and
       `nil pointer evaluating nil.X` when the nil is partway down a chain
-    * `:not_iterable` -- `{{range}}` over something that is not a list;
-      `range can't iterate over V`
+    * `:not_iterable` -- `{{range}}` over something that is neither a list,
+      an integer nor `nil` (`range can't iterate over V`), or over an integer
+      with two loop variables (`can't use N to iterate over more than one
+      variable`), which an integer has no index to hand out for
     * `:bad_command` -- a command that cannot be evaluated at all, such as
       `{{nil}}` or an argument given to something that is not a function.
       Go has three wordings for the second, chosen by what the head of the

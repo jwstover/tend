@@ -67,17 +67,23 @@ defmodule Tend.Template.Renderer do
     * a string field must hold `""` when it is empty, never `nil`. Go's
       zero string prints as nothing; an Elixir `nil` prints as `<no value>`,
       which is what Go prints for a nil interface.
-    * a list field must hold `[]` when it is empty, never `nil`, or
-      `{{range}}` over it raises instead of taking the `{{else}}` arm --
-      again exactly as Go treats an untyped nil.
-    * a `{{range}}` target must be a list or an integer. Go 1.22 added the
-      integer case -- `{{range 3}}` iterates 0, 1, 2 -- and `PromptData`'s
-      `Iteration` is an `int64`, so `{{range .Iteration}}` is a prompt a user
-      can already have stored; it renders here exactly as Go renders it. Go
-      also ranges over a *map*, which no field of `PromptData` is, so that
-      one still raises `:not_iterable` rather than inventing an iteration
-      order (Go's is sorted by key). Go does **not** range over a string, and
-      neither does this: `{{range .Cwd}}` is an error in both.
+    * a list field should hold `[]` when it is empty rather than `nil`, but
+      `{{range}}` is not where it matters: `{{range}}` over a `nil` takes the
+      `{{else}}` arm, exactly as Go does for a nil slice, a nil map and a nil
+      interface alike. Printing it is where the two spellings part --
+      `{{.Outcomes}}` is `[]` for Go's nil *slice* and `<no value>` for its
+      nil interface, and an Elixir `nil` is the latter, as is `{{len}}`'s
+      `len of nil pointer` against a `0`.
+    * a `{{range}}` target must be a list, an integer or `nil`. Go 1.22
+      added the integer case -- `{{range 3}}` iterates 0, 1, 2 -- and
+      `PromptData`'s `Iteration` is an `int64`, so `{{range .Iteration}}` is
+      a prompt a user can already have stored; it renders here exactly as Go
+      renders it. Go also ranges over a *map*, which no field of `PromptData`
+      is, so a map -- empty or not -- still raises `:not_iterable` here
+      rather than inventing an iteration order (Go's is sorted by key); that
+      one is a real divergence and the only one `{{range}}` has left. Go does
+      **not** range over a string, and neither does this: `{{range .Cwd}}` is
+      an error in both.
 
   The prompt-data structs are the workflow sub-task's to define; this is the
   contract they have to meet.
@@ -183,6 +189,19 @@ defmodule Tend.Template.Renderer do
   # why `{{range $i, $x := 3}}` is an error rather than binding `$i` to nil.
   defp iterations(items, _node, _state) when is_list(items),
     do: items |> Enum.with_index() |> Enum.map(fn {element, index} -> {index, element} end)
+
+  # Go's `walkRange` has a `case reflect.Invalid: break` whose own comment
+  # reads "an invalid value is likely a nil map, etc. and acts like an empty
+  # map", so a nil interface falls to the {{else}} arm rather than erroring --
+  # and so does a nil slice and a nil map, which reach the Slice and Map cases
+  # with length zero. Go 1.26.4, "{{range .Outcomes}}x{{else}}none{{end}}":
+  # "none" for a nil `any` field, a nil `[]string` field and a nil map alike.
+  #
+  # It has to sit above the unguarded catch-all below, which is where the
+  # `:not_iterable` raise lives; that is the only constraint on where it goes.
+  # The integer clause it happens to precede is guarded `when is_integer/1`,
+  # so a nil never enters that one whatever the order.
+  defp iterations(nil, _node, _state), do: []
 
   # Go 1.22 gave `range` an integer case: `{{range 3}}` iterates 0, 1, 2 with
   # the cursor bound to the index. `PromptData.Iteration` is an `int64`, so
