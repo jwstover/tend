@@ -67,7 +67,7 @@ VALUES (
   ?3,
   COALESCE((SELECT MAX(sort_order) + 1 FROM workflow_steps WHERE workflow_id = ?1), 0)
 )
-RETURNING id, workflow_id, name, kind, prompt_md, model, permission_mode, sort_order, created_at, updated_at
+RETURNING id, workflow_id, name, kind, prompt_md, model, permission_mode, sort_order, created_at, updated_at, advisor_model
 `
 
 type CreateStepParams struct {
@@ -91,14 +91,15 @@ func (q *Queries) CreateStep(ctx context.Context, arg CreateStepParams) (Workflo
 		&i.SortOrder,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.AdvisorModel,
 	)
 	return i, err
 }
 
 const createStepFull = `-- name: CreateStepFull :one
-INSERT INTO workflow_steps (workflow_id, name, kind, prompt_md, model, permission_mode, sort_order)
-VALUES (?, ?, ?, ?, ?, ?, ?)
-RETURNING id, workflow_id, name, kind, prompt_md, model, permission_mode, sort_order, created_at, updated_at
+INSERT INTO workflow_steps (workflow_id, name, kind, prompt_md, model, permission_mode, advisor_model, sort_order)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+RETURNING id, workflow_id, name, kind, prompt_md, model, permission_mode, sort_order, created_at, updated_at, advisor_model
 `
 
 type CreateStepFullParams struct {
@@ -108,6 +109,7 @@ type CreateStepFullParams struct {
 	PromptMd       string
 	Model          string
 	PermissionMode string
+	AdvisorModel   string
 	SortOrder      int64
 }
 
@@ -121,6 +123,7 @@ func (q *Queries) CreateStepFull(ctx context.Context, arg CreateStepFullParams) 
 		arg.PromptMd,
 		arg.Model,
 		arg.PermissionMode,
+		arg.AdvisorModel,
 		arg.SortOrder,
 	)
 	var i WorkflowStep
@@ -135,12 +138,13 @@ func (q *Queries) CreateStepFull(ctx context.Context, arg CreateStepFullParams) 
 		&i.SortOrder,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.AdvisorModel,
 	)
 	return i, err
 }
 
 const createStepRun = `-- name: CreateStepRun :one
-INSERT INTO workflow_step_runs (run_id, step_id, iteration, session_external_id, prompt_rendered, system_prompt, model, permission_mode, input, feedback)
+INSERT INTO workflow_step_runs (run_id, step_id, iteration, session_external_id, prompt_rendered, system_prompt, model, permission_mode, advisor_model, input, feedback)
 VALUES (
   ?1,
   ?2,
@@ -151,9 +155,10 @@ VALUES (
   ?6,
   ?7,
   ?8,
-  ?9
+  ?9,
+  ?10
 )
-RETURNING id, run_id, step_id, iteration, session_external_id, prompt_rendered, model, permission_mode, input, outcome, deliverable, log_path, started_at, ended_at, feedback, system_prompt
+RETURNING id, run_id, step_id, iteration, session_external_id, prompt_rendered, model, permission_mode, input, outcome, deliverable, log_path, started_at, ended_at, feedback, system_prompt, advisor_model
 `
 
 type CreateStepRunParams struct {
@@ -164,6 +169,7 @@ type CreateStepRunParams struct {
 	SystemPrompt      string
 	Model             string
 	PermissionMode    string
+	AdvisorModel      string
 	Input             string
 	Feedback          string
 }
@@ -180,6 +186,7 @@ func (q *Queries) CreateStepRun(ctx context.Context, arg CreateStepRunParams) (W
 		arg.SystemPrompt,
 		arg.Model,
 		arg.PermissionMode,
+		arg.AdvisorModel,
 		arg.Input,
 		arg.Feedback,
 	)
@@ -201,6 +208,7 @@ func (q *Queries) CreateStepRun(ctx context.Context, arg CreateStepRunParams) (W
 		&i.EndedAt,
 		&i.Feedback,
 		&i.SystemPrompt,
+		&i.AdvisorModel,
 	)
 	return i, err
 }
@@ -334,7 +342,7 @@ func (q *Queries) GetRun(ctx context.Context, id int64) (WorkflowRun, error) {
 }
 
 const getStep = `-- name: GetStep :one
-SELECT id, workflow_id, name, kind, prompt_md, model, permission_mode, sort_order, created_at, updated_at
+SELECT id, workflow_id, name, kind, prompt_md, model, permission_mode, sort_order, created_at, updated_at, advisor_model
 FROM workflow_steps
 WHERE id = ?
 `
@@ -353,12 +361,13 @@ func (q *Queries) GetStep(ctx context.Context, id int64) (WorkflowStep, error) {
 		&i.SortOrder,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.AdvisorModel,
 	)
 	return i, err
 }
 
 const getStepRun = `-- name: GetStepRun :one
-SELECT id, run_id, step_id, iteration, session_external_id, prompt_rendered, model, permission_mode, input, outcome, deliverable, log_path, started_at, ended_at, feedback, system_prompt
+SELECT id, run_id, step_id, iteration, session_external_id, prompt_rendered, model, permission_mode, input, outcome, deliverable, log_path, started_at, ended_at, feedback, system_prompt, advisor_model
 FROM workflow_step_runs
 WHERE id = ?
 `
@@ -383,6 +392,7 @@ func (q *Queries) GetStepRun(ctx context.Context, id int64) (WorkflowStepRun, er
 		&i.EndedAt,
 		&i.Feedback,
 		&i.SystemPrompt,
+		&i.AdvisorModel,
 	)
 	return i, err
 }
@@ -648,7 +658,7 @@ func (q *Queries) ListRunsForTask(ctx context.Context, taskID int64) ([]Workflow
 }
 
 const listStepRunsForRun = `-- name: ListStepRunsForRun :many
-SELECT id, run_id, step_id, iteration, session_external_id, prompt_rendered, model, permission_mode, input, outcome, deliverable, log_path, started_at, ended_at, feedback, system_prompt
+SELECT id, run_id, step_id, iteration, session_external_id, prompt_rendered, model, permission_mode, input, outcome, deliverable, log_path, started_at, ended_at, feedback, system_prompt, advisor_model
 FROM workflow_step_runs
 WHERE run_id = ?
 ORDER BY started_at, id
@@ -680,6 +690,7 @@ func (q *Queries) ListStepRunsForRun(ctx context.Context, runID int64) ([]Workfl
 			&i.EndedAt,
 			&i.Feedback,
 			&i.SystemPrompt,
+			&i.AdvisorModel,
 		); err != nil {
 			return nil, err
 		}
@@ -695,7 +706,7 @@ func (q *Queries) ListStepRunsForRun(ctx context.Context, runID int64) ([]Workfl
 }
 
 const listSteps = `-- name: ListSteps :many
-SELECT id, workflow_id, name, kind, prompt_md, model, permission_mode, sort_order, created_at, updated_at
+SELECT id, workflow_id, name, kind, prompt_md, model, permission_mode, sort_order, created_at, updated_at, advisor_model
 FROM workflow_steps
 WHERE workflow_id = ?
 ORDER BY sort_order, id
@@ -721,6 +732,7 @@ func (q *Queries) ListSteps(ctx context.Context, workflowID int64) ([]WorkflowSt
 			&i.SortOrder,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.AdvisorModel,
 		); err != nil {
 			return nil, err
 		}
@@ -888,6 +900,23 @@ func (q *Queries) SetRunTmuxSession(ctx context.Context, arg SetRunTmuxSessionPa
 	return err
 }
 
+const setStepAdvisorModel = `-- name: SetStepAdvisorModel :exec
+UPDATE workflow_steps
+SET advisor_model = ?,
+    updated_at    = datetime('now')
+WHERE id = ?
+`
+
+type SetStepAdvisorModelParams struct {
+	AdvisorModel string
+	ID           int64
+}
+
+func (q *Queries) SetStepAdvisorModel(ctx context.Context, arg SetStepAdvisorModelParams) error {
+	_, err := q.db.ExecContext(ctx, setStepAdvisorModel, arg.AdvisorModel, arg.ID)
+	return err
+}
+
 const setStepKind = `-- name: SetStepKind :exec
 UPDATE workflow_steps
 SET kind       = ?,
@@ -991,20 +1020,28 @@ func (q *Queries) SetStepRunSession(ctx context.Context, arg SetStepRunSessionPa
 const setStepRunSettings = `-- name: SetStepRunSettings :exec
 UPDATE workflow_step_runs
 SET model           = ?,
-    permission_mode = ?
+    permission_mode = ?,
+    advisor_model   = ?
 WHERE id = ?
 `
 
 type SetStepRunSettingsParams struct {
 	Model          string
 	PermissionMode string
+	AdvisorModel   string
 	ID             int64
 }
 
-// A retried step picks up the model and permission mode its step has now,
-// so fixing the step is enough to make the retry differ from the failure.
+// A retried step picks up the model, permission mode and advisor its step
+// has now, so fixing the step is enough to make the retry differ from the
+// failure.
 func (q *Queries) SetStepRunSettings(ctx context.Context, arg SetStepRunSettingsParams) error {
-	_, err := q.db.ExecContext(ctx, setStepRunSettings, arg.Model, arg.PermissionMode, arg.ID)
+	_, err := q.db.ExecContext(ctx, setStepRunSettings,
+		arg.Model,
+		arg.PermissionMode,
+		arg.AdvisorModel,
+		arg.ID,
+	)
 	return err
 }
 
@@ -1050,6 +1087,7 @@ SET name            = ?,
     prompt_md       = ?,
     model           = ?,
     permission_mode = ?,
+    advisor_model   = ?,
     updated_at      = datetime('now')
 WHERE id = ?
 `
@@ -1060,6 +1098,7 @@ type UpdateStepParams struct {
 	PromptMd       string
 	Model          string
 	PermissionMode string
+	AdvisorModel   string
 	ID             int64
 }
 
@@ -1070,6 +1109,7 @@ func (q *Queries) UpdateStep(ctx context.Context, arg UpdateStepParams) error {
 		arg.PromptMd,
 		arg.Model,
 		arg.PermissionMode,
+		arg.AdvisorModel,
 		arg.ID,
 	)
 	return err

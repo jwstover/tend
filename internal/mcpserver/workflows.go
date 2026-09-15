@@ -45,6 +45,7 @@ type authoredStepOut struct {
 	PromptMD       string            `json:"prompt_md,omitempty"`
 	Model          string            `json:"model,omitempty"`
 	PermissionMode string            `json:"permission_mode,omitempty"`
+	AdvisorModel   string            `json:"advisor_model,omitempty"`
 	Edges          []authoredEdgeOut `json:"edges"`
 }
 
@@ -171,7 +172,10 @@ func registerWorkflowTools(srv *mcp.Server, store Store) {
 			"{{range .Subtasks}}...{{end}} block; empty when the task has none); it must " +
 			"render or the step is refused. " +
 			"model is opus, sonnet, haiku or inherit; permission_mode is default, acceptEdits, " +
-			"bypassPermissions, plan or inherit.",
+			"bypassPermissions, plan or inherit; advisor_model is fable, opus, sonnet, a full " +
+			"model id, or inherit (claude's --advisor, which turns a second-opinion advisor on " +
+			"for the step without touching the user's own advisorModel setting; claude refuses an " +
+			"unsupported pairing, such as an advisor weaker than the main model, at launch).",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in struct {
 		WorkflowID       int64  `json:"workflow_id" jsonschema:"the workflow to add the step to"`
 		Name             string `json:"name" jsonschema:"the step name, e.g. implement, review, ship"`
@@ -179,6 +183,7 @@ func registerWorkflowTools(srv *mcp.Server, store Store) {
 		PromptMD         string `json:"prompt_md,omitempty" jsonschema:"the step's prompt template; ignored for a gate"`
 		Model            string `json:"model,omitempty" jsonschema:"opus, sonnet, haiku, or inherit (default)"`
 		PermissionMode   string `json:"permission_mode,omitempty" jsonschema:"default, acceptEdits, bypassPermissions, plan, or inherit (default)"`
+		AdvisorModel     string `json:"advisor_model,omitempty" jsonschema:"fable, opus, sonnet, a full model id, or inherit (default)"`
 		LinkFromPrevious *bool  `json:"link_from_previous,omitempty" jsonschema:"link the previous step to this one with a done edge when it has no edges yet; defaults to true"`
 	}) (*mcp.CallToolResult, workflowGraphOut, error) {
 		kind := workflow.StepAgent
@@ -193,6 +198,10 @@ func registerWorkflowTools(srv *mcp.Server, store Store) {
 			return nil, workflowGraphOut{}, err
 		}
 		mode, err := normalizePermissionMode(in.PermissionMode)
+		if err != nil {
+			return nil, workflowGraphOut{}, err
+		}
+		advisor, err := normalizeAdvisorModel(in.AdvisorModel)
 		if err != nil {
 			return nil, workflowGraphOut{}, err
 		}
@@ -219,8 +228,8 @@ func registerWorkflowTools(srv *mcp.Server, store Store) {
 		if err != nil {
 			return nil, workflowGraphOut{}, err
 		}
-		if prompt != "" || model != "" || mode != "" {
-			st.PromptMD, st.Model, st.PermissionMode = prompt, model, mode
+		if prompt != "" || model != "" || mode != "" || advisor != "" {
+			st.PromptMD, st.Model, st.PermissionMode, st.AdvisorModel = prompt, model, mode, advisor
 			if err := store.UpdateStep(ctx, st); err != nil {
 				return nil, workflowGraphOut{}, err
 			}
@@ -242,15 +251,16 @@ func registerWorkflowTools(srv *mcp.Server, store Store) {
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name: "update_workflow_step",
-		Description: "Change a step's name, kind, model and/or permission mode. Fields left out " +
-			"are unchanged; send inherit for model or permission_mode to leave that choice " +
-			"to claude. Use set_step_prompt for the prompt.",
+		Description: "Change a step's name, kind, model, permission mode and/or advisor model. " +
+			"Fields left out are unchanged; send inherit for model, permission_mode or " +
+			"advisor_model to leave that choice to claude. Use set_step_prompt for the prompt.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in struct {
 		StepID         int64   `json:"step_id" jsonschema:"the step id"`
 		Name           *string `json:"name,omitempty" jsonschema:"new name"`
 		Kind           *string `json:"kind,omitempty" jsonschema:"agent or gate"`
 		Model          *string `json:"model,omitempty" jsonschema:"opus, sonnet, haiku, or inherit"`
 		PermissionMode *string `json:"permission_mode,omitempty" jsonschema:"default, acceptEdits, bypassPermissions, plan, or inherit"`
+		AdvisorModel   *string `json:"advisor_model,omitempty" jsonschema:"fable, opus, sonnet, a full model id, or inherit"`
 	}) (*mcp.CallToolResult, workflowGraphOut, error) {
 		// Every field is checked before anything is written, so a refused
 		// call changes nothing even though the writes below are separate.
@@ -261,7 +271,7 @@ func registerWorkflowTools(srv *mcp.Server, store Store) {
 				return nil, workflowGraphOut{}, fmt.Errorf("unknown step kind %q; use agent or gate", *in.Kind)
 			}
 		}
-		var model, mode string
+		var model, mode, advisor string
 		var err error
 		if in.Model != nil {
 			if model, err = normalizeModel(*in.Model); err != nil {
@@ -273,15 +283,20 @@ func registerWorkflowTools(srv *mcp.Server, store Store) {
 				return nil, workflowGraphOut{}, err
 			}
 		}
+		if in.AdvisorModel != nil {
+			if advisor, err = normalizeAdvisorModel(*in.AdvisorModel); err != nil {
+				return nil, workflowGraphOut{}, err
+			}
+		}
 		st, err := store.GetStep(ctx, in.StepID)
 		if err != nil {
 			return nil, workflowGraphOut{}, err
 		}
-		// Kind, model and permission mode go through the per-column
-		// setters the TUI uses, so this call cannot clobber a prompt the
-		// user saved in between (UpdateStep rewrites every editable
-		// column). Only the name has no setter, so a rename alone takes
-		// the whole-row write.
+		// Kind, model, permission mode and advisor model go through the
+		// per-column setters the TUI uses, so this call cannot clobber a
+		// prompt the user saved in between (UpdateStep rewrites every
+		// editable column). Only the name has no setter, so a rename alone
+		// takes the whole-row write.
 		if in.Name != nil {
 			st.Name = *in.Name
 			if err := store.UpdateStep(ctx, st); err != nil {
@@ -300,6 +315,11 @@ func registerWorkflowTools(srv *mcp.Server, store Store) {
 		}
 		if in.PermissionMode != nil {
 			if err := store.SetStepPermissionMode(ctx, in.StepID, mode); err != nil {
+				return nil, workflowGraphOut{}, err
+			}
+		}
+		if in.AdvisorModel != nil {
+			if err := store.SetStepAdvisorModel(ctx, in.StepID, advisor); err != nil {
 				return nil, workflowGraphOut{}, err
 			}
 		}
@@ -474,6 +494,20 @@ func normalizeModel(s string) (string, error) {
 	return m, nil
 }
 
+// normalizeAdvisorModel maps the wire form of a step's advisor model to
+// what the store keeps: "" (inherit) or the value as given. Not restricted
+// to the TUI picker's three aliases for the same reason normalizeModel
+// isn't: claude's --advisor also accepts a full model id, and tend has no
+// business maintaining its own copy of which pairings claude allows --
+// claude validates that at launch and reports why.
+func normalizeAdvisorModel(s string) (string, error) {
+	m := strings.TrimSpace(s)
+	if m == inheritAlias {
+		return "", nil
+	}
+	return m, nil
+}
+
 // normalizePermissionMode maps the wire form of a step's permission mode
 // to what the store keeps, refusing anything claude would not accept.
 func normalizePermissionMode(s string) (string, error) {
@@ -518,7 +552,7 @@ func fetchGraph(ctx context.Context, store Store, workflowID int64) (*mcp.CallTo
 	for i, st := range steps {
 		row := authoredStepOut{
 			ID: st.ID, Name: st.Name, Kind: string(st.Kind), Position: i + 1,
-			PromptMD: st.PromptMD, Model: st.Model, PermissionMode: st.PermissionMode,
+			PromptMD: st.PromptMD, Model: st.Model, PermissionMode: st.PermissionMode, AdvisorModel: st.AdvisorModel,
 			Edges: []authoredEdgeOut{},
 		}
 		for _, e := range edges {

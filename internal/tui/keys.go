@@ -45,6 +45,7 @@ type keyMap struct {
 	Duplicate      key.Binding // copy the selected workflow under a new name
 	StepModel      key.Binding // model picker for the selected step
 	StepPermission key.Binding // permission-mode picker for the selected step
+	StepAdvisor    key.Binding // advisor picker for the selected step
 	StepKind       key.Binding // flip the selected step between agent and gate
 	StepDown       key.Binding // move the selected step later in the order
 	StepUp         key.Binding // move the selected step earlier in the order
@@ -151,6 +152,7 @@ func defaultKeyMap() keyMap {
 		Duplicate:      key.NewBinding(key.WithKeys("D"), key.WithHelp("D", "duplicate")),
 		StepModel:      key.NewBinding(key.WithKeys("m"), key.WithHelp("m", "model")),
 		StepPermission: key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "permission mode")),
+		StepAdvisor:    key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "advisor")),
 		// `t` (type) rather than the `k` the task sketch named: `k` is
 		// "up" in every pane of this app, and `J`/`K` reorder right here.
 		StepKind: key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "agent / gate")),

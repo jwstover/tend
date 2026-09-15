@@ -78,8 +78,8 @@ RETURNING *;
 -- name: CreateStepFull :one
 -- Used by Store.DuplicateWorkflow to copy a step wholesale, sort_order
 -- included.
-INSERT INTO workflow_steps (workflow_id, name, kind, prompt_md, model, permission_mode, sort_order)
-VALUES (?, ?, ?, ?, ?, ?, ?)
+INSERT INTO workflow_steps (workflow_id, name, kind, prompt_md, model, permission_mode, advisor_model, sort_order)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING *;
 
 -- name: GetStep :one
@@ -100,6 +100,7 @@ SET name            = ?,
     prompt_md       = ?,
     model           = ?,
     permission_mode = ?,
+    advisor_model   = ?,
     updated_at      = datetime('now')
 WHERE id = ?;
 
@@ -125,6 +126,12 @@ WHERE id = ?;
 UPDATE workflow_steps
 SET permission_mode = ?,
     updated_at      = datetime('now')
+WHERE id = ?;
+
+-- name: SetStepAdvisorModel :exec
+UPDATE workflow_steps
+SET advisor_model = ?,
+    updated_at    = datetime('now')
 WHERE id = ?;
 
 -- name: SetStepSortOrder :exec
@@ -245,7 +252,7 @@ WHERE id = ?;
 -- iteration is derived here rather than passed in, so a runner can never
 -- miscount: it is one more than the number of times this step has already
 -- run within this run.
-INSERT INTO workflow_step_runs (run_id, step_id, iteration, session_external_id, prompt_rendered, system_prompt, model, permission_mode, input, feedback)
+INSERT INTO workflow_step_runs (run_id, step_id, iteration, session_external_id, prompt_rendered, system_prompt, model, permission_mode, advisor_model, input, feedback)
 VALUES (
   sqlc.arg(run_id),
   sqlc.arg(step_id),
@@ -255,6 +262,7 @@ VALUES (
   sqlc.arg(system_prompt),
   sqlc.arg(model),
   sqlc.arg(permission_mode),
+  sqlc.arg(advisor_model),
   sqlc.arg(input),
   sqlc.arg(feedback)
 )
@@ -286,11 +294,13 @@ SET log_path = ?
 WHERE id = ?;
 
 -- name: SetStepRunSettings :exec
--- A retried step picks up the model and permission mode its step has now,
--- so fixing the step is enough to make the retry differ from the failure.
+-- A retried step picks up the model, permission mode and advisor its step
+-- has now, so fixing the step is enough to make the retry differ from the
+-- failure.
 UPDATE workflow_step_runs
 SET model           = ?,
-    permission_mode = ?
+    permission_mode = ?,
+    advisor_model   = ?
 WHERE id = ?;
 
 -- name: SetStepRunSession :exec

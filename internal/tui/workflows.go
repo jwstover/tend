@@ -41,6 +41,7 @@ type wfPickerKind int
 const (
 	wfPickModel wfPickerKind = iota
 	wfPickPermission
+	wfPickAdvisor
 	wfPickEdgeTarget // the step an edge being drafted leads to
 )
 
@@ -64,6 +65,17 @@ var stepPermissionOptions = []wfPickerOption{
 	{"acceptEdits", "acceptEdits"},
 	{"bypassPermissions", "bypassPermissions"},
 	{"plan", "plan"},
+}
+
+// stepAdvisorOptions are the advisors a step can pin, the aliases claude's
+// --advisor accepts; "" leaves the choice to the user's own advisorModel
+// setting. A full model id also works but has no picker row -- an author
+// wanting one uses the MCP tool instead.
+var stepAdvisorOptions = []wfPickerOption{
+	{"fable", "fable"},
+	{"opus", "opus"},
+	{"sonnet", "sonnet"},
+	{"inherit", ""},
 }
 
 // edgeDraft is an edge on its way through the three-stage add/edit flow:
@@ -365,6 +377,9 @@ func (a app) handleStepsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return a, nil
 	case key.Matches(msg, a.keys.StepPermission):
 		a.openWfPicker(wfPickPermission, st)
+		return a, nil
+	case key.Matches(msg, a.keys.StepAdvisor):
+		a.openWfPicker(wfPickAdvisor, st)
 		return a, nil
 	case key.Matches(msg, a.keys.StepKind):
 		next := workflow.StepGate
@@ -791,6 +806,8 @@ func (a app) wfPickerOptions() []wfPickerOption {
 	switch a.wfPickerKind {
 	case wfPickPermission:
 		return stepPermissionOptions
+	case wfPickAdvisor:
+		return stepAdvisorOptions
 	case wfPickEdgeTarget:
 		opts := make([]wfPickerOption, 0, len(a.wfSteps))
 		for _, st := range a.wfSteps {
@@ -806,8 +823,11 @@ func (a app) wfPickerOptions() []wfPickerOption {
 func (a *app) openWfPicker(kind wfPickerKind, st workflow.Step) {
 	a.wfPickerOpen, a.wfPickerKind, a.wfPickerStepID, a.wfPickerSel = true, kind, st.ID, 0
 	current := st.Model
-	if kind == wfPickPermission {
+	switch kind {
+	case wfPickPermission:
 		current = st.PermissionMode
+	case wfPickAdvisor:
+		current = st.AdvisorModel
 	}
 	for i, o := range a.wfPickerOptions() {
 		if o.value == current {
@@ -854,6 +874,11 @@ func (a app) handleWfPickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			status := flash{kind: flashEdit, text: fmt.Sprintf("%s permission mode → %s", st.Name, o.label)}
 			return a, a.setStepAttr(st.ID, status, func() error {
 				return a.store.SetStepPermissionMode(a.ctx, st.ID, o.value)
+			})
+		case wfPickAdvisor:
+			status := flash{kind: flashEdit, text: fmt.Sprintf("%s advisor → %s", st.Name, o.label)}
+			return a, a.setStepAttr(st.ID, status, func() error {
+				return a.store.SetStepAdvisorModel(a.ctx, st.ID, o.value)
 			})
 		}
 		status := flash{kind: flashEdit, text: fmt.Sprintf("%s model → %s", st.Name, o.label)}
@@ -911,6 +936,8 @@ func (a app) wfPickerView() string {
 		title = s.Title.Render(fmt.Sprintf("%s on %s -> ", name, a.wfEdgeDraft.outcome)) + s.Dimmed.Render("which step?")
 	case a.wfPickerKind == wfPickPermission:
 		title = s.Title.Render("permission mode for ") + s.Dimmed.Render(name)
+	case a.wfPickerKind == wfPickAdvisor:
+		title = s.Title.Render("advisor for ") + s.Dimmed.Render(name)
 	default:
 		title = s.Title.Render("model for ") + s.Dimmed.Render(name)
 	}
@@ -1049,6 +1076,9 @@ func (a app) stepsPaneLines(width int) (lines []string, focusLine int) {
 		}
 		if st.PermissionMode != "" {
 			meta += " · " + st.PermissionMode
+		}
+		if st.AdvisorModel != "" {
+			meta += " · advisor:" + st.AdvisorModel
 		}
 		if strings.TrimSpace(st.PromptMD) == "" && st.Kind == workflow.StepAgent {
 			meta += " · no prompt"

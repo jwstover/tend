@@ -24,7 +24,7 @@ import (
 //
 //	claude -p --session-id <id> --output-format stream-json --verbose
 //	       [--mcp-config <path>] [--settings <path>]
-//	       [--model <m>] [--permission-mode <mode>]
+//	       [--model <m>] [--permission-mode <mode>] [--advisor <m>]
 //	       [--append-system-prompt <text>] <prompt>
 //
 // Everything below was verified against the installed CLI (claude
@@ -97,6 +97,9 @@ func headlessCmd(ctx context.Context, cwd string, sessionArgs []string, mcpConfi
 	}
 	if opts.PermissionMode != "" {
 		args = append(args, "--permission-mode", opts.PermissionMode)
+	}
+	if opts.AdvisorModel != "" {
+		args = append(args, "--advisor", opts.AdvisorModel)
 	}
 	args = appendSystemPromptArgs(args, opts)
 	args = append(args, opts.Prompt)

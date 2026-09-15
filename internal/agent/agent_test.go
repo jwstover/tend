@@ -307,6 +307,28 @@ func TestLaunchCmdWithStepOptions(t *testing.T) {
 	}
 }
 
+// A step's advisor rides with model and permission mode, ahead of the
+// prompt, and "" leaves claude's own advisorModel setting in charge.
+func TestLaunchCmdWithAdvisorModel(t *testing.T) {
+	c := LaunchCmdWith("/tmp/work", "abc-123", "fix a bug", "", "",
+		LaunchOpts{Prompt: "go", Model: "opus", PermissionMode: "acceptEdits", AdvisorModel: "fable"})
+	want := []string{
+		binary, "--session-id", "abc-123", "-n", "fix a bug",
+		"--model", "opus", "--permission-mode", "acceptEdits", "--advisor", "fable",
+		"go",
+	}
+	if got := c.Args; !equalArgs(got, want) {
+		t.Errorf("Args = %v, want %v", got, want)
+	}
+
+	unset := LaunchCmdWith("/tmp/work", "abc-123", "fix a bug", "", "", LaunchOpts{Prompt: "go"})
+	for _, a := range unset.Args {
+		if a == "--advisor" {
+			t.Errorf("Args = %v, should not carry --advisor when AdvisorModel is unset", unset.Args)
+		}
+	}
+}
+
 // Empty options add nothing: LaunchCmdWith with the zero LaunchOpts is
 // LaunchCmd, and an unset model or mode inherits claude's own default.
 func TestLaunchCmdWithZeroOptionsMatchesLaunchCmd(t *testing.T) {
@@ -344,8 +366,8 @@ func TestLaunchCmdWithAppendSystemPrompt(t *testing.T) {
 	}
 }
 
-// A resume takes the same block, and only that block: the other
-// LaunchOpts fields belong to a session's first run and are not repeated.
+// A resume takes the same block, and only that block: Model and
+// PermissionMode belong to a session's first run and are not repeated.
 func TestResumeCmdWithAppendSystemPrompt(t *testing.T) {
 	c := ResumeCmdWith("/tmp/work", "abc-123", "/tmp/mcp.json", "/tmp/hooks.json",
 		LaunchOpts{AppendSystemPrompt: "bound to task #4", Model: "opus", PermissionMode: "plan", Prompt: "go"})
@@ -358,6 +380,18 @@ func TestResumeCmdWithAppendSystemPrompt(t *testing.T) {
 	}
 	if c.Dir != "/tmp/work" {
 		t.Errorf("Dir = %q, want /tmp/work", c.Dir)
+	}
+}
+
+// Unlike Model and PermissionMode, AdvisorModel is a per-session flag
+// claude re-reads on every invocation (verified by hand against claude
+// 2.1.272, tend task #32), so ResumeCmdWith forwards it.
+func TestResumeCmdWithAdvisorModel(t *testing.T) {
+	c := ResumeCmdWith("/tmp/work", "abc-123", "/tmp/mcp.json", "",
+		LaunchOpts{AdvisorModel: "opus"})
+	want := []string{binary, "--resume", "abc-123", "--mcp-config", "/tmp/mcp.json", "--advisor", "opus"}
+	if got := c.Args; !equalArgs(got, want) {
+		t.Errorf("Args = %v, want %v", got, want)
 	}
 }
 

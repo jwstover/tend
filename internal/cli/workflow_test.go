@@ -351,10 +351,10 @@ func (f *fakeWorkflowStore) SetStepRunSession(_ context.Context, id int64, exter
 	return workflow.ErrStepRunNotFound
 }
 
-func (f *fakeWorkflowStore) SetStepRunSettings(_ context.Context, id int64, model, permissionMode string) error {
+func (f *fakeWorkflowStore) SetStepRunSettings(_ context.Context, id int64, model, permissionMode, advisorModel string) error {
 	for i := range f.stepRuns {
 		if f.stepRuns[i].ID == id {
-			f.stepRuns[i].Model, f.stepRuns[i].PermissionMode = model, permissionMode
+			f.stepRuns[i].Model, f.stepRuns[i].PermissionMode, f.stepRuns[i].AdvisorModel = model, permissionMode, advisorModel
 			return nil
 		}
 	}

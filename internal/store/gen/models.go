@@ -133,6 +133,7 @@ type WorkflowStep struct {
 	SortOrder      int64
 	CreatedAt      string
 	UpdatedAt      string
+	AdvisorModel   string
 }
 
 type WorkflowStepRun struct {
@@ -152,4 +153,5 @@ type WorkflowStepRun struct {
 	EndedAt           sql.NullString
 	Feedback          string
 	SystemPrompt      string
+	AdvisorModel      string
 }

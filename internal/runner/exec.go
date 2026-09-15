@@ -36,7 +36,7 @@ func (e ClaudeExec) Run(ctx context.Context, req StepExec) (agent.HeadlessResult
 	// resume is a new turn of the same step, with the same contract.
 	opts := agent.LaunchOpts{
 		Prompt: req.Prompt, Model: req.StepRun.Model, PermissionMode: req.StepRun.PermissionMode,
-		AppendSystemPrompt: req.StepRun.SystemPrompt,
+		AdvisorModel: req.StepRun.AdvisorModel, AppendSystemPrompt: req.StepRun.SystemPrompt,
 	}
 	build := agent.HeadlessCmd
 	if req.Resume {

@@ -234,14 +234,16 @@ type Querier interface {
 	// ClaimSessionRecap's compare-and-clear.
 	SetSessionWorkingIfUnchanged(ctx context.Context, arg SetSessionWorkingIfUnchangedParams) (int64, error)
 	SetSetting(ctx context.Context, arg SetSettingParams) error
+	SetStepAdvisorModel(ctx context.Context, arg SetStepAdvisorModelParams) error
 	SetStepKind(ctx context.Context, arg SetStepKindParams) error
 	SetStepModel(ctx context.Context, arg SetStepModelParams) error
 	SetStepPermissionMode(ctx context.Context, arg SetStepPermissionModeParams) error
 	SetStepPrompt(ctx context.Context, arg SetStepPromptParams) error
 	SetStepRunLogPath(ctx context.Context, arg SetStepRunLogPathParams) error
 	SetStepRunSession(ctx context.Context, arg SetStepRunSessionParams) error
-	// A retried step picks up the model and permission mode its step has now,
-	// so fixing the step is enough to make the retry differ from the failure.
+	// A retried step picks up the model, permission mode and advisor its step
+	// has now, so fixing the step is enough to make the retry differ from the
+	// failure.
 	SetStepRunSettings(ctx context.Context, arg SetStepRunSettingsParams) error
 	SetStepSortOrder(ctx context.Context, arg SetStepSortOrderParams) error
 	SetTaskBody(ctx context.Context, arg SetTaskBodyParams) error
