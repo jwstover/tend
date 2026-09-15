@@ -154,7 +154,8 @@ func (a app) paletteCommands() []paletteCommand {
 		{icon: "✗", label: "Delete selected task", hint: "dd", aliases: []string{"delete", "rm"},
 			act: func(a app) (tea.Model, tea.Cmd) {
 				if t, ok := a.selected(); ok {
-					return a, a.deleteTask(t)
+					a.armTaskDelete(t)
+					return a, nil
 				}
 				a.status = flash{text: "nothing selected"}
 				return a, nil
