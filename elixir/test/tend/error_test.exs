@@ -74,6 +74,32 @@ defmodule Tend.ErrorTest do
       assert Error.message(:in_use) == "referenced by an active run"
     end
 
+    test "renders the store's task-surface errors the way their Go call sites do" do
+      # fmt.Errorf("unknown state %q", st) in Store.SetState. The atom is
+      # rendered back into the stored spelling before it is quoted.
+      assert Error.message({:unknown_state, "archived"}) == ~s|unknown state "archived"|
+      assert Error.message({:unknown_state, :archived}) == ~s|unknown state "archived"|
+
+      # fmt.Errorf("priority %d out of range %d..%d", ...) in SetPriority.
+      assert Error.message({:priority_out_of_range, 5}) == "priority 5 out of range 1..4"
+      assert Error.message({:priority_out_of_range, -1}) == "priority -1 out of range 1..4"
+
+      # Go's sql.ErrNoRows, wrapped by GetTask's "loading task %d: %w".
+      assert Error.message({:task_not_found, 42}) == "loading task 42: no rows in result set"
+
+      # toDomain's "task %d created_at: %w" around parseTime's "parsing %q".
+      assert Error.message({:invalid_timestamp, "task 7 created_at", "yesterday"}) ==
+               ~s|task 7 created_at: parsing "yesterday"|
+
+      # The generic wrap every store call site puts around a driver failure.
+      # A SQLite message is passed through, because Go's %w prints exactly it.
+      assert Error.message({:query_failed, "inserting task", "UNIQUE constraint failed"}) ==
+               "inserting task: UNIQUE constraint failed"
+
+      assert Error.message({:query_failed, "inserting task", :misuse}) ==
+               "inserting task: :misuse"
+    end
+
     test "refuses a reason nobody registered, and says how to fix it" do
       assert_raise ArgumentError, ~r/add it to Tend.Error/, fn -> Error.message(:invented) end
       assert_raise ArgumentError, fn -> Error.message({:invented, 1}) end

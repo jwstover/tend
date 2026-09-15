@@ -34,11 +34,14 @@ defmodule Tend.Error do
   a test failure rather than a surprise at runtime. (`Tend.ErrorTest` covers
   this module's own rules; the cross-language guard is the parity test.)
 
-  Only the errors of `internal/task/task.go`, `internal/task/project.go`,
+  The sentinels of `internal/task/task.go`, `internal/task/project.go`,
   `internal/task/session.go`, `internal/task/log.go` and
-  `internal/workflow/workflow.go` are listed today; the store and template
-  ports add theirs.
+  `internal/workflow/workflow.go` are listed today, plus the interpolating
+  errors the task surface of the store port raises; the rest of the store and
+  the template port add theirs.
   """
+
+  alias Tend.Task.Priority
 
   # Sentinel atom => the Go error's message, verbatim. Keep this sorted by
   # the Go file the sentinel comes from, then by declaration order.
@@ -101,6 +104,11 @@ defmodule Tend.Error do
           sentinel()
           | {:invalid_date, String.t()}
           | {:in_use, String.t(), integer()}
+          | {:unknown_state, String.t()}
+          | {:priority_out_of_range, term()}
+          | {:task_not_found, integer()}
+          | {:invalid_timestamp, String.t(), String.t()}
+          | {:query_failed, String.t(), term()}
 
   @doc """
   Every sentinel atom, sorted.
@@ -149,11 +157,57 @@ defmodule Tend.Error do
     "#{what} is #{Map.fetch!(@sentinels, :in_use)} #{run_id}"
   end
 
+  # fmt.Errorf("unknown state %q", st) in Store.SetState. Go compares a string
+  # newtype, this port an atom, so the value is rendered back into the stored
+  # spelling before it is quoted.
+  def message({:unknown_state, value}) do
+    "unknown state #{quote_go(to_string(value))}"
+  end
+
+  # fmt.Errorf("priority %d out of range %d..%d", *p, task.PriorityHighest,
+  # task.PriorityLowest) in Store.SetPriority.
+  def message({:priority_out_of_range, value}) do
+    "priority #{value} out of range #{Priority.highest()}..#{Priority.lowest()}"
+  end
+
+  # Go's Store.GetTask has no sentinel for this: it wraps whatever
+  # database/sql returned, and a missing row arrives as sql.ErrNoRows, whose
+  # message is "sql: no rows in result set". exqlite reports no rows as an
+  # empty list rather than an error, so the port has to name the condition
+  # itself and reproduce the sentence Go would have printed around it.
+  def message({:task_not_found, id}) do
+    "loading task #{id}: no rows in result set"
+  end
+
+  # fmt.Errorf("parsing %q: %w", s, err) in store.parseTime, wrapped by
+  # toDomain's fmt.Errorf("task %d created_at: %w", ...). Go's innermost layer
+  # is time.ParseError's own prose ("cannot parse ... as ..."), which is the
+  # time package's to write and not worth reconstructing; everything the
+  # reader needs -- which column, and the value that would not parse -- is
+  # here.
+  def message({:invalid_timestamp, context, value}) do
+    "#{context}: parsing #{quote_go(value)}"
+  end
+
+  # The generic wrap every store call site puts around a driver failure:
+  # fmt.Errorf("inserting task: %w", err) and its ~forty siblings. `context`
+  # is that call site's label, verbatim.
+  def message({:query_failed, context, reason}) do
+    "#{context}: #{render(reason)}"
+  end
+
   def message(reason) do
     raise ArgumentError,
           "unknown error reason #{inspect(reason)}; add it to Tend.Error " <>
             "with the message text its Go counterpart prints"
   end
+
+  # A driver failure is a string from SQLite most of the time ("UNIQUE
+  # constraint failed: projects.name") and an atom or a tuple the rest of it.
+  # The string form is passed through, because Go's %w on the driver error
+  # prints exactly that; anything else is inspected rather than mangled.
+  defp render(reason) when is_binary(reason), do: reason
+  defp render(reason), do: inspect(reason)
 
   @doc """
   A port of Go's `strconv.Quote`, which is what fmt's `%q` verb applies to a
