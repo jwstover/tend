@@ -1,0 +1,245 @@
+{"data":"full","ok":true,"output":"Build Fix the flaky test","template":"Build {{.Task.Title}}"}
+{"data":"one","ok":true,"output":"Build ","template":"Build {{.Task.Title}}"}
+{"data":"sample","ok":true,"output":"Build sample task","template":"Build {{.Task.Title}}"}
+{"data":"three","ok":true,"output":"Build ","template":"Build {{.Task.Title}}"}
+{"data":"zero","ok":true,"output":"Build ","template":"Build {{.Task.Title}}"}
+{"data":"full","ok":true,"output":"Do it. Address this feedback: reviewer said no","template":"Do it.{{if .Feedback}} Address this feedback: {{.Feedback}}{{end}}"}
+{"data":"one","ok":true,"output":"Do it.","template":"Do it.{{if .Feedback}} Address this feedback: {{.Feedback}}{{end}}"}
+{"data":"sample","ok":true,"output":"Do it. Address this feedback: sample feedback","template":"Do it.{{if .Feedback}} Address this feedback: {{.Feedback}}{{end}}"}
+{"data":"three","ok":true,"output":"Do it.","template":"Do it.{{if .Feedback}} Address this feedback: {{.Feedback}}{{end}}"}
+{"data":"zero","ok":true,"output":"Do it.","template":"Do it.{{if .Feedback}} Address this feedback: {{.Feedback}}{{end}}"}
+{"data":"full","error":"template: prompt:1:5: executing \"prompt\" at <.Nope>: can't evaluate field Nope in type main.PromptData","ok":false,"template":"Do {{.Nope}}"}
+{"data":"one","error":"template: prompt:1:5: executing \"prompt\" at <.Nope>: can't evaluate field Nope in type main.PromptData","ok":false,"template":"Do {{.Nope}}"}
+{"data":"sample","error":"template: prompt:1:5: executing \"prompt\" at <.Nope>: can't evaluate field Nope in type main.PromptData","ok":false,"template":"Do {{.Nope}}"}
+{"data":"three","error":"template: prompt:1:5: executing \"prompt\" at <.Nope>: can't evaluate field Nope in type main.PromptData","ok":false,"template":"Do {{.Nope}}"}
+{"data":"zero","error":"template: prompt:1:5: executing \"prompt\" at <.Nope>: can't evaluate field Nope in type main.PromptData","ok":false,"template":"Do {{.Nope}}"}
+{"data":"full","ok":true,"output":"Fix #42 in /home/me/proj.","template":"Fix #{{.Task.ID}} in {{.Cwd}}."}
+{"data":"one","ok":true,"output":"Fix #0 in .","template":"Fix #{{.Task.ID}} in {{.Cwd}}."}
+{"data":"sample","ok":true,"output":"Fix #1 in /tmp/sample.","template":"Fix #{{.Task.ID}} in {{.Cwd}}."}
+{"data":"three","ok":true,"output":"Fix #0 in .","template":"Fix #{{.Task.ID}} in {{.Cwd}}."}
+{"data":"zero","ok":true,"output":"Fix #0 in .","template":"Fix #{{.Task.ID}} in {{.Cwd}}."}
+{"data":"full","error":"template: prompt:1:11: executing \"prompt\" at <.Task.Nope>: can't evaluate field Nope in type main.PromptTask","ok":false,"template":"Fix {{.Task.Nope}}"}
+{"data":"one","error":"template: prompt:1:11: executing \"prompt\" at <.Task.Nope>: can't evaluate field Nope in type main.PromptTask","ok":false,"template":"Fix {{.Task.Nope}}"}
+{"data":"sample","error":"template: prompt:1:11: executing \"prompt\" at <.Task.Nope>: can't evaluate field Nope in type main.PromptTask","ok":false,"template":"Fix {{.Task.Nope}}"}
+{"data":"three","error":"template: prompt:1:11: executing \"prompt\" at <.Task.Nope>: can't evaluate field Nope in type main.PromptTask","ok":false,"template":"Fix {{.Task.Nope}}"}
+{"data":"zero","error":"template: prompt:1:11: executing \"prompt\" at <.Task.Nope>: can't evaluate field Nope in type main.PromptTask","ok":false,"template":"Fix {{.Task.Nope}}"}
+{"data":"full","error":"template: prompt:1:11: executing \"prompt\" at <.Task.Nope>: can't evaluate field Nope in type main.PromptTask","ok":false,"template":"Fix {{.Task.Nope}}."}
+{"data":"one","error":"template: prompt:1:11: executing \"prompt\" at <.Task.Nope>: can't evaluate field Nope in type main.PromptTask","ok":false,"template":"Fix {{.Task.Nope}}."}
+{"data":"sample","error":"template: prompt:1:11: executing \"prompt\" at <.Task.Nope>: can't evaluate field Nope in type main.PromptTask","ok":false,"template":"Fix {{.Task.Nope}}."}
+{"data":"three","error":"template: prompt:1:11: executing \"prompt\" at <.Task.Nope>: can't evaluate field Nope in type main.PromptTask","ok":false,"template":"Fix {{.Task.Nope}}."}
+{"data":"zero","error":"template: prompt:1:11: executing \"prompt\" at <.Task.Nope>: can't evaluate field Nope in type main.PromptTask","ok":false,"template":"Fix {{.Task.Nope}}."}
+{"data":"full","error":"template: prompt:1:8: executing \"prompt\" at <.Nope>: can't evaluate field Nope in type main.PromptData","ok":false,"template":"Hello {{.Nope}}"}
+{"data":"one","error":"template: prompt:1:8: executing \"prompt\" at <.Nope>: can't evaluate field Nope in type main.PromptData","ok":false,"template":"Hello {{.Nope}}"}
+{"data":"sample","error":"template: prompt:1:8: executing \"prompt\" at <.Nope>: can't evaluate field Nope in type main.PromptData","ok":false,"template":"Hello {{.Nope}}"}
+{"data":"three","error":"template: prompt:1:8: executing \"prompt\" at <.Nope>: can't evaluate field Nope in type main.PromptData","ok":false,"template":"Hello {{.Nope}}"}
+{"data":"zero","error":"template: prompt:1:8: executing \"prompt\" at <.Nope>: can't evaluate field Nope in type main.PromptData","ok":false,"template":"Hello {{.Nope}}"}
+{"data":"full","ok":true,"output":"Implement Fix the flaky test","template":"Implement {{.Task.Title}}"}
+{"data":"one","ok":true,"output":"Implement ","template":"Implement {{.Task.Title}}"}
+{"data":"sample","ok":true,"output":"Implement sample task","template":"Implement {{.Task.Title}}"}
+{"data":"three","ok":true,"output":"Implement ","template":"Implement {{.Task.Title}}"}
+{"data":"zero","ok":true,"output":"Implement ","template":"Implement {{.Task.Title}}"}
+{"data":"full","ok":true,"output":"Implement Fix the flaky test in /home/me/proj","template":"Implement {{.Task.Title}} in {{.Cwd}}"}
+{"data":"one","ok":true,"output":"Implement  in ","template":"Implement {{.Task.Title}} in {{.Cwd}}"}
+{"data":"sample","ok":true,"output":"Implement sample task in /tmp/sample","template":"Implement {{.Task.Title}} in {{.Cwd}}"}
+{"data":"three","ok":true,"output":"Implement  in ","template":"Implement {{.Task.Title}} in {{.Cwd}}"}
+{"data":"zero","ok":true,"output":"Implement  in ","template":"Implement {{.Task.Title}} in {{.Cwd}}"}
+{"data":"full","ok":true,"output":"Implement Fix the flaky test in /home/me/proj.\n","template":"Implement {{.Task.Title}} in {{.Cwd}}.\n"}
+{"data":"one","ok":true,"output":"Implement  in .\n","template":"Implement {{.Task.Title}} in {{.Cwd}}.\n"}
+{"data":"sample","ok":true,"output":"Implement sample task in /tmp/sample.\n","template":"Implement {{.Task.Title}} in {{.Cwd}}.\n"}
+{"data":"three","ok":true,"output":"Implement  in .\n","template":"Implement {{.Task.Title}} in {{.Cwd}}.\n"}
+{"data":"zero","ok":true,"output":"Implement  in .\n","template":"Implement {{.Task.Title}} in {{.Cwd}}.\n"}
+{"data":"full","ok":true,"output":"Implement Fix the flaky test.","template":"Implement {{.Task.Title}}."}
+{"data":"one","ok":true,"output":"Implement .","template":"Implement {{.Task.Title}}."}
+{"data":"sample","ok":true,"output":"Implement sample task.","template":"Implement {{.Task.Title}}."}
+{"data":"three","ok":true,"output":"Implement .","template":"Implement {{.Task.Title}}."}
+{"data":"zero","ok":true,"output":"Implement .","template":"Implement {{.Task.Title}}."}
+{"data":"full","ok":true,"output":"Implement Fix the flaky test.\n\nReviewer feedback: reviewer said no","template":"Implement {{.Task.Title}}.\n\n{{if .Feedback}}Reviewer feedback: {{.Feedback}}{{else}}Context: {{.Input}}{{end}}"}
+{"data":"one","ok":true,"output":"Implement .\n\nContext: ","template":"Implement {{.Task.Title}}.\n\n{{if .Feedback}}Reviewer feedback: {{.Feedback}}{{else}}Context: {{.Input}}{{end}}"}
+{"data":"sample","ok":true,"output":"Implement sample task.\n\nReviewer feedback: sample feedback","template":"Implement {{.Task.Title}}.\n\n{{if .Feedback}}Reviewer feedback: {{.Feedback}}{{else}}Context: {{.Input}}{{end}}"}
+{"data":"three","ok":true,"output":"Implement .\n\nContext: ","template":"Implement {{.Task.Title}}.\n\n{{if .Feedback}}Reviewer feedback: {{.Feedback}}{{else}}Context: {{.Input}}{{end}}"}
+{"data":"zero","ok":true,"output":"Implement .\n\nContext: ","template":"Implement {{.Task.Title}}.\n\n{{if .Feedback}}Reviewer feedback: {{.Feedback}}{{else}}Context: {{.Input}}{{end}}"}
+{"data":"full","ok":true,"output":"Implement Fix the flaky test. Feedback: reviewer said no","template":"Implement {{.Task.Title}}.{{if .Feedback}} Feedback: {{.Feedback}}{{end}}"}
+{"data":"one","ok":true,"output":"Implement .","template":"Implement {{.Task.Title}}.{{if .Feedback}} Feedback: {{.Feedback}}{{end}}"}
+{"data":"sample","ok":true,"output":"Implement sample task. Feedback: sample feedback","template":"Implement {{.Task.Title}}.{{if .Feedback}} Feedback: {{.Feedback}}{{end}}"}
+{"data":"three","ok":true,"output":"Implement .","template":"Implement {{.Task.Title}}.{{if .Feedback}} Feedback: {{.Feedback}}{{end}}"}
+{"data":"zero","ok":true,"output":"Implement .","template":"Implement {{.Task.Title}}.{{if .Feedback}} Feedback: {{.Feedback}}{{end}}"}
+{"data":"full","ok":true,"output":"Open a PR for previous deliverable.","template":"Open a PR for {{.Input}}."}
+{"data":"one","ok":true,"output":"Open a PR for .","template":"Open a PR for {{.Input}}."}
+{"data":"sample","ok":true,"output":"Open a PR for sample input.","template":"Open a PR for {{.Input}}."}
+{"data":"three","ok":true,"output":"Open a PR for .","template":"Open a PR for {{.Input}}."}
+{"data":"zero","ok":true,"output":"Open a PR for .","template":"Open a PR for {{.Input}}."}
+{"data":"full","ok":true,"output":"Pretend you implemented the task Fix the flaky test. Your deliverable is the one line: \"Implemented: added the missing hand-off\". Do not read or write any files.","template":"Pretend you implemented the task {{.Task.Title}}. Your deliverable is the one line: \"Implemented: added the missing hand-off\". Do not read or write any files."}
+{"data":"one","ok":true,"output":"Pretend you implemented the task . Your deliverable is the one line: \"Implemented: added the missing hand-off\". Do not read or write any files.","template":"Pretend you implemented the task {{.Task.Title}}. Your deliverable is the one line: \"Implemented: added the missing hand-off\". Do not read or write any files."}
+{"data":"sample","ok":true,"output":"Pretend you implemented the task sample task. Your deliverable is the one line: \"Implemented: added the missing hand-off\". Do not read or write any files.","template":"Pretend you implemented the task {{.Task.Title}}. Your deliverable is the one line: \"Implemented: added the missing hand-off\". Do not read or write any files."}
+{"data":"three","ok":true,"output":"Pretend you implemented the task . Your deliverable is the one line: \"Implemented: added the missing hand-off\". Do not read or write any files.","template":"Pretend you implemented the task {{.Task.Title}}. Your deliverable is the one line: \"Implemented: added the missing hand-off\". Do not read or write any files."}
+{"data":"zero","ok":true,"output":"Pretend you implemented the task . Your deliverable is the one line: \"Implemented: added the missing hand-off\". Do not read or write any files.","template":"Pretend you implemented the task {{.Task.Title}}. Your deliverable is the one line: \"Implemented: added the missing hand-off\". Do not read or write any files."}
+{"data":"full","ok":true,"output":"Review the change described in previous deliverable; finish with approve or reject.","template":"Review the change described in {{.Input}}; finish with approve or reject."}
+{"data":"one","ok":true,"output":"Review the change described in ; finish with approve or reject.","template":"Review the change described in {{.Input}}; finish with approve or reject."}
+{"data":"sample","ok":true,"output":"Review the change described in sample input; finish with approve or reject.","template":"Review the change described in {{.Input}}; finish with approve or reject."}
+{"data":"three","ok":true,"output":"Review the change described in ; finish with approve or reject.","template":"Review the change described in {{.Input}}; finish with approve or reject."}
+{"data":"zero","ok":true,"output":"Review the change described in ; finish with approve or reject.","template":"Review the change described in {{.Input}}; finish with approve or reject."}
+{"data":"full","ok":true,"output":"Review previous deliverable","template":"Review {{.Input}}"}
+{"data":"one","ok":true,"output":"Review ","template":"Review {{.Input}}"}
+{"data":"sample","ok":true,"output":"Review sample input","template":"Review {{.Input}}"}
+{"data":"three","ok":true,"output":"Review ","template":"Review {{.Input}}"}
+{"data":"zero","ok":true,"output":"Review ","template":"Review {{.Input}}"}
+{"data":"full","ok":true,"output":"Review previous deliverable; finish with approve or reject.","template":"Review {{.Input}}; finish with approve or reject."}
+{"data":"one","ok":true,"output":"Review ; finish with approve or reject.","template":"Review {{.Input}}; finish with approve or reject."}
+{"data":"sample","ok":true,"output":"Review sample input; finish with approve or reject.","template":"Review {{.Input}}; finish with approve or reject."}
+{"data":"three","ok":true,"output":"Review ; finish with approve or reject.","template":"Review {{.Input}}; finish with approve or reject."}
+{"data":"zero","ok":true,"output":"Review ; finish with approve or reject.","template":"Review {{.Input}}; finish with approve or reject."}
+{"data":"full","ok":true,"output":"Task #42: Fix the flaky test\nIt fails on CI only.\ncwd=/home/me/proj input=previous deliverable feedback=reviewer said no iteration=3\noutcomes: approve, reject","template":"Task #{{.Task.ID}}: {{.Task.Title}}\n{{.Task.Body}}\ncwd={{.Cwd}} input={{.Input}} feedback={{.Feedback}} iteration={{.Iteration}}\noutcomes: {{range $i, $o := .Outcomes}}{{if $i}}, {{end}}{{$o}}{{end}}"}
+{"data":"one","ok":true,"output":"Task #0: \n\ncwd= input= feedback= iteration=0\noutcomes: approve","template":"Task #{{.Task.ID}}: {{.Task.Title}}\n{{.Task.Body}}\ncwd={{.Cwd}} input={{.Input}} feedback={{.Feedback}} iteration={{.Iteration}}\noutcomes: {{range $i, $o := .Outcomes}}{{if $i}}, {{end}}{{$o}}{{end}}"}
+{"data":"sample","ok":true,"output":"Task #1: sample task\nsample body\ncwd=/tmp/sample input=sample input feedback=sample feedback iteration=1\noutcomes: done","template":"Task #{{.Task.ID}}: {{.Task.Title}}\n{{.Task.Body}}\ncwd={{.Cwd}} input={{.Input}} feedback={{.Feedback}} iteration={{.Iteration}}\noutcomes: {{range $i, $o := .Outcomes}}{{if $i}}, {{end}}{{$o}}{{end}}"}
+{"data":"three","ok":true,"output":"Task #0: \n\ncwd= input= feedback= iteration=0\noutcomes: a, b, c","template":"Task #{{.Task.ID}}: {{.Task.Title}}\n{{.Task.Body}}\ncwd={{.Cwd}} input={{.Input}} feedback={{.Feedback}} iteration={{.Iteration}}\noutcomes: {{range $i, $o := .Outcomes}}{{if $i}}, {{end}}{{$o}}{{end}}"}
+{"data":"zero","ok":true,"output":"Task #0: \n\ncwd= input= feedback= iteration=0\noutcomes: ","template":"Task #{{.Task.ID}}: {{.Task.Title}}\n{{.Task.Body}}\ncwd={{.Cwd}} input={{.Input}} feedback={{.Feedback}} iteration={{.Iteration}}\noutcomes: {{range $i, $o := .Outcomes}}{{if $i}}, {{end}}{{$o}}{{end}}"}
+{"data":"full","ok":true,"output":"You are reviewing this implementation: previous deliverable\n\nThe change is acceptable. Give your verdict: it is approved. Do not read or write any files.","template":"You are reviewing this implementation: {{.Input}}\n\nThe change is acceptable. Give your verdict: it is approved. Do not read or write any files."}
+{"data":"one","ok":true,"output":"You are reviewing this implementation: \n\nThe change is acceptable. Give your verdict: it is approved. Do not read or write any files.","template":"You are reviewing this implementation: {{.Input}}\n\nThe change is acceptable. Give your verdict: it is approved. Do not read or write any files."}
+{"data":"sample","ok":true,"output":"You are reviewing this implementation: sample input\n\nThe change is acceptable. Give your verdict: it is approved. Do not read or write any files.","template":"You are reviewing this implementation: {{.Input}}\n\nThe change is acceptable. Give your verdict: it is approved. Do not read or write any files."}
+{"data":"three","ok":true,"output":"You are reviewing this implementation: \n\nThe change is acceptable. Give your verdict: it is approved. Do not read or write any files.","template":"You are reviewing this implementation: {{.Input}}\n\nThe change is acceptable. Give your verdict: it is approved. Do not read or write any files."}
+{"data":"zero","ok":true,"output":"You are reviewing this implementation: \n\nThe change is acceptable. Give your verdict: it is approved. Do not read or write any files.","template":"You are reviewing this implementation: {{.Input}}\n\nThe change is acceptable. Give your verdict: it is approved. Do not read or write any files."}
+{"data":"full","ok":true,"output":"[previous deliverable][reviewer said no]","template":"[{{.Input}}][{{.Feedback}}]"}
+{"data":"one","ok":true,"output":"[][]","template":"[{{.Input}}][{{.Feedback}}]"}
+{"data":"sample","ok":true,"output":"[sample input][sample feedback]","template":"[{{.Input}}][{{.Feedback}}]"}
+{"data":"three","ok":true,"output":"[][]","template":"[{{.Input}}][{{.Feedback}}]"}
+{"data":"zero","ok":true,"output":"[][]","template":"[{{.Input}}][{{.Feedback}}]"}
+{"data":"full","ok":true,"output":"[[{43 write the migration done false []} {44 wire the store todo false [43]} {45 expose over MCP todo true [44]}]](xxx) n=3","template":"[{{.Subtasks}}]({{range .Subtasks}}x{{end}}) n={{len .Subtasks}}"}
+{"data":"one","ok":true,"output":"[[]]() n=0","template":"[{{.Subtasks}}]({{range .Subtasks}}x{{end}}) n={{len .Subtasks}}"}
+{"data":"sample","ok":true,"output":"[[{2 sample sub-task todo false []} {3 sample blocked sub-task todo true [2]}]](xx) n=2","template":"[{{.Subtasks}}]({{range .Subtasks}}x{{end}}) n={{len .Subtasks}}"}
+{"data":"three","ok":true,"output":"[[]]() n=0","template":"[{{.Subtasks}}]({{range .Subtasks}}x{{end}}) n={{len .Subtasks}}"}
+{"data":"zero","ok":true,"output":"[[]]() n=0","template":"[{{.Subtasks}}]({{range .Subtasks}}x{{end}}) n={{len .Subtasks}}"}
+{"data":"full","ok":true,"output":"no sub-tasks: bare [{43 write the migration done false []} {44 wire the store todo false [43]} {45 expose over MCP todo true [44]}] renders as an empty list","template":"no sub-tasks: bare {{.Subtasks}} renders as an empty list"}
+{"data":"one","ok":true,"output":"no sub-tasks: bare [] renders as an empty list","template":"no sub-tasks: bare {{.Subtasks}} renders as an empty list"}
+{"data":"sample","ok":true,"output":"no sub-tasks: bare [{2 sample sub-task todo false []} {3 sample blocked sub-task todo true [2]}] renders as an empty list","template":"no sub-tasks: bare {{.Subtasks}} renders as an empty list"}
+{"data":"three","ok":true,"output":"no sub-tasks: bare [] renders as an empty list","template":"no sub-tasks: bare {{.Subtasks}} renders as an empty list"}
+{"data":"zero","ok":true,"output":"no sub-tasks: bare [] renders as an empty list","template":"no sub-tasks: bare {{.Subtasks}} renders as an empty list"}
+{"data":"full","ok":true,"output":"step on #42 in /home/me/proj; input=[previous deliverable]; feedback=[reviewer said no]; iter=3; outcomes=[approve reject]","template":"step on #{{.Task.ID}} in {{.Cwd}}; input=[{{.Input}}]; feedback=[{{.Feedback}}]; iter={{.Iteration}}; outcomes={{.Outcomes}}"}
+{"data":"one","ok":true,"output":"step on #0 in ; input=[]; feedback=[]; iter=0; outcomes=[approve]","template":"step on #{{.Task.ID}} in {{.Cwd}}; input=[{{.Input}}]; feedback=[{{.Feedback}}]; iter={{.Iteration}}; outcomes={{.Outcomes}}"}
+{"data":"sample","ok":true,"output":"step on #1 in /tmp/sample; input=[sample input]; feedback=[sample feedback]; iter=1; outcomes=[done]","template":"step on #{{.Task.ID}} in {{.Cwd}}; input=[{{.Input}}]; feedback=[{{.Feedback}}]; iter={{.Iteration}}; outcomes={{.Outcomes}}"}
+{"data":"three","ok":true,"output":"step on #0 in ; input=[]; feedback=[]; iter=0; outcomes=[a b c]","template":"step on #{{.Task.ID}} in {{.Cwd}}; input=[{{.Input}}]; feedback=[{{.Feedback}}]; iter={{.Iteration}}; outcomes={{.Outcomes}}"}
+{"data":"zero","ok":true,"output":"step on #0 in ; input=[]; feedback=[]; iter=0; outcomes=[]","template":"step on #{{.Task.ID}} in {{.Cwd}}; input=[{{.Input}}]; feedback=[{{.Feedback}}]; iter={{.Iteration}}; outcomes={{.Outcomes}}"}
+{"data":"full","ok":true,"output":"sub-tasks: write the migration wire the store expose over MCP","template":"sub-tasks:{{range .Subtasks}} {{.Title}}{{end}}"}
+{"data":"one","ok":true,"output":"sub-tasks:","template":"sub-tasks:{{range .Subtasks}} {{.Title}}{{end}}"}
+{"data":"sample","ok":true,"output":"sub-tasks: sample sub-task sample blocked sub-task","template":"sub-tasks:{{range .Subtasks}} {{.Title}}{{end}}"}
+{"data":"three","ok":true,"output":"sub-tasks:","template":"sub-tasks:{{range .Subtasks}} {{.Title}}{{end}}"}
+{"data":"zero","ok":true,"output":"sub-tasks:","template":"sub-tasks:{{range .Subtasks}} {{.Title}}{{end}}"}
+{"data":"full","error":"template: prompt:1: unclosed action","ok":false,"template":"{{.Cwd"}
+{"data":"one","error":"template: prompt:1: unclosed action","ok":false,"template":"{{.Cwd"}
+{"data":"sample","error":"template: prompt:1: unclosed action","ok":false,"template":"{{.Cwd"}
+{"data":"three","error":"template: prompt:1: unclosed action","ok":false,"template":"{{.Cwd"}
+{"data":"zero","error":"template: prompt:1: unclosed action","ok":false,"template":"{{.Cwd"}
+{"data":"full","error":"template: prompt:1:2: executing \"prompt\" at <.Cwdd>: can't evaluate field Cwdd in type main.PromptData","ok":false,"template":"{{.Cwdd}}"}
+{"data":"one","error":"template: prompt:1:2: executing \"prompt\" at <.Cwdd>: can't evaluate field Cwdd in type main.PromptData","ok":false,"template":"{{.Cwdd}}"}
+{"data":"sample","error":"template: prompt:1:2: executing \"prompt\" at <.Cwdd>: can't evaluate field Cwdd in type main.PromptData","ok":false,"template":"{{.Cwdd}}"}
+{"data":"three","error":"template: prompt:1:2: executing \"prompt\" at <.Cwdd>: can't evaluate field Cwdd in type main.PromptData","ok":false,"template":"{{.Cwdd}}"}
+{"data":"zero","error":"template: prompt:1:2: executing \"prompt\" at <.Cwdd>: can't evaluate field Cwdd in type main.PromptData","ok":false,"template":"{{.Cwdd}}"}
+{"data":"full","error":"template: prompt:1: unclosed action","ok":false,"template":"{{.Nope"}
+{"data":"one","error":"template: prompt:1: unclosed action","ok":false,"template":"{{.Nope"}
+{"data":"sample","error":"template: prompt:1: unclosed action","ok":false,"template":"{{.Nope"}
+{"data":"three","error":"template: prompt:1: unclosed action","ok":false,"template":"{{.Nope"}
+{"data":"zero","error":"template: prompt:1: unclosed action","ok":false,"template":"{{.Nope"}
+{"data":"full","error":"template: prompt:1:2: executing \"prompt\" at <.Nope>: can't evaluate field Nope in type main.PromptData","ok":false,"template":"{{.Nope}}"}
+{"data":"one","error":"template: prompt:1:2: executing \"prompt\" at <.Nope>: can't evaluate field Nope in type main.PromptData","ok":false,"template":"{{.Nope}}"}
+{"data":"sample","error":"template: prompt:1:2: executing \"prompt\" at <.Nope>: can't evaluate field Nope in type main.PromptData","ok":false,"template":"{{.Nope}}"}
+{"data":"three","error":"template: prompt:1:2: executing \"prompt\" at <.Nope>: can't evaluate field Nope in type main.PromptData","ok":false,"template":"{{.Nope}}"}
+{"data":"zero","error":"template: prompt:1:2: executing \"prompt\" at <.Nope>: can't evaluate field Nope in type main.PromptData","ok":false,"template":"{{.Nope}}"}
+{"data":"full","error":"template: prompt:1:2: executing \"prompt\" at <.Nope>: can't evaluate field Nope in type main.PromptData","ok":false,"template":"{{.Nope}} approve"}
+{"data":"one","error":"template: prompt:1:2: executing \"prompt\" at <.Nope>: can't evaluate field Nope in type main.PromptData","ok":false,"template":"{{.Nope}} approve"}
+{"data":"sample","error":"template: prompt:1:2: executing \"prompt\" at <.Nope>: can't evaluate field Nope in type main.PromptData","ok":false,"template":"{{.Nope}} approve"}
+{"data":"three","error":"template: prompt:1:2: executing \"prompt\" at <.Nope>: can't evaluate field Nope in type main.PromptData","ok":false,"template":"{{.Nope}} approve"}
+{"data":"zero","error":"template: prompt:1:2: executing \"prompt\" at <.Nope>: can't evaluate field Nope in type main.PromptData","ok":false,"template":"{{.Nope}} approve"}
+{"data":"full","ok":true,"output":"[{43 write the migration done false []} {44 wire the store todo false [43]} {45 expose over MCP todo true [44]}]","template":"{{.Subtasks}}"}
+{"data":"one","ok":true,"output":"[]","template":"{{.Subtasks}}"}
+{"data":"sample","ok":true,"output":"[{2 sample sub-task todo false []} {3 sample blocked sub-task todo true [2]}]","template":"{{.Subtasks}}"}
+{"data":"three","ok":true,"output":"[]","template":"{{.Subtasks}}"}
+{"data":"zero","ok":true,"output":"[]","template":"{{.Subtasks}}"}
+{"data":"full","error":"template: prompt:1:7: executing \"prompt\" at <.Task.BodyMD>: can't evaluate field BodyMD in type main.PromptTask","ok":false,"template":"{{.Task.BodyMD}}"}
+{"data":"one","error":"template: prompt:1:7: executing \"prompt\" at <.Task.BodyMD>: can't evaluate field BodyMD in type main.PromptTask","ok":false,"template":"{{.Task.BodyMD}}"}
+{"data":"sample","error":"template: prompt:1:7: executing \"prompt\" at <.Task.BodyMD>: can't evaluate field BodyMD in type main.PromptTask","ok":false,"template":"{{.Task.BodyMD}}"}
+{"data":"three","error":"template: prompt:1:7: executing \"prompt\" at <.Task.BodyMD>: can't evaluate field BodyMD in type main.PromptTask","ok":false,"template":"{{.Task.BodyMD}}"}
+{"data":"zero","error":"template: prompt:1:7: executing \"prompt\" at <.Task.BodyMD>: can't evaluate field BodyMD in type main.PromptTask","ok":false,"template":"{{.Task.BodyMD}}"}
+{"data":"full","ok":true,"output":"42Fix the flaky testIt fails on CI only./home/me/projprevious deliverablereviewer said no3[approve reject]","template":"{{.Task.ID}}{{.Task.Title}}{{.Task.Body}}{{.Cwd}}{{.Input}}{{.Feedback}}{{.Iteration}}{{.Outcomes}}"}
+{"data":"one","ok":true,"output":"00[approve]","template":"{{.Task.ID}}{{.Task.Title}}{{.Task.Body}}{{.Cwd}}{{.Input}}{{.Feedback}}{{.Iteration}}{{.Outcomes}}"}
+{"data":"sample","ok":true,"output":"1sample tasksample body/tmp/samplesample inputsample feedback1[done]","template":"{{.Task.ID}}{{.Task.Title}}{{.Task.Body}}{{.Cwd}}{{.Input}}{{.Feedback}}{{.Iteration}}{{.Outcomes}}"}
+{"data":"three","ok":true,"output":"00[a b c]","template":"{{.Task.ID}}{{.Task.Title}}{{.Task.Body}}{{.Cwd}}{{.Input}}{{.Feedback}}{{.Iteration}}{{.Outcomes}}"}
+{"data":"zero","ok":true,"output":"00[]","template":"{{.Task.ID}}{{.Task.Title}}{{.Task.Body}}{{.Cwd}}{{.Input}}{{.Feedback}}{{.Iteration}}{{.Outcomes}}"}
+{"data":"full","error":"template: prompt:1: unclosed action","ok":false,"template":"{{.Task.Title"}
+{"data":"one","error":"template: prompt:1: unclosed action","ok":false,"template":"{{.Task.Title"}
+{"data":"sample","error":"template: prompt:1: unclosed action","ok":false,"template":"{{.Task.Title"}
+{"data":"three","error":"template: prompt:1: unclosed action","ok":false,"template":"{{.Task.Title"}
+{"data":"zero","error":"template: prompt:1: unclosed action","ok":false,"template":"{{.Task.Title"}
+{"data":"full","error":"template: prompt:1:18: executing \"prompt\" at <.Tittle>: can't evaluate field Tittle in type main.PromptData","ok":false,"template":"{{.Task.Title}} {{.Tittle}}"}
+{"data":"one","error":"template: prompt:1:18: executing \"prompt\" at <.Tittle>: can't evaluate field Tittle in type main.PromptData","ok":false,"template":"{{.Task.Title}} {{.Tittle}}"}
+{"data":"sample","error":"template: prompt:1:18: executing \"prompt\" at <.Tittle>: can't evaluate field Tittle in type main.PromptData","ok":false,"template":"{{.Task.Title}} {{.Tittle}}"}
+{"data":"three","error":"template: prompt:1:18: executing \"prompt\" at <.Tittle>: can't evaluate field Tittle in type main.PromptData","ok":false,"template":"{{.Task.Title}} {{.Tittle}}"}
+{"data":"zero","error":"template: prompt:1:18: executing \"prompt\" at <.Tittle>: can't evaluate field Tittle in type main.PromptData","ok":false,"template":"{{.Task.Title}} {{.Tittle}}"}
+{"data":"full","ok":true,"output":"ok","template":"{{if .Feedback}}ok{{else}}{{.Bogus}}{{end}}"}
+{"data":"one","error":"template: prompt:1:28: executing \"prompt\" at <.Bogus>: can't evaluate field Bogus in type main.PromptData","ok":false,"template":"{{if .Feedback}}ok{{else}}{{.Bogus}}{{end}}"}
+{"data":"sample","ok":true,"output":"ok","template":"{{if .Feedback}}ok{{else}}{{.Bogus}}{{end}}"}
+{"data":"three","error":"template: prompt:1:28: executing \"prompt\" at <.Bogus>: can't evaluate field Bogus in type main.PromptData","ok":false,"template":"{{if .Feedback}}ok{{else}}{{.Bogus}}{{end}}"}
+{"data":"zero","error":"template: prompt:1:28: executing \"prompt\" at <.Bogus>: can't evaluate field Bogus in type main.PromptData","ok":false,"template":"{{if .Feedback}}ok{{else}}{{.Bogus}}{{end}}"}
+{"data":"full","error":"template: prompt:1:18: executing \"prompt\" at <.Bogus>: can't evaluate field Bogus in type main.PromptData","ok":false,"template":"{{if .Feedback}}{{.Bogus}}{{end}}"}
+{"data":"one","ok":true,"template":"{{if .Feedback}}{{.Bogus}}{{end}}"}
+{"data":"sample","error":"template: prompt:1:18: executing \"prompt\" at <.Bogus>: can't evaluate field Bogus in type main.PromptData","ok":false,"template":"{{if .Feedback}}{{.Bogus}}{{end}}"}
+{"data":"three","ok":true,"template":"{{if .Feedback}}{{.Bogus}}{{end}}"}
+{"data":"zero","ok":true,"template":"{{if .Feedback}}{{.Bogus}}{{end}}"}
+{"data":"full","ok":true,"output":"3 sub-tasks","template":"{{len .Subtasks}} sub-tasks"}
+{"data":"one","ok":true,"output":"0 sub-tasks","template":"{{len .Subtasks}} sub-tasks"}
+{"data":"sample","ok":true,"output":"2 sub-tasks","template":"{{len .Subtasks}} sub-tasks"}
+{"data":"three","ok":true,"output":"0 sub-tasks","template":"{{len .Subtasks}} sub-tasks"}
+{"data":"zero","ok":true,"output":"0 sub-tasks","template":"{{len .Subtasks}} sub-tasks"}
+{"data":"full","ok":true,"output":"0:write the migration\n1:wire the store\n2:expose over MCP\n","template":"{{range $i, $s := .Subtasks}}{{$i}}:{{$s.Title}}\n{{else}}no subtasks\n{{end}}"}
+{"data":"one","ok":true,"output":"no subtasks\n","template":"{{range $i, $s := .Subtasks}}{{$i}}:{{$s.Title}}\n{{else}}no subtasks\n{{end}}"}
+{"data":"sample","ok":true,"output":"0:sample sub-task\n1:sample blocked sub-task\n","template":"{{range $i, $s := .Subtasks}}{{$i}}:{{$s.Title}}\n{{else}}no subtasks\n{{end}}"}
+{"data":"three","ok":true,"output":"no subtasks\n","template":"{{range $i, $s := .Subtasks}}{{$i}}:{{$s.Title}}\n{{else}}no subtasks\n{{end}}"}
+{"data":"zero","ok":true,"output":"no subtasks\n","template":"{{range $i, $s := .Subtasks}}{{$i}}:{{$s.Title}}\n{{else}}no subtasks\n{{end}}"}
+{"data":"full","ok":true,"output":"...","template":"{{range .Iteration}}.{{else}}not started{{end}}"}
+{"data":"one","ok":true,"output":"not started","template":"{{range .Iteration}}.{{else}}not started{{end}}"}
+{"data":"sample","ok":true,"output":".","template":"{{range .Iteration}}.{{else}}not started{{end}}"}
+{"data":"three","ok":true,"output":"not started","template":"{{range .Iteration}}.{{else}}not started{{end}}"}
+{"data":"zero","ok":true,"output":"not started","template":"{{range .Iteration}}.{{else}}not started{{end}}"}
+{"data":"full","ok":true,"output":"- approve\n- reject\n","template":"{{range .Outcomes}}- {{.}}\n{{else}}none\n{{end}}"}
+{"data":"one","ok":true,"output":"- approve\n","template":"{{range .Outcomes}}- {{.}}\n{{else}}none\n{{end}}"}
+{"data":"sample","ok":true,"output":"- done\n","template":"{{range .Outcomes}}- {{.}}\n{{else}}none\n{{end}}"}
+{"data":"three","ok":true,"output":"- a\n- b\n- c\n","template":"{{range .Outcomes}}- {{.}}\n{{else}}none\n{{end}}"}
+{"data":"zero","ok":true,"output":"none\n","template":"{{range .Outcomes}}- {{.}}\n{{else}}none\n{{end}}"}
+{"data":"full","ok":true,"output":"- approve\n- reject\n","template":"{{range .Outcomes}}- {{.}}\n{{end}}"}
+{"data":"one","ok":true,"output":"- approve\n","template":"{{range .Outcomes}}- {{.}}\n{{end}}"}
+{"data":"sample","ok":true,"output":"- done\n","template":"{{range .Outcomes}}- {{.}}\n{{end}}"}
+{"data":"three","ok":true,"output":"- a\n- b\n- c\n","template":"{{range .Outcomes}}- {{.}}\n{{end}}"}
+{"data":"zero","ok":true,"template":"{{range .Outcomes}}- {{.}}\n{{end}}"}
+{"data":"full","ok":true,"output":"#43 write the migration [done] blocked=false deps=[]\n#44 wire the store [todo] blocked=false deps=[43]\n#45 expose over MCP [todo] blocked=true deps=[44]\n","template":"{{range .Subtasks}}#{{.ID}} {{.Title}} [{{.State}}] blocked={{.IsBlocked}} deps={{.DependsOn}}\n{{end}}"}
+{"data":"one","ok":true,"template":"{{range .Subtasks}}#{{.ID}} {{.Title}} [{{.State}}] blocked={{.IsBlocked}} deps={{.DependsOn}}\n{{end}}"}
+{"data":"sample","ok":true,"output":"#2 sample sub-task [todo] blocked=false deps=[]\n#3 sample blocked sub-task [todo] blocked=true deps=[2]\n","template":"{{range .Subtasks}}#{{.ID}} {{.Title}} [{{.State}}] blocked={{.IsBlocked}} deps={{.DependsOn}}\n{{end}}"}
+{"data":"three","ok":true,"template":"{{range .Subtasks}}#{{.ID}} {{.Title}} [{{.State}}] blocked={{.IsBlocked}} deps={{.DependsOn}}\n{{end}}"}
+{"data":"zero","ok":true,"template":"{{range .Subtasks}}#{{.ID}} {{.Title}} [{{.State}}] blocked={{.IsBlocked}} deps={{.DependsOn}}\n{{end}}"}
+{"data":"full","error":"template: prompt:1:21: executing \"prompt\" at <.Body>: can't evaluate field Body in type main.PromptSubtask","ok":false,"template":"{{range .Subtasks}}{{.Body}}{{end}}"}
+{"data":"one","ok":true,"template":"{{range .Subtasks}}{{.Body}}{{end}}"}
+{"data":"sample","error":"template: prompt:1:21: executing \"prompt\" at <.Body>: can't evaluate field Body in type main.PromptSubtask","ok":false,"template":"{{range .Subtasks}}{{.Body}}{{end}}"}
+{"data":"three","ok":true,"template":"{{range .Subtasks}}{{.Body}}{{end}}"}
+{"data":"zero","ok":true,"template":"{{range .Subtasks}}{{.Body}}{{end}}"}
+{"data":"full","ok":true,"output":"43write the migrationdonefalse[]44wire the storetodofalse[43]45expose over MCPtodotrue[44]","template":"{{range .Subtasks}}{{.ID}}{{.Title}}{{.State}}{{.IsBlocked}}{{.DependsOn}}{{end}}"}
+{"data":"one","ok":true,"template":"{{range .Subtasks}}{{.ID}}{{.Title}}{{.State}}{{.IsBlocked}}{{.DependsOn}}{{end}}"}
+{"data":"sample","ok":true,"output":"2sample sub-tasktodofalse[]3sample blocked sub-tasktodotrue[2]","template":"{{range .Subtasks}}{{.ID}}{{.Title}}{{.State}}{{.IsBlocked}}{{.DependsOn}}{{end}}"}
+{"data":"three","ok":true,"template":"{{range .Subtasks}}{{.ID}}{{.Title}}{{.State}}{{.IsBlocked}}{{.DependsOn}}{{end}}"}
+{"data":"zero","ok":true,"template":"{{range .Subtasks}}{{.ID}}{{.Title}}{{.State}}{{.IsBlocked}}{{.DependsOn}}{{end}}"}
+{"data":"full","error":"template: prompt:1:48: executing \"prompt\" at <.Blockers>: can't evaluate field Blockers in type main.PromptSubtask","ok":false,"template":"{{range .Subtasks}}{{if .IsBlocked}}ok{{else}}{{.Blockers}}{{end}}{{end}}"}
+{"data":"one","ok":true,"template":"{{range .Subtasks}}{{if .IsBlocked}}ok{{else}}{{.Blockers}}{{end}}{{end}}"}
+{"data":"sample","error":"template: prompt:1:48: executing \"prompt\" at <.Blockers>: can't evaluate field Blockers in type main.PromptSubtask","ok":false,"template":"{{range .Subtasks}}{{if .IsBlocked}}ok{{else}}{{.Blockers}}{{end}}{{end}}"}
+{"data":"three","ok":true,"template":"{{range .Subtasks}}{{if .IsBlocked}}ok{{else}}{{.Blockers}}{{end}}{{end}}"}
+{"data":"zero","ok":true,"template":"{{range .Subtasks}}{{if .IsBlocked}}ok{{else}}{{.Blockers}}{{end}}{{end}}"}
+{"data":"full","error":"template: prompt:1:38: executing \"prompt\" at <.Blockers>: can't evaluate field Blockers in type main.PromptSubtask","ok":false,"template":"{{range .Subtasks}}{{if .IsBlocked}}{{.Blockers}}{{end}}{{end}}"}
+{"data":"one","ok":true,"template":"{{range .Subtasks}}{{if .IsBlocked}}{{.Blockers}}{{end}}{{end}}"}
+{"data":"sample","error":"template: prompt:1:38: executing \"prompt\" at <.Blockers>: can't evaluate field Blockers in type main.PromptSubtask","ok":false,"template":"{{range .Subtasks}}{{if .IsBlocked}}{{.Blockers}}{{end}}{{end}}"}
+{"data":"three","ok":true,"template":"{{range .Subtasks}}{{if .IsBlocked}}{{.Blockers}}{{end}}{{end}}"}
+{"data":"zero","ok":true,"template":"{{range .Subtasks}}{{if .IsBlocked}}{{.Blockers}}{{end}}{{end}}"}
+{"data":"full","ok":true,"output":"- #44 wire the store\n","template":"{{range .Subtasks}}{{if and (ne .State \"done\") (not .IsBlocked)}}- #{{.ID}} {{.Title}}\n{{end}}{{end}}"}
+{"data":"one","ok":true,"template":"{{range .Subtasks}}{{if and (ne .State \"done\") (not .IsBlocked)}}- #{{.ID}} {{.Title}}\n{{end}}{{end}}"}
+{"data":"sample","ok":true,"output":"- #2 sample sub-task\n","template":"{{range .Subtasks}}{{if and (ne .State \"done\") (not .IsBlocked)}}- #{{.ID}} {{.Title}}\n{{end}}{{end}}"}
+{"data":"three","ok":true,"template":"{{range .Subtasks}}{{if and (ne .State \"done\") (not .IsBlocked)}}- #{{.ID}} {{.Title}}\n{{end}}{{end}}"}
+{"data":"zero","ok":true,"template":"{{range .Subtasks}}{{if and (ne .State \"done\") (not .IsBlocked)}}- #{{.ID}} {{.Title}}\n{{end}}{{end}}"}
+{"data":"full","ok":true,"output":"#43 #44 ","template":"{{range .Subtasks}}{{range .DependsOn}}#{{.}} {{end}}{{end}}"}
+{"data":"one","ok":true,"template":"{{range .Subtasks}}{{range .DependsOn}}#{{.}} {{end}}{{end}}"}
+{"data":"sample","ok":true,"output":"#2 ","template":"{{range .Subtasks}}{{range .DependsOn}}#{{.}} {{end}}{{end}}"}
+{"data":"three","ok":true,"template":"{{range .Subtasks}}{{range .DependsOn}}#{{.}} {{end}}{{end}}"}
+{"data":"zero","ok":true,"template":"{{range .Subtasks}}{{range .DependsOn}}#{{.}} {{end}}{{end}}"}
