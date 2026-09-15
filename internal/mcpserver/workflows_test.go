@@ -67,17 +67,17 @@ func TestAgentDraftsReviewLoopWorkflowThroughTools(t *testing.T) {
 
 	implementPrompt := "Implement {{.Task.Title}}.\n\n{{if .Feedback}}Reviewer feedback: {{.Feedback}}{{else}}Context: {{.Input}}{{end}}"
 	callTool[workflowGraphOut](t, cs, "add_workflow_step", map[string]any{
-		"workflow_id": wf.ID, "name": "implement", "prompt_md": implementPrompt, "model": "opus",
+		"workflow_id": wf.ID, "name": "implement", "prompt_md": implementPrompt, "model": "opus", "permission_mode": "acceptEdits",
 	})
 	callTool[workflowGraphOut](t, cs, "add_workflow_step", map[string]any{
-		"workflow_id": wf.ID, "name": "review",
+		"workflow_id": wf.ID, "name": "review", "permission_mode": "acceptEdits",
 		"prompt_md": "Review the change described in {{.Input}}; finish with approve or reject.",
 	})
 	callTool[workflowGraphOut](t, cs, "add_workflow_step", map[string]any{
 		"workflow_id": wf.ID, "name": "gate", "kind": "gate",
 	})
 	g := callTool[workflowGraphOut](t, cs, "add_workflow_step", map[string]any{
-		"workflow_id": wf.ID, "name": "ship", "prompt_md": "Open a PR for {{.Input}}.",
+		"workflow_id": wf.ID, "name": "ship", "prompt_md": "Open a PR for {{.Input}}.", "permission_mode": "bypassPermissions",
 	})
 
 	if got := len(g.Steps); got != 4 {
@@ -502,17 +502,28 @@ func TestEmptyWorkflowReportsNoProblems(t *testing.T) {
 	}
 }
 
-// The validator does show up once there are steps: a review prompt naming
-// an outcome no edge routes is flagged, and routing it clears the flag.
+// The validator does show up once there are steps: an agent step added
+// with no permission mode is flagged until update_workflow_step gives it
+// one, and a review prompt naming an outcome no edge routes is flagged
+// until an edge routes it.
 func TestGraphProblemsFollowTheEdges(t *testing.T) {
 	store := newFakeStore(task.Task{ID: 1, Title: "bound"})
 	cs := dial(t, store, 1)
 	wf := callTool[workflowGraphOut](t, cs, "create_workflow", map[string]any{"name": "p"})
-	callTool[workflowGraphOut](t, cs, "add_workflow_step", map[string]any{
+	g := callTool[workflowGraphOut](t, cs, "add_workflow_step", map[string]any{
 		"workflow_id": wf.ID, "name": "implement", "prompt_md": "Build {{.Task.Title}}",
 	})
-	g := callTool[workflowGraphOut](t, cs, "add_workflow_step", map[string]any{
-		"workflow_id": wf.ID, "name": "review", "prompt_md": "finish with approve or reject",
+	if len(g.Problems) != 1 || !strings.Contains(g.Problems[0], "implement: no permission mode") {
+		t.Fatalf("problems after a step with no permission mode = %v, want it flagged", g.Problems)
+	}
+	g = callTool[workflowGraphOut](t, cs, "update_workflow_step", map[string]any{
+		"step_id": stepNamed(t, g, "implement").ID, "permission_mode": "acceptEdits",
+	})
+	if len(g.Problems) != 0 {
+		t.Fatalf("problems after setting the permission mode = %v, want none", g.Problems)
+	}
+	g = callTool[workflowGraphOut](t, cs, "add_workflow_step", map[string]any{
+		"workflow_id": wf.ID, "name": "review", "prompt_md": "finish with approve or reject", "permission_mode": "acceptEdits",
 	})
 	if len(g.Problems) != 2 || !strings.Contains(g.Problems[0], `"approve"`) || !strings.Contains(g.Problems[1], `"reject"`) {
 		t.Fatalf("problems = %v, want review's unrouted approve and reject", g.Problems)

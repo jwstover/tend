@@ -149,6 +149,16 @@ func TestWorkflowsAuthoringRoundTrip(t *testing.T) {
 	}
 
 	// v validates the graph and every step prompt of the selected workflow.
+	// A new agent step has no permission mode, which v flags; give it one
+	// and the workflow is sound.
+	m = drive(t, m, keyPress('v'))
+	if st := m.(app).status; !st.isErr || !strings.Contains(st.text, "implement: no permission mode") {
+		t.Errorf("validate flash = %+v, want the missing permission mode flagged", st)
+	}
+	if err := s.SetStepPermissionMode(context.Background(), steps[0].ID, "acceptEdits"); err != nil {
+		t.Fatal(err)
+	}
+	m = reloadWorkflows(t, m, wfs[0].ID)
 	m = drive(t, m, keyPress('v'))
 	if st := m.(app).status; st.isErr || !strings.Contains(st.text, "1 step, graph and prompts valid") {
 		t.Errorf("validate flash = %+v, want '1 step, graph and prompts valid'", st)
@@ -338,9 +348,13 @@ func TestWorkflowsEdgesEditorAuthorsReviewLoop(t *testing.T) {
 			t.Errorf("view missing %q:\n%s", w, content)
 		}
 	}
-	_ = ship
-
-	// v: a sound graph.
+	// v: a sound graph, once every agent step has a permission mode.
+	for _, st := range []workflow.Step{implement, review, ship} {
+		if err := s.SetStepPermissionMode(context.Background(), st.ID, "acceptEdits"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m = reloadWorkflows(t, m, wfID)
 	m = drive(t, m, keyPress('v'))
 	if st := m.(app).status; st.isErr || !strings.Contains(st.text, "4 steps, graph and prompts valid") {
 		t.Errorf("validate flash = %+v, want the all-clear", st)
@@ -394,22 +408,26 @@ func TestWorkflowsValidateShowsProblemsUntilFixed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Straight to the store, so no default edge is written.
+	// Straight to the store, so no default edge is written. review gets a
+	// permission mode; implement is left without one, to see it flagged.
 	implement, _ := s.AddStep(ctx, w.ID, "implement", workflow.StepAgent)
 	review, _ := s.AddStep(ctx, w.ID, "review", workflow.StepAgent)
 	if err := s.SetStepPrompt(ctx, review.ID, "Review it and finish with approve or reject."); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetStepPermissionMode(ctx, review.ID, "acceptEdits"); err != nil {
 		t.Fatal(err)
 	}
 	m = openWorkflows(t, m)
 
 	m = drive(t, m, keyPress('v'))
 	a := m.(app)
-	if !a.status.isErr || !strings.Contains(a.status.text, "implement: no edge leaves it") || !strings.Contains(a.status.text, "(+3 more)") {
-		t.Errorf("validate flash = %+v, want the first problem and a count of 3 more", a.status)
+	if !a.status.isErr || !strings.Contains(a.status.text, "implement: no edge leaves it") || !strings.Contains(a.status.text, "(+4 more)") {
+		t.Errorf("validate flash = %+v, want the first problem and a count of 4 more", a.status)
 	}
 	content := ansi.Strip(a.View().Content)
-	for _, want := range []string{"PROBLEMS · 4", "the run would end here, before review", "review: unreachable",
-		`prompt mentions "approve" but no edge routes it`, `prompt mentions "reject"`} {
+	for _, want := range []string{"PROBLEMS · 5", "the run would end here, before review", "implement: no permission mode",
+		"review: unreachable", `prompt mentions "approve" but no edge routes it`, `prompt mentions "reject"`} {
 		if !strings.Contains(content, want) {
 			t.Errorf("problems section missing %q:\n%s", want, content)
 		}
@@ -423,12 +441,15 @@ func TestWorkflowsValidateShowsProblemsUntilFixed(t *testing.T) {
 	if _, err := s.SetEdge(ctx, review.ID, "reject", implement.ID, &two); err != nil {
 		t.Fatal(err)
 	}
+	if err := s.SetStepPermissionMode(ctx, implement.ID, "bypassPermissions"); err != nil {
+		t.Fatal(err)
+	}
 	m = reloadWorkflows(t, m, w.ID)
 	content = ansi.Strip(m.(app).View().Content)
 	if !strings.Contains(content, "PROBLEMS · 1") || !strings.Contains(content, `prompt mentions "approve"`) {
-		t.Errorf("after fixing two problems, want only the approve one left:\n%s", content)
+		t.Errorf("after fixing three problems, want only the approve one left:\n%s", content)
 	}
-	if strings.Contains(content, "unreachable") {
+	if strings.Contains(content, "unreachable") || strings.Contains(content, "no permission mode") {
 		t.Errorf("fixed problem still shown:\n%s", content)
 	}
 	if _, err := s.SetEdge(ctx, review.ID, "approve", review.ID, &two); err != nil {
