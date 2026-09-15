@@ -9,14 +9,13 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	"github.com/charmbracelet/x/ansi"
 
 	"github.com/jwstover/tend/internal/agent"
 )
 
-// quotaPollInterval is how often the quota row re-asks claude. `/usage`
-// is local and free, but it is still a claude process start, and the
-// limits it reports move over hours, not seconds.
+// quotaPollInterval is how often the header's quota segment re-asks
+// claude. `/usage` is local and free, but it is still a claude process
+// start, and the limits it reports move over hours, not seconds.
 const quotaPollInterval = time.Minute
 
 // Usage thresholds, in percent of a limit: at quotaWarnAt a gauge turns
@@ -35,11 +34,11 @@ type quotaMsg struct {
 	err   error
 }
 
-// runQuotaPoller asks fetch once straight away, so the quota row shows up
-// with the first frame rather than a minute in, then again on every tick
-// until ctx is canceled. Like runSessionPoller it is a goroutine rather
-// than a tea.Cmd so the row is current, not a minute stale, when an
-// attached session hands the terminal back.
+// runQuotaPoller asks fetch once straight away, so the quota segment shows
+// up with the first frame rather than a minute in, then again on every
+// tick until ctx is canceled. Like runSessionPoller it is a goroutine
+// rather than a tea.Cmd so the segment is current, not a minute stale,
+// when an attached session hands the terminal back.
 func runQuotaPoller(ctx context.Context, fetch func(context.Context) (agent.Quota, error), interval time.Duration, send func(tea.Msg)) {
 	poll := func() {
 		q, err := fetch(ctx)
@@ -62,8 +61,8 @@ func runQuotaPoller(ctx context.Context, fetch func(context.Context) (agent.Quot
 }
 
 // startQuotaPoller runs runQuotaPoller against the real claude, unless
-// claude is not installed -- then there is nothing to ask and the quota
-// row simply stays empty.
+// claude is not installed -- then there is nothing to ask and the header
+// simply carries no quota segment.
 func startQuotaPoller(ctx context.Context, send func(tea.Msg)) {
 	if agent.CheckInstalled() != nil {
 		return
@@ -73,8 +72,8 @@ func startQuotaPoller(ctx context.Context, send func(tea.Msg)) {
 
 // applyQuota folds one poll into the app. A failed call keeps the last
 // good reading, marked stale, so one hiccup does not blank the quota
-// row; an account with no subscription limits (ErrNoQuota) shows nothing
-// at all.
+// segment; an account with no subscription limits (ErrNoQuota) shows
+// nothing at all.
 func (a app) applyQuota(msg quotaMsg) app {
 	switch {
 	case msg.err == nil:
@@ -87,21 +86,21 @@ func (a app) applyQuota(msg quotaMsg) app {
 	return a
 }
 
-// quotaRowDetail is how much of each limit the quota row spells out; the
-// row steps down through these until it fits the terminal.
-type quotaRowDetail int
+// quotaDetail is how much of each limit the header's quota segment spells
+// out; the segment steps down through these until it fits.
+type quotaDetail int
 
 const (
-	quotaRowFull   quotaRowDetail = iota // 5h ▰▰▰▰▰▱▱▱▱▱ 48%  resets in 2h 10m
-	quotaRowNoBars                       // 5h 48%  resets in 2h 10m
-	quotaRowShort                        // 5h 48% (in 2h 10m)
-	quotaRowBare                         // 5h 48%
+	quotaFull   quotaDetail = iota // 5h ▰▰▰▰▰▱▱▱▱▱ 48%  in 2h 10m
+	quotaNoBars                    // 5h 48%  in 2h 10m
+	quotaShort                     // 5h 48% (in 2h 10m)
+	quotaBare                      // 5h 48%
 )
 
-// quotaLimits renders the row's limits at the given detail level, joined
-// with HeaderSep, e.g. `5h ▰▰▰▰▰▱▱▱▱▱ 48%  resets in 2h 10m  ·  wk
-// ▰▱▱▱▱▱▱▱▱▱ 6%  resets in 3d`. Empty when there is no reading to show.
-func (a app) quotaLimits(detail quotaRowDetail, now time.Time) string {
+// quotaLimits renders the limits at the given detail level, joined with
+// HeaderSep, e.g. `5h ▰▰▰▰▰▱▱▱▱▱ 48%  in 2h 10m  ·  wk ▰▱▱▱▱▱▱▱▱▱ 6%  in
+// 3d`. Empty when there is no reading to show.
+func (a app) quotaLimits(detail quotaDetail, now time.Time) string {
 	if !a.quotaLoaded {
 		return ""
 	}
@@ -118,7 +117,7 @@ func (a app) quotaLimits(detail quotaRowDetail, now time.Time) string {
 		}
 		style := quotaStyle(a.styles, l.limit.Percent, a.quotaStale)
 		part := style.Render(l.label) + " "
-		if detail == quotaRowFull {
+		if detail == quotaFull {
 			part += quotaGauge(a.styles, style, l.limit.Percent, a.quotaStale) + " "
 		}
 		part += style.Render(fmt.Sprintf("%d%%", l.limit.Percent))
@@ -129,9 +128,9 @@ func (a app) quotaLimits(detail quotaRowDetail, now time.Time) string {
 				mutedStyle = a.styles.Faint
 			}
 			switch detail {
-			case quotaRowFull, quotaRowNoBars:
-				part += mutedStyle.Render("  resets " + r)
-			case quotaRowShort:
+			case quotaFull, quotaNoBars:
+				part += mutedStyle.Render("  " + r)
+			case quotaShort:
 				part += mutedStyle.Render(" (" + r + ")")
 			}
 		}
@@ -169,28 +168,21 @@ func quotaResetText(l *agent.QuotaLimit, now time.Time) string {
 	}
 }
 
-// quotaLine is the quota row: the limits at the most detailed level that
-// fits a.width, "" if there is nothing loaded to show, and truncated as a
-// last resort so the row is always exactly one line.
-func (a app) quotaLine() string {
+// quotaSegment is the header's centered quota text at the most detailed
+// level that fits avail cells, "" when there is nothing loaded or nothing
+// fits even at the barest level -- the caller then falls back to showing
+// no segment at all rather than one that collides with the rest of the
+// header.
+func (a app) quotaSegment(avail int, now time.Time) string {
 	if !a.quotaLoaded {
 		return ""
 	}
-	now := time.Now()
-	if a.width <= 0 {
-		return "  " + a.quotaLimits(quotaRowFull, now)
-	}
-	var bare string
-	for _, detail := range []quotaRowDetail{quotaRowFull, quotaRowNoBars, quotaRowShort, quotaRowBare} {
-		row := "  " + a.quotaLimits(detail, now)
-		if detail == quotaRowBare {
-			bare = row
-		}
-		if lipgloss.Width(row) <= a.width {
-			return row
+	for _, detail := range []quotaDetail{quotaFull, quotaNoBars, quotaShort, quotaBare} {
+		if q := a.quotaLimits(detail, now); lipgloss.Width(q) <= avail {
+			return q
 		}
 	}
-	return ansi.Truncate(bare, a.width, "…")
+	return ""
 }
 
 // quotaStyle colors a gauge by how much of its limit is spent. A stale

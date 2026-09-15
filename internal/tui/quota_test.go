@@ -29,9 +29,9 @@ func testQuotaReset(session, week int, resetsAt time.Time) agent.Quota {
 	return q
 }
 
-// quotaRowWith drives a quota reading into a fresh app at the given width
-// and returns its quota row with the styling stripped.
-func quotaRowWith(t *testing.T, width int, msgs ...quotaMsg) (app, string) {
+// headerWith drives a quota reading into a fresh app at the given width
+// and returns its header with the styling stripped.
+func headerWith(t *testing.T, width int, msgs ...quotaMsg) (app, string) {
 	t.Helper()
 	// The expectations below spell out the unicode set's labels and bars;
 	// don't let a TEND_GLYPHS in the developer's shell change them.
@@ -42,11 +42,11 @@ func quotaRowWith(t *testing.T, width int, msgs ...quotaMsg) (app, string) {
 		m = drive(t, m, msg)
 	}
 	a := m.(app)
-	return a, ansi.Strip(a.quotaLine())
+	return a, ansi.Strip(a.headerLine())
 }
 
 // The first poll has to land straight away, not an interval in: a minute
-// of empty row on every start would read as broken.
+// of empty header on every start would read as broken.
 func TestQuotaPollerFetchesImmediatelyThenOnTick(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -75,37 +75,54 @@ func TestQuotaPollerFetchesImmediatelyThenOnTick(t *testing.T) {
 	}
 }
 
-func TestQuotaRowShowsGaugesAndResets(t *testing.T) {
+func TestHeaderShowsQuotaSegment(t *testing.T) {
 	resetsAt := time.Now().Add(2*time.Hour + 10*time.Minute)
-	_, row := quotaRowWith(t, 140, quotaMsg{quota: testQuotaReset(48, 6, resetsAt)})
+	_, h := headerWith(t, 140, quotaMsg{quota: testQuotaReset(48, 6, resetsAt)})
 	for _, want := range []string{
 		"5h ▰▰▰▰▰▱▱▱▱▱ 48%",
 		"wk ▰▱▱▱▱▱▱▱▱▱ 6%",
-		"resets in",
+		"in 2h",
 	} {
-		if !strings.Contains(row, want) {
-			t.Errorf("row missing %q:\n%q", want, row)
+		if !strings.Contains(h, want) {
+			t.Errorf("header missing %q:\n%q", want, h)
 		}
 	}
-	if !strings.HasPrefix(row, "  5h") {
-		t.Errorf("row should start with the session limit:\n%q", row)
+	// The word "resets" is dropped from the label; only the relative or
+	// clock time remains.
+	if strings.Contains(h, "resets") {
+		t.Errorf("header should not say \"resets\":\n%q", h)
 	}
 }
 
-// The header used to carry the gauges at its far right; now it never
-// shows a reading at all, wide or narrow.
-func TestHeaderHasNoQuota(t *testing.T) {
-	t.Setenv("TEND_GLYPHS", "")
-	m, _ := newTestApp(t)
-	m = drive(t, m, tea.WindowSizeMsg{Width: 140, Height: 30})
-	before := ansi.Strip(m.(app).headerLine())
-	m = drive(t, m, quotaMsg{quota: testQuota(48, 6)})
-	after := ansi.Strip(m.(app).headerLine())
-	if before != after {
-		t.Errorf("a quota reading changed the header:\n%q\n%q", before, after)
+// The quota segment sits in the middle of the header, not tucked against
+// either edge: the mode's left-hand label and its own right-hand text
+// (the shown count here) both still appear, on either side of it.
+func TestHeaderQuotaIsCentered(t *testing.T) {
+	_, h := headerWith(t, 140, quotaMsg{quota: testQuota(48, 6)})
+	left, quota, shown := strings.Index(h, "tend"), strings.Index(h, "48%"), strings.Index(h, "shown")
+	if left < 0 || quota < 0 || shown < 0 {
+		t.Fatalf("header missing a landmark:\n%q", h)
 	}
-	if strings.Contains(after, "%") {
-		t.Errorf("header shows quota info:\n%q", after)
+	if left >= quota || quota >= shown {
+		t.Errorf("quota should sit between the left and right segments:\n%q", h)
+	}
+	// Roughly centered: closer to the middle of the line than to either edge.
+	mid := len(h) / 2
+	if d := quota - mid; d < -20 || d > 20 {
+		t.Errorf("quota at column %d is not near the header's midpoint %d:\n%q", quota, mid, h)
+	}
+}
+
+// Before any reading, and for an account with no subscription limits,
+// the header is exactly what it was before the quota segment existed.
+func TestHeaderWithoutQuotaIsUnchanged(t *testing.T) {
+	_, before := headerWith(t, 140)
+	_, noQuota := headerWith(t, 140, quotaMsg{err: agent.ErrNoQuota})
+	if before != noQuota {
+		t.Errorf("ErrNoQuota changed the header:\n%q\n%q", before, noQuota)
+	}
+	if strings.Contains(before, "%") {
+		t.Errorf("header shows quota info with no reading:\n%q", before)
 	}
 }
 
@@ -113,7 +130,7 @@ func TestHeaderHasNoQuota(t *testing.T) {
 // it stale; the next good poll clears the mark. ErrNoQuota is different:
 // that account has nothing to show, so the reading goes.
 func TestApplyQuota(t *testing.T) {
-	a, _ := quotaRowWith(t, 140, quotaMsg{quota: testQuota(70, 30)}, quotaMsg{err: errors.New("claude wedged")})
+	a, _ := headerWith(t, 140, quotaMsg{quota: testQuota(70, 30)}, quotaMsg{err: errors.New("claude wedged")})
 	if !a.quotaLoaded || !a.quotaStale || a.quota.Session.Percent != 70 {
 		t.Errorf("after a failed poll: loaded=%v stale=%v quota=%+v, want the old reading kept and stale",
 			a.quotaLoaded, a.quotaStale, a.quota.Session)
@@ -123,28 +140,13 @@ func TestApplyQuota(t *testing.T) {
 		t.Errorf("after recovery: stale=%v pct=%d, want fresh 71", a.quotaStale, a.quota.Session.Percent)
 	}
 	a = a.applyQuota(quotaMsg{err: agent.ErrNoQuota})
-	if a.quotaLoaded || a.quotaLine() != "" {
+	if a.quotaLoaded || strings.Contains(ansi.Strip(a.headerLine()), "%") {
 		t.Error("ErrNoQuota should clear the reading")
 	}
 	// A failure before any reading has nothing to mark stale.
-	fresh, _ := quotaRowWith(t, 140, quotaMsg{err: errors.New("boom")})
+	fresh, _ := headerWith(t, 140, quotaMsg{err: errors.New("boom")})
 	if fresh.quotaLoaded || fresh.quotaStale {
 		t.Errorf("failure with no reading: loaded=%v stale=%v, want neither", fresh.quotaLoaded, fresh.quotaStale)
-	}
-}
-
-func TestQuotaRowBlankWithoutReading(t *testing.T) {
-	for name, msgs := range map[string][]quotaMsg{
-		"no poll yet":                    nil,
-		"no subscription limits":         {{err: agent.ErrNoQuota}},
-		"failed with no earlier reading": {{err: errors.New("boom")}},
-	} {
-		t.Run(name, func(t *testing.T) {
-			_, row := quotaRowWith(t, 140, msgs...)
-			if row != "" {
-				t.Errorf("row = %q, want empty", row)
-			}
-		})
 	}
 }
 
@@ -194,69 +196,50 @@ func TestQuotaGaugeComposition(t *testing.T) {
 	}
 }
 
-// A narrow row sheds the bars first, then shortens the reset text, then
-// drops it, and only truncates as a last resort; the percentages are
-// never silently dropped short of that.
-func TestQuotaRowDegradesWhenNarrow(t *testing.T) {
+// As the header narrows, once the bars, the reset time, or the
+// percentages disappear they stay gone -- nothing flickers back in a
+// cell narrower -- the header is never wider than its terminal, and the
+// left side is never pushed off.
+func TestHeaderQuotaDegradesMonotonically(t *testing.T) {
 	resetsAt := time.Now().Add(2*time.Hour + 10*time.Minute)
 	q := quotaMsg{quota: testQuotaReset(48, 6, resetsAt)}
-	wide, _ := quotaRowWith(t, 200, q)
-	now := time.Now()
-	widthOf := func(detail quotaRowDetail) int {
-		return lipgloss.Width("  " + wide.quotaLimits(detail, now))
+	sawBars, sawReset, sawPct := true, true, true
+	for width := 140; width >= 15; width-- {
+		_, h := headerWith(t, width, q)
+		if w := lipgloss.Width(h); w > width {
+			t.Fatalf("width %d: header is %d cells wide:\n%q", width, w, h)
+		}
+		if !strings.HasPrefix(h, "  tend") {
+			t.Fatalf("width %d: left side lost:\n%q", width, h)
+		}
+		bars := strings.Contains(h, "▰")
+		reset := strings.Contains(h, "in 2h") || strings.Contains(h, "(in ")
+		pct := strings.Contains(h, "48%")
+		if bars && !sawBars {
+			t.Errorf("width %d: bars reappeared after disappearing at a wider width:\n%q", width, h)
+		}
+		if reset && !sawReset {
+			t.Errorf("width %d: reset text reappeared after disappearing at a wider width:\n%q", width, h)
+		}
+		if pct && !sawPct {
+			t.Errorf("width %d: percentages reappeared after disappearing at a wider width:\n%q", width, h)
+		}
+		sawBars, sawReset, sawPct = bars, reset, pct
 	}
-	fullW, noBarsW, shortW, bareW := widthOf(quotaRowFull), widthOf(quotaRowNoBars), widthOf(quotaRowShort), widthOf(quotaRowBare)
+}
 
-	for _, tc := range []struct {
-		name            string
-		width           int
-		bars, resets    bool
-		shortForm, bare bool
-	}{
-		{"full", fullW, true, true, false, false},
-		{"one narrower", fullW - 1, false, true, false, false},
-		{"below no-bars", noBarsW - 1, false, false, true, false},
-		{"below short", shortW - 1, false, false, false, true},
-	} {
-		_, row := quotaRowWith(t, tc.width, q)
-		if w := lipgloss.Width(row); w > tc.width {
-			t.Errorf("%s: row is %d cells, wider than %d:\n%q", tc.name, w, tc.width, row)
-		}
-		if strings.Contains(row, "\n") {
-			t.Errorf("%s: row has a newline:\n%q", tc.name, row)
-		}
-		if got := strings.Contains(row, "▰"); got != tc.bars {
-			t.Errorf("%s: bars shown = %v, want %v:\n%q", tc.name, got, tc.bars, row)
-		}
-		if got := strings.Contains(row, "resets"); got != tc.resets {
-			t.Errorf("%s: literal \"resets\" = %v, want %v:\n%q", tc.name, got, tc.resets, row)
-		}
-		if tc.shortForm && !strings.Contains(row, "(in ") {
-			t.Errorf("%s: want the short \"(in ...)\" form:\n%q", tc.name, row)
-		}
-		if tc.bare {
-			if !strings.Contains(row, "5h 48%") || !strings.Contains(row, "wk 6%") {
-				t.Errorf("%s: want bare percentages kept:\n%q", tc.name, row)
-			}
-			if strings.Contains(row, "(in ") {
-				t.Errorf("%s: reset text should be gone at the bare level:\n%q", tc.name, row)
-			}
+// The quota segment gives up its own detail -- bars, then the reset time
+// -- before the mode's own right-hand text is dropped, so there is a
+// width where "shown" is gone but the percentages are still there.
+func TestHeaderQuotaOutlivesModeText(t *testing.T) {
+	q := quotaMsg{quota: testQuota(48, 6)}
+	for width := 140; width >= 15; width-- {
+		_, h := headerWith(t, width, q)
+		if strings.Contains(h, "48%") && !strings.Contains(h, "shown") {
+			return
 		}
 	}
-
-	// Narrower than even the bare form still keeps the row to one line,
-	// truncating rather than dropping the percentages silently -- though
-	// at 8 cells there isn't room for one anyway.
-	_, tiny := quotaRowWith(t, 8, q)
-	if w := lipgloss.Width(tiny); w > 8 {
-		t.Errorf("truncated row is %d cells, wider than 8:\n%q", w, tiny)
-	}
-	if strings.Contains(tiny, "\n") {
-		t.Errorf("truncated row has a newline:\n%q", tiny)
-	}
-	if bareW > 8 && !strings.Contains(tiny, "…") {
-		t.Errorf("row narrower than the bare form should be truncated with an ellipsis:\n%q", tiny)
-	}
+	t.Error("no width found where the quota segment survives after the mode's own right-hand text is dropped")
 }
 
 func TestQuotaResetText(t *testing.T) {
@@ -305,7 +288,7 @@ func TestGlyphsFor(t *testing.T) {
 }
 
 // Every gauge glyph is one cell in every set: a double-width glyph would
-// push the whole row one cell right.
+// push the whole header one cell right.
 func TestQuotaGlyphWidths(t *testing.T) {
 	for name, g := range map[string]glyphs{"unicode": unicodeGlyphs(), "ascii": asciiGlyphs(), "nerd": nerdGlyphs()} {
 		for _, glyph := range []string{g.GaugeLeftOn, g.GaugeMidOn, g.GaugeRightOn, g.GaugeLeftOff, g.GaugeMidOff, g.GaugeRightOff} {
@@ -314,58 +297,4 @@ func TestQuotaGlyphWidths(t *testing.T) {
 			}
 		}
 	}
-}
-
-// The quota row's slot is always reserved, blank or not, so the rule and
-// panes below it never shift up or down with a poll.
-func TestFrameReservesQuotaRow(t *testing.T) {
-	t.Setenv("TEND_GLYPHS", "")
-	for _, tc := range []struct {
-		name  string
-		width int
-	}{
-		{"wide", 100},
-		{"narrow", 40},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			m, _ := newTestApp(t)
-			m = drive(t, m, tea.WindowSizeMsg{Width: tc.width, Height: 30})
-			m = drive(t, m, quotaMsg{quota: testQuota(48, 6)})
-			lines := strings.Split(ansi.Strip(m.View().Content), "\n")
-			if len(lines) != 30 {
-				t.Fatalf("frame is %d lines, want 30", len(lines))
-			}
-			if !strings.Contains(lines[1], "5h") {
-				t.Errorf("line 1 should be the quota row:\n%q", lines[1])
-			}
-			if !strings.Contains(lines[2], "─") && !strings.Contains(lines[2], "┬") {
-				t.Errorf("line 2 should be the rule:\n%q", lines[2])
-			}
-		})
-	}
-
-	t.Run("no reading", func(t *testing.T) {
-		m, _ := newTestApp(t) // 100x30
-		lines := strings.Split(ansi.Strip(m.View().Content), "\n")
-		if len(lines) != 30 {
-			t.Fatalf("frame is %d lines, want 30", len(lines))
-		}
-		if strings.TrimSpace(lines[1]) != "" {
-			t.Errorf("line 1 should be blank with no reading:\n%q", lines[1])
-		}
-	})
-
-	t.Run("loading frame", func(t *testing.T) {
-		m, _ := newTestApp(t)
-		m = drive(t, m, quotaMsg{quota: testQuota(48, 6)})
-		a := m.(app)
-		a.loaded = false
-		lines := strings.Split(ansi.Strip(a.View().Content), "\n")
-		if len(lines) != a.height {
-			t.Fatalf("loading frame is %d lines, want %d", len(lines), a.height)
-		}
-		if !strings.Contains(lines[1], "5h") {
-			t.Errorf("loading frame line 1 should be the quota row:\n%q", lines[1])
-		}
-	})
 }
