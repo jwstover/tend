@@ -548,16 +548,5 @@ defmodule Tend.Template.Parser do
   defp error(state, token, detail),
     do: ParseError.new(state.source, offset(token), Lexer.lexeme(token), detail)
 
-  defp node_text(%AST.String{text: text}), do: text
-  defp node_text(%AST.Number{text: text}), do: text
-  defp node_text(%AST.Bool{value: value}), do: to_string(value)
-  defp node_text(%AST.Dot{}), do: "."
-  defp node_text(%AST.Nil{}), do: "nil"
-  defp node_text(%AST.Field{path: path}), do: "." <> Enum.join(path, ".")
-  defp node_text(%AST.Identifier{name: name}), do: name
-
-  defp node_text(%AST.Variable{name: name, path: []}), do: name
-
-  defp node_text(%AST.Variable{name: name, path: path}),
-    do: name <> "." <> Enum.join(path, ".")
+  defp node_text(node), do: AST.to_source(node)
 end
