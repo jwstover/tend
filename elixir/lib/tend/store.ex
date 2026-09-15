@@ -3,8 +3,9 @@ defmodule Tend.Store do
   The persistence layer: the only module that touches SQL.
 
   A port of `internal/store`, built up in parts: opening the file and getting
-  the schema onto it, then the flat task surface on top of that. Nothing calls
-  either yet -- the CLI commands that would are a later phase.
+  the schema onto it, the flat task surface on top of that, then the workflow
+  definition rows. Nothing calls any of it yet -- the CLI commands, MCP tools
+  and TUI views that would are later phases.
 
   Built on the raw `Exqlite.Sqlite3` API rather than Ecto. The Go store is
   hand-written SQL against a schema that two binaries have to agree on
@@ -52,6 +53,7 @@ defmodule Tend.Store do
   alias Tend.Task.Project
   alias Tend.Task.SessionStatus
   alias Tend.Task.State
+  alias Tend.Workflow
   alias Tend.Workflow.RunState
 
   @typedoc """
@@ -277,6 +279,100 @@ defmodule Tend.Store do
   @delete_task """
   DELETE FROM tasks
   WHERE id = ?
+  """
+
+  @create_workflow """
+  INSERT INTO workflows (name, description)
+  VALUES (?, ?)
+  RETURNING id, name, description, created_at, updated_at
+  """
+
+  @get_workflow """
+  SELECT id, name, description, created_at, updated_at
+  FROM workflows
+  WHERE id = ?
+  """
+
+  @get_workflow_by_name """
+  SELECT id, name, description, created_at, updated_at
+  FROM workflows
+  WHERE name = ?
+  """
+
+  @list_workflows """
+  SELECT w.id, w.name, w.description, w.created_at, w.updated_at,
+         COALESCE(c.n, 0) AS step_count
+  FROM workflows w
+  LEFT JOIN (
+    SELECT workflow_id, COUNT(*) AS n
+    FROM workflow_steps
+    GROUP BY workflow_id
+  ) c ON c.workflow_id = w.id
+  ORDER BY w.name
+  """
+
+  @rename_workflow """
+  UPDATE workflows
+  SET name       = ?,
+      updated_at = datetime('now')
+  WHERE id = ?
+  """
+
+  @set_workflow_description """
+  UPDATE workflows
+  SET description = ?,
+      updated_at  = datetime('now')
+  WHERE id = ?
+  """
+
+  @delete_workflow """
+  DELETE FROM workflows
+  WHERE id = ?
+  """
+
+  @list_active_run_ids_for_workflow """
+  SELECT id
+  FROM workflow_runs
+  WHERE workflow_id = ?
+    AND state NOT IN ('done', 'failed', 'cancelled')
+  ORDER BY id
+  """
+
+  # The four below belong to the step and edge surface, which is a later part
+  # of the store port (`AddStep`, `ListSteps`, `SetEdge`, `ListEdges`). They
+  # are here now because `duplicate_workflow/3` is the one workflow-row
+  # function with real logic and it copies rows of both tables -- exactly as
+  # Go's DuplicateWorkflow reaches past its own section for ListSteps,
+  # CreateStepFull, ListEdgesForWorkflow and UpsertEdge.
+
+  @list_steps """
+  SELECT id, workflow_id, name, kind, prompt_md, model, permission_mode, sort_order, created_at, updated_at
+  FROM workflow_steps
+  WHERE workflow_id = ?
+  ORDER BY sort_order, id
+  """
+
+  @create_step_full """
+  INSERT INTO workflow_steps (workflow_id, name, kind, prompt_md, model, permission_mode, sort_order)
+  VALUES (?, ?, ?, ?, ?, ?, ?)
+  RETURNING id, workflow_id, name, kind, prompt_md, model, permission_mode, sort_order, created_at, updated_at
+  """
+
+  @list_edges_for_workflow """
+  SELECT e.id, e.from_step_id, e.outcome, e.to_step_id, e.max_iterations
+  FROM workflow_edges e
+  JOIN workflow_steps s ON s.id = e.from_step_id
+  WHERE s.workflow_id = ?
+  ORDER BY s.sort_order, s.id, e.outcome
+  """
+
+  @upsert_edge """
+  INSERT INTO workflow_edges (from_step_id, outcome, to_step_id, max_iterations)
+  VALUES (?, ?, ?, ?)
+  ON CONFLICT(from_step_id, outcome) DO UPDATE
+  SET to_step_id     = excluded.to_step_id,
+      max_iterations = excluded.max_iterations
+  RETURNING id, from_step_id, outcome, to_step_id, max_iterations
   """
 
   # -- capture ---------------------------------------------------------------
@@ -573,6 +669,160 @@ defmodule Tend.Store do
     execute(store, @delete_task, [id], "deleting task #{id}")
   end
 
+  # -- workflow definitions --------------------------------------------------
+  #
+  # The workflow *rows*: a definition's name, description and step count. The
+  # steps and edges themselves get their own API in a later part of the port;
+  # `duplicate_workflow/3` writes both tables directly because that is what
+  # Go's DuplicateWorkflow does, and it is the only function here with logic
+  # worth the name.
+  #
+  # Nothing calls any of this yet. The MCP workflow tools and the TUI's
+  # authoring view are later phases, so this is an internal API with no caller
+  # -- fully tested, but dead until they arrive.
+
+  @doc """
+  Adds a workflow definition.
+
+  The name is trimmed by `Tend.Workflow.normalize_name/1` and a blank one is
+  refused with `:empty_name`. Names are unique case-insensitively -- the
+  column's collation is `NOCASE` -- and a collision surfaces as the driver's
+  constraint error wrapped in `{:query_failed, "creating workflow ...", _}`,
+  never as a sentinel, exactly as Go lets sqlite's `UNIQUE constraint failed`
+  through here and in `CreateProject`.
+
+  The workflow comes back with `step_count: 0`: it has no steps yet, and
+  nothing counted them.
+  """
+  @spec create_workflow(t(), String.t(), String.t()) ::
+          {:ok, Workflow.t()} | {:error, Tend.Error.t()}
+  def create_workflow(store, name, description) when is_binary(description) do
+    with {:ok, n} <- Workflow.normalize_name(name),
+         {:ok, row} <- insert_workflow(store, n, description) do
+      Row.to_workflow(row, 0)
+    end
+  end
+
+  @doc """
+  Loads one workflow by id.
+
+  A workflow that is not there is `{:error, :workflow_not_found}` --
+  `workflow.ErrWorkflowNotFound`, which Go's `GetWorkflow` substitutes for
+  `sql.ErrNoRows` so callers can match it. (`get_task/2` has to invent its
+  own reason because Go has no sentinel there; here there is one to port.)
+  """
+  @spec get_workflow(t(), integer()) :: {:ok, Workflow.t()} | {:error, Tend.Error.t()}
+  def get_workflow(store, id) when is_integer(id) do
+    with {:ok, row} <- workflow_row(store, id), do: Row.to_workflow(row, 0)
+  end
+
+  @doc """
+  Resolves a workflow by name, case-insensitively.
+
+  Names resolve, never create: `tend workflow start <name>` matches on
+  `:workflow_not_found` to report a typo. The name is normalized first, so a
+  blank one is `:empty_name` rather than a lookup that cannot match.
+  """
+  @spec workflow_by_name(t(), String.t()) :: {:ok, Workflow.t()} | {:error, Tend.Error.t()}
+  def workflow_by_name(store, name) do
+    with {:ok, n} <- Workflow.normalize_name(name) do
+      case query(store, @get_workflow_by_name, [n], "loading workflow #{quoted(n)}") do
+        {:ok, [row]} -> Row.to_workflow(row, 0)
+        {:ok, []} -> {:error, :workflow_not_found}
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  @doc """
+  Every workflow, by name, each with its step count.
+
+  The count comes from the grouped `LEFT JOIN` in the statement rather than a
+  second query, so a workflow with no steps still appears -- with zero.
+  """
+  @spec list_workflows(t()) :: {:ok, [Workflow.t()]} | {:error, Tend.Error.t()}
+  def list_workflows(store) do
+    with {:ok, rows} <- query(store, @list_workflows, [], "listing workflows") do
+      Row.to_workflows(rows)
+    end
+  end
+
+  @doc """
+  Changes a workflow's name, normalized the way `create_workflow/3` normalizes
+  it -- including the duplicate, which is the same constraint error.
+  """
+  @spec rename_workflow(t(), integer(), String.t()) :: :ok | {:error, Tend.Error.t()}
+  def rename_workflow(store, id, name) when is_integer(id) do
+    with {:ok, n} <- Workflow.normalize_name(name) do
+      execute(store, @rename_workflow, [n, id], "renaming workflow #{id}")
+    end
+  end
+
+  @doc """
+  Replaces a workflow's description.
+  """
+  @spec set_workflow_description(t(), integer(), String.t()) :: :ok | {:error, Tend.Error.t()}
+  def set_workflow_description(store, id, description)
+      when is_integer(id) and is_binary(description) do
+    execute(
+      store,
+      @set_workflow_description,
+      [description, id],
+      "setting workflow #{id} description"
+    )
+  end
+
+  @doc """
+  Removes a workflow, its steps and edges, and the history of its runs -- the
+  last three by migration 9's cascades, from the one `DELETE`. The runs' tasks
+  are untouched: a run belongs to its definition, a task does not.
+
+  Refused with `{:in_use, "workflow <id>", run_id}`, naming the run, while any
+  run of it is in a non-terminal state: the runner reads the definition live at
+  each step start, so pulling it out from under a live run would strand the
+  run. The check and the delete share a transaction so a run created in between
+  cannot slip through.
+
+  Deleting an id that is not there is not an error, exactly as `delete_task/2`
+  is not, and for the same reason.
+  """
+  @spec delete_workflow(t(), integer()) :: :ok | {:error, Tend.Error.t()}
+  def delete_workflow(store, id) when is_integer(id) do
+    transaction(store, fn store ->
+      with {:ok, active} <-
+             query(
+               store,
+               @list_active_run_ids_for_workflow,
+               [id],
+               "checking runs of workflow #{id}"
+             ),
+           :ok <- refuse_if_live(active, "workflow #{id}") do
+        execute(store, @delete_workflow, [id], "deleting workflow #{id}")
+      end
+    end)
+  end
+
+  @doc """
+  Copies a workflow under a new name: its steps with their prompts and
+  settings, and its edges re-pointed at the copied steps.
+
+  One transaction, so a copy is whole or absent. The run history is not copied,
+  because it belongs to the original; the authoring TUI's "duplicate" is the
+  intended caller.
+
+  The copy's edges are the interesting part. Each copied step remembers which
+  original it came from, and every edge is rewritten through that map, so an
+  edge of the copy can only ever point at a step of the copy -- including the
+  loop-back edges, whose `max_iterations` bound rides along.
+  """
+  @spec duplicate_workflow(t(), integer(), String.t()) ::
+          {:ok, Workflow.t()} | {:error, Tend.Error.t()}
+  def duplicate_workflow(store, id, new_name) when is_integer(id) do
+    with {:ok, n} <- Workflow.normalize_name(new_name) do
+      transaction(store, fn store -> copy_workflow(store, id, n) end)
+    end
+  end
+
   # -- transactions ----------------------------------------------------------
 
   @doc """
@@ -594,9 +844,9 @@ defmodule Tend.Store do
   connection is long-lived, so a transaction left open by an unwinding caller
   would block every later write on it.
 
-  Nothing in the task surface is multi-statement, so this has no caller on
-  this branch; the functions that need it -- `SetProject`, `SetParent`,
-  `SetTags`, `DeleteProject` -- are later parts of the store port.
+  Nothing in the task surface is multi-statement; `delete_workflow/2` and
+  `duplicate_workflow/3` are its first callers, and the rest -- `SetProject`,
+  `SetParent`, `SetTags`, `DeleteProject` -- are later parts of the store port.
   """
   @spec transaction(t(), (t() -> result)) :: result | {:error, Tend.Error.t()} when result: var
   def transaction(%__MODULE__{} = store, fun) when is_function(fun, 1) do
@@ -662,19 +912,103 @@ defmodule Tend.Store do
   defp project_filter(nil), do: nil
   defp project_filter(id) when is_integer(id), do: id
 
+  defp insert_task(store, sql, params) do
+    with {:ok, row} <- insert_one(store, sql, params, "inserting task"), do: Row.to_task(row)
+  end
+
   # `INSERT ... RETURNING` yields exactly one row. Anything else means the
   # statement above stopped being the insert it is copied from, which is worth
   # an error rather than a match failure three frames away.
-  defp insert_task(store, sql, params) do
-    case query(store, sql, params, "inserting task") do
-      {:ok, [row]} -> Row.to_task(row)
-      {:ok, rows} -> {:error, {:query_failed, "inserting task", {:rows_returned, length(rows)}}}
+  defp insert_one(store, sql, params, context) do
+    case query(store, sql, params, context) do
+      {:ok, [row]} -> {:ok, row}
+      {:ok, rows} -> {:error, {:query_failed, context, {:rows_returned, length(rows)}}}
       {:error, reason} -> {:error, reason}
     end
   end
 
   defp normalize_due(nil), do: {:ok, nil}
   defp normalize_due(due) when is_binary(due), do: Task.normalize_date(due)
+
+  # -- the workflow helpers --------------------------------------------------
+
+  defp insert_workflow(store, name, description) do
+    insert_one(store, @create_workflow, [name, description], "creating workflow #{quoted(name)}")
+  end
+
+  # The raw `workflows` row, or the sentinel Go substitutes for sql.ErrNoRows.
+  # Shared by get_workflow/2 and the duplicate, which wants the description off
+  # the row rather than a domain value.
+  defp workflow_row(store, id) do
+    case query(store, @get_workflow, [id], "loading workflow #{id}") do
+      {:ok, [row]} -> {:ok, row}
+      {:ok, []} -> {:error, :workflow_not_found}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # Go's `if len(active) > 0 { return workflow.InUseError(..., active[0]) }`.
+  # The statement orders by id, so the run named is the oldest live one, the
+  # same one Go names.
+  defp refuse_if_live([], _what), do: :ok
+  defp refuse_if_live([[run_id] | _rest], what), do: {:error, Workflow.in_use_error(what, run_id)}
+
+  # The body of duplicate_workflow/3, inside the transaction.
+  defp copy_workflow(store, id, name) do
+    with {:ok, [_id, _name, description, _created, _updated]} <- workflow_row(store, id),
+         {:ok, [copy_id | _rest] = copy} <- insert_workflow(store, name, description),
+         {:ok, steps} <- query(store, @list_steps, [id], "listing steps of workflow #{id}"),
+         {:ok, step_ids} <- copy_steps(store, copy_id, steps),
+         {:ok, edges} <-
+           query(store, @list_edges_for_workflow, [id], "listing edges of workflow #{id}"),
+         :ok <- copy_edges(store, step_ids, edges) do
+      Row.to_workflow(copy, length(steps))
+    end
+  end
+
+  # Copies each step wholesale -- sort order included, so the copy lists in the
+  # original's authoring order -- and returns the old id => new id map the
+  # edges are re-pointed through.
+  defp copy_steps(store, workflow_id, steps) do
+    Enum.reduce_while(steps, {:ok, %{}}, fn step, {:ok, step_ids} ->
+      [id, _workflow_id, name, kind, prompt_md, model, permission_mode, sort_order | _stamps] =
+        step
+
+      params = [workflow_id, name, kind, prompt_md, model, permission_mode, sort_order]
+
+      case insert_one(store, @create_step_full, params, "copying step #{id}") do
+        {:ok, [copied | _rest]} -> {:cont, {:ok, Map.put(step_ids, id, copied)}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  # Every edge of the original, with both endpoints translated. `Map.fetch!`
+  # rather than Go's `idMap[e.FromStepID]`, whose miss would be a silent zero:
+  # the listing joins on `from_step_id`, and `SetEdge` refuses an edge whose
+  # ends are in different workflows, so both endpoints are always in the map --
+  # and if that ever stops being true this should say so rather than write an
+  # edge pointing at nothing.
+  defp copy_edges(store, step_ids, edges) do
+    Enum.reduce_while(edges, :ok, fn edge, :ok ->
+      [id, from_step_id, outcome, to_step_id, max_iterations] = edge
+
+      params = [
+        Map.fetch!(step_ids, from_step_id),
+        outcome,
+        Map.fetch!(step_ids, to_step_id),
+        max_iterations
+      ]
+
+      case insert_one(store, @upsert_edge, params, "copying edge #{id}") do
+        {:ok, _row} -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  # Go's %q on a name, for the call-site labels that carry one.
+  defp quoted(name), do: Tend.Error.quote_go(name)
 
   # Best effort, exactly as Go's `defer func() { _ = tx.Rollback() }()` is: the
   # caller is already getting the real failure, and a rollback that itself
