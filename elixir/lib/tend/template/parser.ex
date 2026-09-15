@@ -6,13 +6,16 @@ defmodule Tend.Template.Parser do
   down to the order the checks run in, because the order is what decides which
   of two plausible messages a broken prompt gets.
 
-  Two deliberate departures from Go, both forced by this being part one of
-  three:
+  Two deliberate departures from Go:
 
     * **No function table.** Go resolves `{{and ...}}` at parse time and says
-      `function "and" not defined` for anything it does not know. There is no
-      function table until the builtins sub-task, so every bare word parses
-      into a `Tend.Template.AST.Identifier` and is resolved later.
+      `function "and" not defined` for anything it does not know. Here every
+      bare word parses into a `Tend.Template.AST.Identifier` and
+      `Tend.Template.Renderer` resolves it against `Tend.Template.Funcs`,
+      with Go's wording, when the command is evaluated. A prompt calling an
+      unknown function is therefore refused a moment later than Go refuses
+      it -- and still refused by `ValidatePrompt`'s equivalent, which renders
+      against two data sets, unless the call sits in a branch neither takes.
     * **No `{{template}}`, `{{define}}`, `{{block}}`, `{{with}}`, `{{break}}`
       or `{{continue}}`.** None appears in any stored prompt or fixture. They
       lex as keywords and are refused by name, so the error says what is
