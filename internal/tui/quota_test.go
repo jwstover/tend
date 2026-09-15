@@ -71,8 +71,8 @@ func TestQuotaPollerFetchesImmediatelyThenOnTick(t *testing.T) {
 func TestHeaderShowsQuotaGauges(t *testing.T) {
 	_, h := headerWith(t, 140, quotaMsg{quota: testQuota(48, 6)})
 	for _, want := range []string{
-		"5h ▰▰▰▰▱▱▱▱ 48%",
-		"wk ▰▱▱▱▱▱▱▱ 6%",
+		"5h ▰▰▰▰▰▱▱▱▱▱ 48%",
+		"wk ▰▱▱▱▱▱▱▱▱▱ 6%",
 	} {
 		if !strings.Contains(h, want) {
 			t.Errorf("header missing %q:\n%q", want, h)
@@ -158,11 +158,11 @@ func TestQuotaGaugeComposition(t *testing.T) {
 		pct  int
 		want string
 	}{
-		{0, g.GaugeLeftOff + mids(g.GaugeMidOff, 6) + g.GaugeRightOff},
-		{1, g.GaugeLeftOn + mids(g.GaugeMidOff, 6) + g.GaugeRightOff},
-		{50, g.GaugeLeftOn + mids(g.GaugeMidOn, 3) + mids(g.GaugeMidOff, 3) + g.GaugeRightOff},
-		{100, g.GaugeLeftOn + mids(g.GaugeMidOn, 6) + g.GaugeRightOn},
-		{140, g.GaugeLeftOn + mids(g.GaugeMidOn, 6) + g.GaugeRightOn},
+		{0, g.GaugeLeftOff + mids(g.GaugeMidOff, 8) + g.GaugeRightOff},
+		{1, g.GaugeLeftOn + mids(g.GaugeMidOff, 8) + g.GaugeRightOff},
+		{50, g.GaugeLeftOn + mids(g.GaugeMidOn, 4) + mids(g.GaugeMidOff, 4) + g.GaugeRightOff},
+		{100, g.GaugeLeftOn + mids(g.GaugeMidOn, 8) + g.GaugeRightOn},
+		{140, g.GaugeLeftOn + mids(g.GaugeMidOn, 8) + g.GaugeRightOn},
 	} {
 		if got := ansi.Strip(quotaGauge(s, s.QuotaOK, tc.pct, false)); got != tc.want {
 			t.Errorf("pct %d: gauge = %q, want %q", tc.pct, got, tc.want)

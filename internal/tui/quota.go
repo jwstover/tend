@@ -26,7 +26,7 @@ const (
 )
 
 // quotaGaugeCells is how many cells wide one gauge's bar is.
-const quotaGaugeCells = 8
+const quotaGaugeCells = 10
 
 // quotaMsg carries one `/usage` answer to the event loop.
 type quotaMsg struct {
@@ -85,8 +85,8 @@ func (a app) applyQuota(msg quotaMsg) app {
 	return a
 }
 
-// quotaChrome renders the header's usage gauges, `5h ▰▰▰▰▱▱▱▱ 48%  ·  wk
-// ▰▱▱▱▱▱▱▱ 6%`, or without the bars when bars is false. Empty when there
+// quotaChrome renders the header's usage gauges, `5h ▰▰▰▰▰▱▱▱▱▱ 48%  ·
+// wk ▰▱▱▱▱▱▱▱▱▱ 6%`, or without the bars when bars is false. Empty when there
 // is no reading to show.
 func (a app) quotaChrome(bars bool) string {
 	if !a.quotaLoaded {
