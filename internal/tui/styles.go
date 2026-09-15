@@ -111,8 +111,6 @@ type glyphs struct {
 	// continuous rounded bar; the plain sets repeat one glyph throughout.
 	GaugeLeftOn, GaugeMidOn, GaugeRightOn    string
 	GaugeLeftOff, GaugeMidOff, GaugeRightOff string
-	// QuotaSession and QuotaWeek label the five-hour and weekly gauges.
-	QuotaSession, QuotaWeek string
 }
 
 func unicodeGlyphs() glyphs {
@@ -149,7 +147,6 @@ func unicodeGlyphs() glyphs {
 
 		GaugeLeftOn: "▰", GaugeMidOn: "▰", GaugeRightOn: "▰",
 		GaugeLeftOff: "▱", GaugeMidOff: "▱", GaugeRightOff: "▱",
-		QuotaSession: "5h", QuotaWeek: "wk",
 	}
 }
 
@@ -162,8 +159,6 @@ func nerdGlyphs() glyphs {
 	// Fira Code's progress bar (extra-progress_{empty,full}_{left,mid,right}).
 	g.GaugeLeftOff, g.GaugeMidOff, g.GaugeRightOff = "", "", ""
 	g.GaugeLeftOn, g.GaugeMidOn, g.GaugeRightOn = "", "", ""
-	g.QuotaSession = "" // fa-hourglass_half
-	g.QuotaWeek = ""    // fa-calendar_days
 	return g
 }
 
@@ -218,7 +213,6 @@ func asciiGlyphs() glyphs {
 
 		GaugeLeftOn: "#", GaugeMidOn: "#", GaugeRightOn: "#",
 		GaugeLeftOff: "-", GaugeMidOff: "-", GaugeRightOff: "-",
-		QuotaSession: "5h", QuotaWeek: "wk",
 	}
 }
 

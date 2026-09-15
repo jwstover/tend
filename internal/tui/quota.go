@@ -92,14 +92,13 @@ func (a app) quotaChrome(bars bool) string {
 	if !a.quotaLoaded {
 		return ""
 	}
-	g := a.styles.Glyphs
 	var parts []string
 	for _, l := range []struct {
 		label string
 		limit *agent.QuotaLimit
 	}{
-		{g.QuotaSession, a.quota.Session},
-		{g.QuotaWeek, a.quota.Week},
+		{"5h", a.quota.Session},
+		{"wk", a.quota.Week},
 	} {
 		if l.limit == nil {
 			continue

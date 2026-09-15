@@ -70,10 +70,9 @@ func TestQuotaPollerFetchesImmediatelyThenOnTick(t *testing.T) {
 
 func TestHeaderShowsQuotaGauges(t *testing.T) {
 	_, h := headerWith(t, 140, quotaMsg{quota: testQuota(48, 6)})
-	g := unicodeGlyphs()
 	for _, want := range []string{
-		g.QuotaSession + " ▰▰▰▰▱▱▱▱ 48%",
-		g.QuotaWeek + " ▰▱▱▱▱▱▱▱ 6%",
+		"5h ▰▰▰▰▱▱▱▱ 48%",
+		"wk ▰▱▱▱▱▱▱▱ 6%",
 	} {
 		if !strings.Contains(h, want) {
 			t.Errorf("header missing %q:\n%q", want, h)
@@ -222,18 +221,13 @@ func TestGlyphsFor(t *testing.T) {
 	}
 }
 
-// Every gauge glyph is one cell and every label at most two, in every
-// set: a double-width icon would push the whole header one cell right.
+// Every gauge glyph is one cell in every set: a double-width glyph would
+// push the whole header one cell right.
 func TestQuotaGlyphWidths(t *testing.T) {
 	for name, g := range map[string]glyphs{"unicode": unicodeGlyphs(), "ascii": asciiGlyphs(), "nerd": nerdGlyphs()} {
 		for _, glyph := range []string{g.GaugeLeftOn, g.GaugeMidOn, g.GaugeRightOn, g.GaugeLeftOff, g.GaugeMidOff, g.GaugeRightOff} {
 			if w := ansi.StringWidth(glyph); w != 1 {
 				t.Errorf("%s: gauge glyph %q has width %d, want 1", name, glyph, w)
-			}
-		}
-		for _, glyph := range []string{g.QuotaSession, g.QuotaWeek} {
-			if w := ansi.StringWidth(glyph); w < 1 || w > 2 {
-				t.Errorf("%s: label %q has width %d, want 1 or 2", name, glyph, w)
 			}
 		}
 	}
