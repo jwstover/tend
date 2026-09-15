@@ -293,25 +293,13 @@ func (a *app) toggleArchivedProjects() tea.Cmd {
 	return nil
 }
 
-// projectConfirm is a project operation waiting on a `y`: archiving the
-// project or deleting it. Both act on a whole project at once -- every
-// task in it leaves the column with an archive, or moves to Unsorted with
-// a delete -- and both are reached by keys that are easy to hit by
-// accident (`A` is shift-`a`, `dd` is muscle memory from the task list),
-// so neither runs until a panel has named the project and `y` has agreed.
-type projectConfirm struct {
-	title string  // panel title, naming the project
-	desc  string  // what `y` does, in the panel's key row
-	run   tea.Cmd // the mutation `y` fires
-}
-
 // armProjectArchive asks before archiving p. `y` in the panel archives;
 // anything else leaves the project alone.
 func (a *app) armProjectArchive(p task.Project) {
-	a.projectConfirm = &projectConfirm{
+	a.confirm = &confirmation{
 		title: fmt.Sprintf("archive project %s?", p.Name),
 		desc:  "archive; hidden until C shows it, A restores",
-		run:   a.setProjectArchived(p, true),
+		run:   func(a app) tea.Cmd { return a.setProjectArchived(p, true) },
 	}
 	a.resize()
 }
@@ -332,41 +320,12 @@ func (a *app) armProjectDelete() {
 	default:
 		desc = fmt.Sprintf("delete; its %d live tasks move to Unsorted", p.LiveCount)
 	}
-	a.projectConfirm = &projectConfirm{
+	a.confirm = &confirmation{
 		title: fmt.Sprintf("delete project %s?", p.Name),
 		desc:  desc,
-		run:   a.deleteProject(p),
+		run:   func(a app) tea.Cmd { return a.deleteProject(p) },
 	}
 	a.resize()
-}
-
-// handleProjectConfirmKey consumes the key after a project confirmation
-// was armed: `y` runs the archive or delete it names, anything else
-// cancels. Reports false when no confirmation is pending.
-func (a *app) handleProjectConfirmKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
-	if a.projectConfirm == nil {
-		return nil, false
-	}
-	c := *a.projectConfirm
-	a.projectConfirm = nil
-	a.resize()
-	if msg.String() == "y" {
-		return c.run, true
-	}
-	return nil, true
-}
-
-// projectConfirmPanel renders the which-key panel for a pending project
-// confirmation: `y` goes ahead, anything else cancels.
-func (a app) projectConfirmPanel() string {
-	if a.projectConfirm == nil {
-		return ""
-	}
-	entries := []panelEntry{
-		{key: "y", desc: a.projectConfirm.desc, keyStyle: a.styles.Error},
-		{key: "esc", desc: "cancel", keyStyle: a.styles.Dimmed},
-	}
-	return renderKeyPanel(a.styles, a.width, a.projectConfirm.title, entries)
 }
 
 // deleteProject removes p. Its tasks are reassigned to the default

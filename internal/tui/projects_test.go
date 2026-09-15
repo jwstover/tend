@@ -358,7 +358,7 @@ func TestDeleteProjectFromTheColumnKeepsItsTasks(t *testing.T) {
 	// in it, so a panel names the project and waits for y.
 	m = drive(t, m, keyPress('d'))
 	a := m.(app)
-	if a.projectConfirm == nil {
+	if a.confirm == nil {
 		t.Fatal("dd on a project should ask before deleting")
 	}
 	view := ansi.Strip(m.View().Content)
@@ -392,13 +392,13 @@ func TestDeleteProjectConfirmationCancels(t *testing.T) {
 	m = focusProjectRow(t, m, "keeper")
 	m = drive(t, m, keyPress('d'))
 	m = drive(t, m, keyPress('d'))
-	if m.(app).projectConfirm == nil {
+	if m.(app).confirm == nil {
 		t.Fatal("dd on a project should ask before deleting")
 	}
 
 	m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyEscape})
 	a := m.(app)
-	if a.projectConfirm != nil {
+	if a.confirm != nil {
 		t.Fatal("esc should clear the confirmation")
 	}
 	if strings.Contains(ansi.Strip(m.View().Content), "delete project keeper?") {
@@ -417,7 +417,7 @@ func TestDeleteProjectConfirmationCancels(t *testing.T) {
 	m = drive(t, m, keyPress('d'))
 	m = drive(t, m, keyPress('d'))
 	a = m.(app)
-	if a.projectConfirm != nil || a.deletePending {
+	if a.confirm != nil || a.deletePending {
 		t.Error("a key other than y should cancel without arming anything")
 	}
 	if _, err := s.GetProject(ctx, made[0].ID); err != nil {
@@ -436,7 +436,7 @@ func TestDeleteProjectFromTheAgentsViewAsksFirst(t *testing.T) {
 	m = focusProjectRow(t, m, "doomed")
 	m = drive(t, m, keyPress('d'))
 	m = drive(t, m, keyPress('d'))
-	if m.(app).projectConfirm == nil {
+	if m.(app).confirm == nil {
 		t.Fatal("dd on a project in the agents view should ask before deleting")
 	}
 	if _, err := s.GetProject(ctx, made[0].ID); err != nil {
@@ -458,7 +458,7 @@ func TestArchivedProjectLeavesTheColumn(t *testing.T) {
 	// screen, and the key is one shift away from quick-add.
 	m = drive(t, m, keyPress('A'))
 	a := m.(app)
-	if a.projectConfirm == nil {
+	if a.confirm == nil {
 		t.Fatal("A on an active project should ask before archiving")
 	}
 	view := ansi.Strip(m.View().Content)
@@ -496,12 +496,12 @@ func TestArchiveConfirmationCancels(t *testing.T) {
 
 	m = focusProjectRow(t, m, "seasonal")
 	m = drive(t, m, keyPress('A'))
-	if m.(app).projectConfirm == nil {
+	if m.(app).confirm == nil {
 		t.Fatal("A on an active project should ask before archiving")
 	}
 	m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyEscape})
 	a := m.(app)
-	if a.projectConfirm != nil {
+	if a.confirm != nil {
 		t.Fatal("esc should clear the confirmation")
 	}
 	if isArchived(t, s, made[0].ID) {
