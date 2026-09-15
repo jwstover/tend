@@ -67,6 +67,15 @@ type LaunchOpts struct {
 	// PermissionMode is claude's --permission-mode; "" inherits the
 	// user's default.
 	PermissionMode string
+	// AdvisorModel is claude's --advisor: an alias ("fable", "opus",
+	// "sonnet") or a full model id, turning the advisor on for this
+	// session without touching the user's own saved advisorModel setting.
+	// "" leaves that setting in charge -- on if the user has one
+	// configured, off otherwise. Verified against claude 2.1.272 (tend
+	// task #32) to be honoured on --resume as well as a fresh launch and
+	// under -p, unlike Model and PermissionMode, which a resumed session
+	// keeps from its first turn.
+	AdvisorModel string
 	// AppendSystemPrompt is claude's --append-system-prompt: text added
 	// to the default system prompt rather than replacing it. The workflow
 	// runner uses it to state the finish_step hand-off contract for a
@@ -105,6 +114,9 @@ func LaunchCmdWith(cwd, sessionID, label, mcpConfigPath, settingsPath string, op
 	if opts.PermissionMode != "" {
 		args = append(args, "--permission-mode", opts.PermissionMode)
 	}
+	if opts.AdvisorModel != "" {
+		args = append(args, "--advisor", opts.AdvisorModel)
+	}
 	args = appendSystemPromptArgs(args, opts)
 	if opts.Prompt != "" {
 		args = append(args, opts.Prompt)
@@ -137,12 +149,16 @@ func ResumeCmd(cwd, externalID, mcpConfigPath, settingsPath string) *exec.Cmd {
 }
 
 // ResumeCmdWith is ResumeCmd plus a system prompt block
-// (LaunchOpts.AppendSystemPrompt / AppendSystemPromptFile), which claude
-// accepts on a --resume as it does on a launch. The TUI passes a fresh
-// task brief here so a session picked up after a break sees the task as
-// it stands now, not only as it was when the session began. The other
-// LaunchOpts fields are ignored: a resumed session already has its model,
-// mode and first turn.
+// (LaunchOpts.AppendSystemPrompt / AppendSystemPromptFile) and an advisor
+// (LaunchOpts.AdvisorModel), which claude accepts on a --resume as it does
+// on a launch. The TUI passes a fresh task brief here so a session picked
+// up after a break sees the task as it stands now, not only as it was
+// when the session began. Model and PermissionMode are ignored: a resumed
+// session already has those from its first turn. AdvisorModel is
+// different -- it is a per-session flag claude re-reads on every
+// invocation, verified against claude 2.1.272 (tend task #32) -- so it is
+// forwarded here too, letting a step's fixed advisor reach a resumed
+// session the way a fixed model or permission mode reaches a fresh one.
 func ResumeCmdWith(cwd, externalID, mcpConfigPath, settingsPath string, opts LaunchOpts) *exec.Cmd {
 	args := []string{"--resume", externalID}
 	if mcpConfigPath != "" {
@@ -150,6 +166,9 @@ func ResumeCmdWith(cwd, externalID, mcpConfigPath, settingsPath string, opts Lau
 	}
 	if settingsPath != "" {
 		args = append(args, "--settings", settingsPath)
+	}
+	if opts.AdvisorModel != "" {
+		args = append(args, "--advisor", opts.AdvisorModel)
 	}
 	args = appendSystemPromptArgs(args, opts)
 	c := exec.Command(binary, args...)

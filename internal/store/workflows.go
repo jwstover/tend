@@ -152,7 +152,8 @@ func (s *Store) DuplicateWorkflow(ctx context.Context, id int64, newName string)
 		for _, st := range steps {
 			copied, err := q.CreateStepFull(ctx, gen.CreateStepFullParams{
 				WorkflowID: dst.ID, Name: st.Name, Kind: st.Kind, PromptMd: st.PromptMd,
-				Model: st.Model, PermissionMode: st.PermissionMode, SortOrder: st.SortOrder,
+				Model: st.Model, PermissionMode: st.PermissionMode, AdvisorModel: st.AdvisorModel,
+				SortOrder: st.SortOrder,
 			})
 			if err != nil {
 				return fmt.Errorf("copying step %d: %w", st.ID, err)
@@ -232,8 +233,9 @@ func (s *Store) ListSteps(ctx context.Context, workflowID int64) ([]workflow.Ste
 }
 
 // UpdateStep writes a step's editable attributes -- name, kind, prompt,
-// model, permission mode -- from st, keyed by st.ID. Workflow membership
-// and sort order are not editable this way (see ReorderSteps).
+// model, permission mode, advisor model -- from st, keyed by st.ID.
+// Workflow membership and sort order are not editable this way (see
+// ReorderSteps).
 func (s *Store) UpdateStep(ctx context.Context, st workflow.Step) error {
 	n, err := workflow.NormalizeName(st.Name)
 	if err != nil {
@@ -244,7 +246,7 @@ func (s *Store) UpdateStep(ctx context.Context, st workflow.Step) error {
 	}
 	if err := s.q.UpdateStep(ctx, gen.UpdateStepParams{
 		Name: n, Kind: string(st.Kind), PromptMd: st.PromptMD,
-		Model: st.Model, PermissionMode: st.PermissionMode, ID: st.ID,
+		Model: st.Model, PermissionMode: st.PermissionMode, AdvisorModel: st.AdvisorModel, ID: st.ID,
 	}); err != nil {
 		return fmt.Errorf("updating step %d: %w", st.ID, err)
 	}
@@ -289,6 +291,15 @@ func (s *Store) SetStepModel(ctx context.Context, id int64, model string) error 
 func (s *Store) SetStepPermissionMode(ctx context.Context, id int64, mode string) error {
 	if err := s.q.SetStepPermissionMode(ctx, gen.SetStepPermissionModeParams{PermissionMode: mode, ID: id}); err != nil {
 		return fmt.Errorf("setting step %d permission mode: %w", id, err)
+	}
+	return nil
+}
+
+// SetStepAdvisorModel changes a step's advisor model (claude's --advisor);
+// "" means inherit the user's own advisorModel setting.
+func (s *Store) SetStepAdvisorModel(ctx context.Context, id int64, model string) error {
+	if err := s.q.SetStepAdvisorModel(ctx, gen.SetStepAdvisorModelParams{AdvisorModel: model, ID: id}); err != nil {
+		return fmt.Errorf("setting step %d advisor model: %w", id, err)
 	}
 	return nil
 }
@@ -562,15 +573,15 @@ func (s *Store) SetRunTmuxSession(ctx context.Context, id int64, name string) er
 // is derived (one more than the times this step has already run within
 // the run), so sr.Iteration is ignored; sr.RunID, StepID,
 // SessionExternalID, PromptRendered, SystemPrompt, Model, PermissionMode,
-// Input and Feedback are taken as given. Outcome, Deliverable, LogPath and
-// EndedAt start empty.
+// AdvisorModel, Input and Feedback are taken as given. Outcome,
+// Deliverable, LogPath and EndedAt start empty.
 func (s *Store) CreateStepRun(ctx context.Context, sr workflow.StepRun) (workflow.StepRun, error) {
 	var out workflow.StepRun
 	err := s.inTx(ctx, func(q *gen.Queries) error {
 		row, err := q.CreateStepRun(ctx, gen.CreateStepRunParams{
 			RunID: sr.RunID, StepID: sr.StepID, SessionExternalID: sr.SessionExternalID,
 			PromptRendered: sr.PromptRendered, SystemPrompt: sr.SystemPrompt,
-			Model: sr.Model, PermissionMode: sr.PermissionMode,
+			Model: sr.Model, PermissionMode: sr.PermissionMode, AdvisorModel: sr.AdvisorModel,
 			Input: sr.Input, Feedback: sr.Feedback,
 		})
 		if err != nil {
@@ -701,13 +712,15 @@ func (s *Store) SetStepRunSession(ctx context.Context, id int64, externalID stri
 	return nil
 }
 
-// SetStepRunSettings replaces the model and permission mode a step run
-// will execute with. The runner calls it when retrying a failed step so
-// the attempt runs with what the step definition says now -- a step that
-// failed on denied tool calls is fixed by giving it a permission mode,
-// and the fix has to reach the retry.
-func (s *Store) SetStepRunSettings(ctx context.Context, id int64, model, permissionMode string) error {
-	if err := s.q.SetStepRunSettings(ctx, gen.SetStepRunSettingsParams{Model: model, PermissionMode: permissionMode, ID: id}); err != nil {
+// SetStepRunSettings replaces the model, permission mode and advisor model
+// a step run will execute with. The runner calls it when retrying a
+// failed step so the attempt runs with what the step definition says now
+// -- a step that failed on denied tool calls is fixed by giving it a
+// permission mode, and the fix has to reach the retry.
+func (s *Store) SetStepRunSettings(ctx context.Context, id int64, model, permissionMode, advisorModel string) error {
+	if err := s.q.SetStepRunSettings(ctx, gen.SetStepRunSettingsParams{
+		Model: model, PermissionMode: permissionMode, AdvisorModel: advisorModel, ID: id,
+	}); err != nil {
 		return fmt.Errorf("setting step run %d settings: %w", id, err)
 	}
 	return nil
@@ -756,7 +769,7 @@ func stepToDomain(row gen.WorkflowStep) (workflow.Step, error) {
 	}
 	return workflow.Step{
 		ID: row.ID, WorkflowID: row.WorkflowID, Name: row.Name, Kind: workflow.StepKind(row.Kind),
-		PromptMD: row.PromptMd, Model: row.Model, PermissionMode: row.PermissionMode,
+		PromptMD: row.PromptMd, Model: row.Model, PermissionMode: row.PermissionMode, AdvisorModel: row.AdvisorModel,
 		SortOrder: row.SortOrder, CreatedAt: created, UpdatedAt: updated,
 	}, nil
 }
@@ -808,7 +821,8 @@ func stepRunToDomain(row gen.WorkflowStepRun) (workflow.StepRun, error) {
 	return workflow.StepRun{
 		ID: row.ID, RunID: row.RunID, StepID: row.StepID, Iteration: row.Iteration,
 		SessionExternalID: row.SessionExternalID, PromptRendered: row.PromptRendered, SystemPrompt: row.SystemPrompt,
-		Model: row.Model, PermissionMode: row.PermissionMode, Input: row.Input, Feedback: row.Feedback,
+		Model: row.Model, PermissionMode: row.PermissionMode, AdvisorModel: row.AdvisorModel,
+		Input: row.Input, Feedback: row.Feedback,
 		Outcome: row.Outcome, Deliverable: row.Deliverable, LogPath: row.LogPath,
 		StartedAt: started, EndedAt: ended,
 	}, nil

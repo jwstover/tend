@@ -81,7 +81,7 @@ type Store interface {
 	FinishStepRun(ctx context.Context, id int64, outcome, deliverable string) error
 	SetStepRunLogPath(ctx context.Context, id int64, path string) error
 	SetStepRunSession(ctx context.Context, id int64, externalID string) error
-	SetStepRunSettings(ctx context.Context, id int64, model, permissionMode string) error
+	SetStepRunSettings(ctx context.Context, id int64, model, permissionMode, advisorModel string) error
 
 	CreateStepRunSession(ctx context.Context, stepRunID, taskID int64, externalID, cwd, label, tmuxSession string) (task.Session, error)
 	SetSessionStatus(ctx context.Context, externalID string, status task.SessionStatus) error
@@ -406,7 +406,8 @@ func (r *Runner) startStep(ctx context.Context, run workflow.Run, wf workflow.Wo
 
 	sr := workflow.StepRun{
 		RunID: run.ID, StepID: step.ID, PromptRendered: prompt,
-		Model: step.Model, PermissionMode: step.PermissionMode, Input: input, Feedback: feedback,
+		Model: step.Model, PermissionMode: step.PermissionMode, AdvisorModel: step.AdvisorModel,
+		Input: input, Feedback: feedback,
 	}
 	if step.Kind == workflow.StepGate {
 		sr, err = r.Store.CreateStepRun(ctx, sr)
@@ -505,21 +506,21 @@ func (r *Runner) resumeStep(ctx context.Context, run workflow.Run, tk task.Task,
 	return r.startOver(ctx, run, tk, step, sr)
 }
 
-// refreshSettings brings a step run's model and permission mode up to
-// date with its step's, for a retry. A run's other step runs keep what
-// they ran with -- they are history -- but this one is about to run
-// again, and the most common fix for a failed step (give it the
+// refreshSettings brings a step run's model, permission mode and advisor
+// model up to date with its step's, for a retry. A run's other step runs
+// keep what they ran with -- they are history -- but this one is about to
+// run again, and the most common fix for a failed step (give it the
 // permission mode it was denied without) lives on the step.
 func (r *Runner) refreshSettings(ctx context.Context, run workflow.Run, step workflow.Step, sr workflow.StepRun) (workflow.StepRun, error) {
-	if sr.Model == step.Model && sr.PermissionMode == step.PermissionMode {
+	if sr.Model == step.Model && sr.PermissionMode == step.PermissionMode && sr.AdvisorModel == step.AdvisorModel {
 		return sr, nil
 	}
-	if err := r.Store.SetStepRunSettings(ctx, sr.ID, step.Model, step.PermissionMode); err != nil {
+	if err := r.Store.SetStepRunSettings(ctx, sr.ID, step.Model, step.PermissionMode, step.AdvisorModel); err != nil {
 		return workflow.StepRun{}, err
 	}
-	r.logf("run %d: step %q now runs with model %q and permission mode %q", run.ID, step.Name,
-		orInherit(step.Model), orInherit(step.PermissionMode))
-	sr.Model, sr.PermissionMode = step.Model, step.PermissionMode
+	r.logf("run %d: step %q now runs with model %q, permission mode %q and advisor %q", run.ID, step.Name,
+		orInherit(step.Model), orInherit(step.PermissionMode), orInherit(step.AdvisorModel))
+	sr.Model, sr.PermissionMode, sr.AdvisorModel = step.Model, step.PermissionMode, step.AdvisorModel
 	return sr, nil
 }
 

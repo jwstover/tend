@@ -104,6 +104,9 @@ func TestRunRetryRefreshesStepSettings(t *testing.T) {
 	if err := f.s.SetStepModel(f.ctx, f.steps["implement"].ID, "opus"); err != nil {
 		t.Fatal(err)
 	}
+	if err := f.s.SetStepAdvisorModel(f.ctx, f.steps["implement"].ID, "fable"); err != nil {
+		t.Fatal(err)
+	}
 	f.exec.handle = nil
 
 	if err := f.s.RetryRun(f.ctx, run.ID); err != nil {
@@ -113,10 +116,11 @@ func TestRunRetryRefreshesStepSettings(t *testing.T) {
 		t.Fatalf("Run after retry = %v\n%s", err, f.log)
 	}
 	retry := f.exec.requests()[0]
-	if retry.StepRun.PermissionMode != "bypassPermissions" || retry.StepRun.Model != "opus" {
-		t.Errorf("retry ran with model %q / permission mode %q, want the step's new opus / bypassPermissions", retry.StepRun.Model, retry.StepRun.PermissionMode)
+	if retry.StepRun.PermissionMode != "bypassPermissions" || retry.StepRun.Model != "opus" || retry.StepRun.AdvisorModel != "fable" {
+		t.Errorf("retry ran with model %q / permission mode %q / advisor %q, want the step's new opus / bypassPermissions / fable",
+			retry.StepRun.Model, retry.StepRun.PermissionMode, retry.StepRun.AdvisorModel)
 	}
-	if got, _ := f.s.GetStepRun(f.ctx, sr.ID); got.PermissionMode != "bypassPermissions" || got.Model != "opus" {
+	if got, _ := f.s.GetStepRun(f.ctx, sr.ID); got.PermissionMode != "bypassPermissions" || got.Model != "opus" || got.AdvisorModel != "fable" {
 		t.Errorf("step run row = %+v, want the refreshed settings recorded", got)
 	}
 	if !strings.Contains(f.log.String(), `permission mode "bypassPermissions"`) {

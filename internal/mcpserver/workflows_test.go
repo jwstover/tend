@@ -224,7 +224,7 @@ func TestAddWorkflowStepOptions(t *testing.T) {
 	wf := callTool[workflowGraphOut](t, cs, "create_workflow", map[string]any{"name": "opts"})
 
 	callTool[workflowGraphOut](t, cs, "add_workflow_step", map[string]any{
-		"workflow_id": wf.ID, "name": "first", "model": "inherit", "permission_mode": "acceptEdits",
+		"workflow_id": wf.ID, "name": "first", "model": "inherit", "permission_mode": "acceptEdits", "advisor_model": "fable",
 	})
 	g := callTool[workflowGraphOut](t, cs, "add_workflow_step", map[string]any{
 		"workflow_id": wf.ID, "name": "unlinked", "link_from_previous": false,
@@ -233,11 +233,15 @@ func TestAddWorkflowStepOptions(t *testing.T) {
 	if len(first.Edges) != 0 {
 		t.Errorf("link_from_previous false still linked: %+v", first.Edges)
 	}
-	if first.Model != "" || first.PermissionMode != "acceptEdits" {
-		t.Errorf("first = %+v, want model inherit stored as empty and permission_mode acceptEdits", first)
+	if first.Model != "" || first.PermissionMode != "acceptEdits" || first.AdvisorModel != "fable" {
+		t.Errorf("first = %+v, want model inherit stored as empty, permission_mode acceptEdits and advisor_model fable", first)
 	}
 	if store.steps[first.ID].Model != "" {
 		t.Errorf("stored model = %q, want empty for inherit", store.steps[first.ID].Model)
+	}
+	unlinked := stepNamed(t, g, "unlinked")
+	if unlinked.AdvisorModel != "" {
+		t.Errorf("unlinked advisor_model = %q, want empty when not given", unlinked.AdvisorModel)
 	}
 
 	g = callTool[workflowGraphOut](t, cs, "add_workflow_step", map[string]any{
@@ -287,7 +291,7 @@ func TestUpdateWorkflowStepChangesOnlyGivenFields(t *testing.T) {
 	store := newFakeStore(task.Task{ID: 1, Title: "bound"})
 	seedStepRun(store)
 	st := store.steps[11]
-	st.PromptMD, st.Model, st.PermissionMode = "Review {{.Input}}", "sonnet", "plan"
+	st.PromptMD, st.Model, st.PermissionMode, st.AdvisorModel = "Review {{.Input}}", "sonnet", "plan", "opus"
 	store.steps[11] = st
 	cs := dial(t, store, 1)
 
@@ -295,19 +299,25 @@ func TestUpdateWorkflowStepChangesOnlyGivenFields(t *testing.T) {
 		"step_id": 11, "name": " code review ",
 	})
 	got := stepNamed(t, g, "code review")
-	if got.ID != 11 || got.Kind != "agent" || got.PromptMD != "Review {{.Input}}" || got.Model != "sonnet" || got.PermissionMode != "plan" {
+	if got.ID != 11 || got.Kind != "agent" || got.PromptMD != "Review {{.Input}}" || got.Model != "sonnet" ||
+		got.PermissionMode != "plan" || got.AdvisorModel != "opus" {
 		t.Errorf("after renaming only: %+v, want the other fields untouched", got)
 	}
 
 	g = callTool[workflowGraphOut](t, cs, "update_workflow_step", map[string]any{
-		"step_id": 11, "permission_mode": "inherit", "model": "haiku",
+		"step_id": 11, "permission_mode": "inherit", "model": "haiku", "advisor_model": "sonnet",
 	})
 	got = stepNamed(t, g, "code review")
-	if got.PermissionMode != "" || got.Model != "haiku" || got.PromptMD != "Review {{.Input}}" {
-		t.Errorf("after permission_mode inherit + model haiku: %+v", got)
+	if got.PermissionMode != "" || got.Model != "haiku" || got.AdvisorModel != "sonnet" || got.PromptMD != "Review {{.Input}}" {
+		t.Errorf("after permission_mode inherit + model haiku + advisor_model sonnet: %+v", got)
 	}
 	if store.steps[11].PermissionMode != "" {
 		t.Errorf("stored permission mode = %q, want empty for inherit", store.steps[11].PermissionMode)
+	}
+
+	g = callTool[workflowGraphOut](t, cs, "update_workflow_step", map[string]any{"step_id": 11, "advisor_model": "inherit"})
+	if got = stepNamed(t, g, "code review"); got.AdvisorModel != "" {
+		t.Errorf("advisor_model after inherit = %q, want empty", got.AdvisorModel)
 	}
 
 	g = callTool[workflowGraphOut](t, cs, "update_workflow_step", map[string]any{"step_id": 11, "kind": "gate"})

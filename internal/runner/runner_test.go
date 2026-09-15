@@ -258,6 +258,31 @@ func TestRunTwoStepLinearWorkflow(t *testing.T) {
 	}
 }
 
+// A step's advisor model is snapshotted onto its step run and reaches
+// Exec.Run the way model and permission mode do, so ClaudeExec can forward
+// it as --advisor.
+func TestRunForwardsStepAdvisorModel(t *testing.T) {
+	f := newFixture(t)
+	st := f.step("implement", workflow.StepAgent)
+	if err := f.s.SetStepAdvisorModel(f.ctx, st.ID, "opus"); err != nil {
+		t.Fatalf("SetStepAdvisorModel: %v", err)
+	}
+	run := f.run()
+
+	if err := f.runner().Run(f.ctx, run.ID, false); err != nil {
+		t.Fatalf("Run: %v\n%s", err, f.log)
+	}
+
+	reqs := f.exec.requests()
+	if len(reqs) != 1 || reqs[0].StepRun.AdvisorModel != "opus" {
+		t.Errorf("exec calls = %+v, want one call with advisor model opus", reqs)
+	}
+	srs := f.stepRuns(run.ID)
+	if len(srs) != 1 || srs[0].AdvisorModel != "opus" {
+		t.Errorf("step run = %+v, want the advisor model recorded", srs)
+	}
+}
+
 // The task's sub-tasks reach the prompt as {{.Subtasks}}, each with its
 // state, whether it is blocked and what it waits on, so a Dispatch-style
 // step's ready set is in the rendered prompt (recorded on the step run)

@@ -153,7 +153,7 @@ type Workflow struct {
 }
 
 // Step is one node of a workflow. PromptMD is a Go text/template rendered
-// per run by RenderPrompt; Model and PermissionMode are
+// per run by RenderPrompt; Model, PermissionMode and AdvisorModel are
 // forwarded to claude as-is, "" meaning "inherit the default". SortOrder
 // is authoring order only: execution order is defined by the Edges.
 type Step struct {
@@ -164,6 +164,7 @@ type Step struct {
 	PromptMD       string
 	Model          string
 	PermissionMode string
+	AdvisorModel   string
 	SortOrder      int64
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
@@ -203,8 +204,8 @@ type Run struct {
 }
 
 // StepRun is one execution of one step within a run. The definition is
-// read live, so PromptRendered, Model and PermissionMode record what
-// actually ran; SystemPrompt is the hand-off block the runner appended to
+// read live, so PromptRendered, Model, PermissionMode and AdvisorModel
+// record what actually ran; SystemPrompt is the hand-off block the runner appended to
 // claude's system prompt for an agent step (StepSystemPrompt), "" for a
 // gate. Input is the previous step's deliverable; Feedback is the
 // hand-off of the step that routed here over a loop-back edge (a
@@ -224,6 +225,7 @@ type StepRun struct {
 	SystemPrompt      string
 	Model             string
 	PermissionMode    string
+	AdvisorModel      string
 	Input             string
 	Feedback          string
 	Outcome           string

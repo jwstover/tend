@@ -172,6 +172,7 @@ func TestStepsAppendReorderAndUpdate(t *testing.T) {
 	second.Kind = workflow.StepGate
 	second.Model = "opus"
 	second.PermissionMode = "plan"
+	second.AdvisorModel = "fable"
 	second.PromptMD = "Review {{.Input}}"
 	if err := s.UpdateStep(ctx, second); err != nil {
 		t.Fatalf("UpdateStep: %v", err)
@@ -181,7 +182,7 @@ func TestStepsAppendReorderAndUpdate(t *testing.T) {
 		t.Fatalf("GetStep: %v", err)
 	}
 	if got.Name != "adversarial review" || got.Kind != workflow.StepGate || got.Model != "opus" ||
-		got.PermissionMode != "plan" || got.PromptMD != "Review {{.Input}}" {
+		got.PermissionMode != "plan" || got.AdvisorModel != "fable" || got.PromptMD != "Review {{.Input}}" {
 		t.Errorf("after UpdateStep = %+v", got)
 	}
 	if err := s.SetStepPrompt(ctx, second.ID, "# new prompt"); err != nil {
@@ -201,9 +202,12 @@ func TestStepsAppendReorderAndUpdate(t *testing.T) {
 	if err := s.SetStepPermissionMode(ctx, second.ID, "acceptEdits"); err != nil {
 		t.Fatalf("SetStepPermissionMode: %v", err)
 	}
+	if err := s.SetStepAdvisorModel(ctx, second.ID, "sonnet"); err != nil {
+		t.Fatalf("SetStepAdvisorModel: %v", err)
+	}
 	got, _ = s.GetStep(ctx, second.ID)
 	if got.Kind != workflow.StepAgent || got.Model != "haiku" || got.PermissionMode != "acceptEdits" ||
-		got.Name != "adversarial review" || got.PromptMD != "# new prompt" {
+		got.AdvisorModel != "sonnet" || got.Name != "adversarial review" || got.PromptMD != "# new prompt" {
 		t.Errorf("after single-attribute setters = %+v", got)
 	}
 	if err := s.SetStepKind(ctx, second.ID, workflow.StepKind("human")); err == nil {
@@ -485,18 +489,19 @@ func TestStepRunsIterateAndFinishOnce(t *testing.T) {
 
 	first, err := s.CreateStepRun(ctx, workflow.StepRun{
 		RunID: run.ID, StepID: implement.ID, SessionExternalID: "sess-1",
-		PromptRendered: "do the thing", SystemPrompt: "you must call finish_step", Model: "sonnet", PermissionMode: "acceptEdits",
+		PromptRendered: "do the thing", SystemPrompt: "you must call finish_step",
+		Model: "sonnet", PermissionMode: "acceptEdits", AdvisorModel: "opus",
 		Iteration: 42, // ignored: derived by the store
 	})
 	if err != nil {
 		t.Fatalf("CreateStepRun: %v", err)
 	}
 	if first.Iteration != 1 || first.Finished() || first.PromptRendered != "do the thing" || first.Model != "sonnet" ||
-		first.SystemPrompt != "you must call finish_step" {
+		first.AdvisorModel != "opus" || first.SystemPrompt != "you must call finish_step" {
 		t.Errorf("first step run = %+v, want iteration 1, unfinished, with what ran recorded", first)
 	}
-	if reloaded, _ := s.GetStepRun(ctx, first.ID); reloaded.SystemPrompt != "you must call finish_step" {
-		t.Errorf("GetStepRun system prompt = %q, want it read back from the row", reloaded.SystemPrompt)
+	if reloaded, _ := s.GetStepRun(ctx, first.ID); reloaded.SystemPrompt != "you must call finish_step" || reloaded.AdvisorModel != "opus" {
+		t.Errorf("GetStepRun = %+v, want the system prompt and advisor read back from the row", reloaded)
 	}
 	// The run now points at it.
 	got, err := s.GetRun(ctx, run.ID)
@@ -781,6 +786,7 @@ func TestDuplicateWorkflowCopiesStepsAndRemapsEdges(t *testing.T) {
 	review := mustStep(t, s, w.ID, "review")
 	implement.PromptMD = "Implement {{.Task.Title}}"
 	implement.Model = "opus"
+	implement.AdvisorModel = "fable"
 	if err := s.UpdateStep(ctx, implement); err != nil {
 		t.Fatalf("UpdateStep: %v", err)
 	}
@@ -810,7 +816,8 @@ func TestDuplicateWorkflowCopiesStepsAndRemapsEdges(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListSteps: %v", err)
 	}
-	if len(steps) != 2 || steps[0].Name != "implement" || steps[0].PromptMD != "Implement {{.Task.Title}}" || steps[0].Model != "opus" {
+	if len(steps) != 2 || steps[0].Name != "implement" || steps[0].PromptMD != "Implement {{.Task.Title}}" ||
+		steps[0].Model != "opus" || steps[0].AdvisorModel != "fable" {
 		t.Errorf("copied steps = %+v", steps)
 	}
 	edges, err := s.ListEdges(ctx, dup.ID)

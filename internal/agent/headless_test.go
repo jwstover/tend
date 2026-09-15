@@ -65,6 +65,32 @@ func TestHeadlessResumeCmdArgv(t *testing.T) {
 	}
 }
 
+// A step's advisor reaches both a fresh headless launch and a headless
+// resume: --advisor is a per-session flag claude re-reads on every
+// invocation, unlike --model and --permission-mode which only matter on
+// the session's first turn.
+func TestHeadlessCmdAdvisorModel(t *testing.T) {
+	c := HeadlessCmd(context.Background(), "/tmp/work", "abc-123", "", "",
+		LaunchOpts{Prompt: "go", AdvisorModel: "sonnet"})
+	want := []string{
+		binary, "-p", "--session-id", "abc-123", "--output-format", "stream-json", "--verbose",
+		"--advisor", "sonnet", "go",
+	}
+	if got := c.Args; !equalArgs(got, want) {
+		t.Errorf("Args = %v, want %v", got, want)
+	}
+
+	r := HeadlessResumeCmd(context.Background(), "/tmp/work", "abc-123", "", "",
+		LaunchOpts{Prompt: "continue", AdvisorModel: "sonnet"})
+	want = []string{
+		binary, "-p", "--resume", "abc-123", "--output-format", "stream-json", "--verbose",
+		"--advisor", "sonnet", "continue",
+	}
+	if got := r.Args; !equalArgs(got, want) {
+		t.Errorf("Args = %v, want %v", got, want)
+	}
+}
+
 // streamFixture is a trimmed copy of a real `claude -p --output-format
 // stream-json --verbose` run (claude 2.1.267): the event types in the
 // order they arrived, with the result event's bulk removed.

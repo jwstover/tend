@@ -458,6 +458,10 @@ func TestWorkflowsStepAttributesAndOrder(t *testing.T) {
 	second, _ := s.AddStep(ctx, w.ID, "review", workflow.StepAgent)
 
 	m = openWorkflows(t, m)
+	// Wide enough that the steps pane's meta column (kind, model,
+	// permission mode and advisor together) survives the row's width
+	// budget rather than being dropped for tightness.
+	m = drive(t, m, tea.WindowSizeMsg{Width: 160, Height: 30})
 	m = drive(t, m, keyPress('l'))
 
 	// m → model picker, pick sonnet.
@@ -494,6 +498,26 @@ func TestWorkflowsStepAttributesAndOrder(t *testing.T) {
 	})
 	m = reloadWorkflows(t, m, w.ID)
 
+	// a → advisor picker, pick fable.
+	m = drive(t, m, keyPress('a'))
+	if !m.(app).wfPickerOpen || m.(app).wfPickerKind != wfPickAdvisor {
+		t.Fatal("a did not open the advisor picker")
+	}
+	content = ansi.Strip(m.View().Content)
+	for _, want := range []string{"advisor for draft", "fable", "opus", "sonnet", "inherit"} {
+		if !strings.Contains(content, want) {
+			t.Errorf("advisor picker missing %q:\n%s", want, content)
+		}
+	}
+	m = drive(t, m, keyPress('1'))
+	if m.(app).wfPickerOpen {
+		t.Error("picker still open after a digit pick")
+	}
+	waitForSteps(t, s, w.ID, "advisor set", func(st []workflow.Step) bool {
+		return st[0].AdvisorModel == "fable"
+	})
+	m = reloadWorkflows(t, m, w.ID)
+
 	// t flips agent → gate.
 	m = drive(t, m, keyPress('t'))
 	waitForSteps(t, s, w.ID, "kind toggled", func(st []workflow.Step) bool {
@@ -501,7 +525,7 @@ func TestWorkflowsStepAttributesAndOrder(t *testing.T) {
 	})
 	m = reloadWorkflows(t, m, w.ID)
 	content = ansi.Strip(m.View().Content)
-	if !strings.Contains(content, "gate · sonnet · acceptEdits") {
+	if !strings.Contains(content, "gate · sonnet · acceptEdits · advisor:fable") {
 		t.Errorf("step row missing its attributes:\n%s", content)
 	}
 

@@ -483,7 +483,8 @@ func (s *fakeStore) UpdateStep(_ context.Context, st workflow.Step) error {
 	if !ok {
 		return fmt.Errorf("step %d: %w", st.ID, workflow.ErrStepNotFound)
 	}
-	cur.Name, cur.Kind, cur.PromptMD, cur.Model, cur.PermissionMode = n, st.Kind, st.PromptMD, st.Model, st.PermissionMode
+	cur.Name, cur.Kind, cur.PromptMD, cur.Model, cur.PermissionMode, cur.AdvisorModel =
+		n, st.Kind, st.PromptMD, st.Model, st.PermissionMode, st.AdvisorModel
 	s.steps[st.ID] = cur
 	return nil
 }
@@ -517,6 +518,16 @@ func (s *fakeStore) SetStepPermissionMode(_ context.Context, id int64, mode stri
 		return fmt.Errorf("step %d: %w", id, workflow.ErrStepNotFound)
 	}
 	st.PermissionMode = mode
+	s.steps[id] = st
+	return nil
+}
+
+func (s *fakeStore) SetStepAdvisorModel(_ context.Context, id int64, model string) error {
+	st, ok := s.steps[id]
+	if !ok {
+		return fmt.Errorf("step %d: %w", id, workflow.ErrStepNotFound)
+	}
+	st.AdvisorModel = model
 	s.steps[id] = st
 	return nil
 }

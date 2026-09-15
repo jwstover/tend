@@ -235,7 +235,7 @@ func (a app) chooseSessionPickerRow(rows []task.Session, row int) (tea.Model, te
 func (a app) resumeGuardedCmd(sess task.Session) tea.Cmd {
 	if sess.StepRunID == nil {
 		return func() tea.Msg {
-			return resumeSessionCmd(sess, a.dbPath, a.sessionBriefPrompt(sess.TaskID), takeoverRef{})()
+			return resumeSessionCmd(sess, a.dbPath, a.sessionBriefPrompt(sess.TaskID), "", takeoverRef{})()
 		}
 	}
 	stepRunID := *sess.StepRunID
@@ -257,9 +257,9 @@ func (a app) resumeGuardedCmd(sess task.Session) tea.Cmd {
 			if err := waitRunnerGone(a.ctx, run); err != nil {
 				return statusMsg{isErr: true, text: err.Error()}
 			}
-			return takeoverResume(sess, a.dbPath, a.sessionBriefPrompt(sess.TaskID), takeoverRef{runID: run.ID, stepRunID: sr.ID})()
+			return takeoverResume(sess, a.dbPath, a.sessionBriefPrompt(sess.TaskID), sr.AdvisorModel, takeoverRef{runID: run.ID, stepRunID: sr.ID})()
 		}
-		return resumeSessionCmd(sess, a.dbPath, a.sessionBriefPrompt(sess.TaskID), takeoverRef{})()
+		return resumeSessionCmd(sess, a.dbPath, a.sessionBriefPrompt(sess.TaskID), sr.AdvisorModel, takeoverRef{})()
 	}
 }
 
@@ -450,8 +450,12 @@ func (a app) abandonLaunchCmd(msg sessionFinishedMsg, status flash) tea.Cmd {
 // gets as --append-system-prompt-file (written by agent.WriteSystemPrompt,
 // since inline it could exceed tmux's command cap), so a session picked
 // up later sees the task as it stands now; the attach path has no new
-// process to give it to, and "" adds nothing.
-func resumeSessionCmd(sess task.Session, dbPath, systemPrompt string, ref takeoverRef) tea.Cmd {
+// process to give it to, and "" adds nothing. advisorModel is the step's
+// AdvisorModel for a workflow step's session, "" for an ordinary one; like
+// systemPrompt it only matters for the fresh-process path, since an
+// already-running session (the attach branch) keeps whatever it was
+// launched with.
+func resumeSessionCmd(sess task.Session, dbPath, systemPrompt, advisorModel string, ref takeoverRef) tea.Cmd {
 	if err := agent.CheckInstalled(); err != nil {
 		return errCmd(err)
 	}
@@ -485,7 +489,7 @@ func resumeSessionCmd(sess task.Session, dbPath, systemPrompt string, ref takeov
 		hooksPath, hooksCleanup, _ := agent.WriteHookSettings(dbPath)
 		briefPath, briefCleanup, _ := agent.WriteSystemPrompt(systemPrompt)
 		cleanup = func() { mcpCleanup(); hooksCleanup(); briefCleanup() }
-		opts := agent.LaunchOpts{AppendSystemPromptFile: briefPath}
+		opts := agent.LaunchOpts{AppendSystemPromptFile: briefPath, AdvisorModel: advisorModel}
 		c, name, confPath = wrapInTmux(
 			agent.ResumeCmdWith(sess.Cwd, sess.ExternalID, mcpPath, hooksPath, opts), sess.ExternalID)
 	}
