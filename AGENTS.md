@@ -143,6 +143,11 @@ tend/
 │   ├── jira/                    # I/O EDGE — the only package that talks to the Jira REST API / keychain
 │   │   ├── jira.go               #   URL parsing, issue summary fetch (bounded timeout, degrades to the bare key)
 │   │   └── keyring.go             #   credential storage via the OS keychain
+│   ├── usage/                   # Claude's own token accounting, read-only: no SQL, no exec, stdlib only
+│   │   ├── usage.go              #   Tokens/Entry + Sum/Since/GroupBy — the shapes every rollup is built from
+│   │   ├── parse.go              #   ParseLine/Parse/ParseFile/Dedup; TranscriptRoot, ScanTranscripts, FingerprintTranscripts (the stat-only change check)
+│   │   ├── window.go             #   Summarize: the 5h / 7d / all-time rollup
+│   │   └── reset.go              #   ParseResetTime — `/usage`'s "resets Sep 15, 3:30pm (America/New_York)" clause as a time
 │   ├── mcpserver/                # MCP tool surface — third consumer of Store, alongside tui and cli
 │   │   ├── server.go               #   builds the MCP server bound to one task, runs the stdio transport
 │   │   ├── tools.go                 #   tool schemas + handlers (get_current_task, create_subtask, set_task_state, ...). No log-entry tool: log entries are the user's; agents write to the task body
@@ -192,12 +197,13 @@ cli ──┬──→ store ──→ task, workflow ──→ (nothing)
       ├──→ agent   (process control: claude/tmux, hook parsing, session-id/mcp-config generation)
       └──→ jira    (REST + keychain)
 
-tui ──┴──→ store, agent, jira, workflow, runner (Launch/Resume/RestartStep only)   (same rules — tui never touches SQL, exec, or HTTP directly outside these)
+tui ──┴──→ store, agent, jira, workflow, usage, runner (Launch/Resume/RestartStep only)   (same rules — tui never touches SQL, exec, or HTTP directly outside these)
 ```
 
 - `task` and `workflow` (the two domain packages) know nothing about SQLite, exec, or HTTP. `workflow` is a sibling of `task`, not part of it: a workflow has its own vocabulary (Step, Edge, Run, StepRun) and is bound to a task only per run.
 - `store` is the only package that imports the generated SQL code or builds queries; it returns `task.*` and `workflow.*` values.
 - `agent` is the only package that builds `claude`/`tmux` commands or parses Claude Code hook payloads; it never runs a command itself, so it stays testable without a real terminal.
+- `usage` reads claude's own on-disk artifacts — session transcripts and a step's stream-json log — and imports only the standard library, so `agent`, `tui` and `cli` may all import it. It never shells out: running `claude` is `agent`'s job.
 - `runner` is where those commands get *run* outside a terminal handoff: it executes headless steps (`agent.RunHeadless`) and starts tmux sessions, behind an `Exec` seam so its transition logic is tested against a fake. It declares its own `Store` interface and depends on `agent`, `workflow` and `task`, never on `store`, `tui` or `cli`.
 - `jira` is the only package that calls the Jira REST API or touches the OS keychain.
 - `mcpserver` depends on `task` and declares its own `Store` interface (same "accept interfaces, return structs" convention as `cli`) rather than importing `store` directly.
@@ -424,6 +430,7 @@ Built on Bubble Tea v2 + Bubbles v2 + Lip Gloss v2; Glamour v2 renders the body.
 - **Editing the body.** Shells out to `$EDITOR` — there is no in-terminal markdown editor.
 - **Live updates.** The TUI reloads on its own when another process commits to the database — an agent session's MCP tool call, `tend add` from another shell, a workflow runner. There is no daemon or socket: `store.Watcher` polls SQLite's `PRAGMA data_version` (the mechanism the SQLite docs name for this) on a dedicated pinned connection every 500ms, and a change becomes a `dbChangedMsg` that runs the same reload fan-out as a mutation, minus the status flash. Rules for that path: background reloads re-select the list row **by task id**, never by index, and never reset the detail pane's scroll; a change arriving mid-input (`/` filter, prompt, note modal) or while a reload is already in flight is deferred and applied once, not dropped — the pragma read that noticed it is consumed, so there is no second chance to see it.
 - **Usage gauges.** The header carries a centered segment showing the Claude subscription limits in every view, including the loading screen: the five-hour window and the all-models week, each as a gauge, a percentage that turns amber at 60% and red over 80%, and when it resets — relative while that's under a day out ("in 42m"), a weekday and time once it isn't ("Thu 11pm") (`quota.go`). A goroutine beside the session poller runs `agent.FetchQuota` (`claude -p --output-format json --no-session-persistence --strict-mcp-config /usage`, a local command that reaches no model) at startup and every minute. A failed call keeps the last reading, faint; an API-key login (no subscription limits) or a missing `claude` shows nothing. The segment is centered between the header's left and right sides and gives up its own detail first as the terminal narrows — bars, then the reset time — before the view's own right-hand text (the shown count, etc.) is dropped to make room; the percentages themselves are the last thing to go.
+- **Transcript usage scan.** On its own goroutine (`internal/tui/usage.go`), separate from the quota poller above, the TUI scans `~/.claude/projects/**/*.jsonl` every five minutes, deduplicating by `message.id` (a resumed session replays its history into the new transcript) and rolling the result up over five hours, seven days and all time (`usage.Summarize`). A stat-only fingerprint of the tree (file count, total bytes, newest mtime) guards each tick, so an unchanged tree costs one stat per transcript rather than a full parse. Nothing is written to SQLite — the transcripts are the durable copy. No view renders this yet (tend task #29).
 - **Glyphs.** `TEND_GLYPHS` picks the symbol set in `styles.go`: unset or `unicode` (the default), `nerd` for a terminal with a Nerd Font (the usage gauges become Fira Code's joined progress bar), `ascii` for a terminal without usable Unicode.
 
 Full key bindings live in `internal/tui/keys.go` and are discoverable in-app via `?` — not duplicated here since they're a fast-moving implementation detail, not architecture.
