@@ -642,7 +642,7 @@ func TestProjectPickerLeavesArchivedProjectsOut(t *testing.T) {
 	m = drive(t, m, keyPress('l'))
 	m = drive(t, m, keyPress('P'))
 	a := m.(app)
-	if !a.projectPickerOpen {
+	if !a.projectPicker.open {
 		t.Fatal("P should open the project picker")
 	}
 	view := ansi.Strip(a.projectPickerView())
@@ -667,7 +667,7 @@ func TestProjectPickerMovesTask(t *testing.T) {
 	m = drive(t, m, refreshMsg{})
 
 	m = drive(t, m, keyPress('P'))
-	if !m.(app).projectPickerOpen {
+	if !m.(app).projectPicker.open {
 		t.Fatal("P should open the project picker")
 	}
 	_ = drive(t, m, keyPress(projectPickerDigit(t, m, "destination")))
