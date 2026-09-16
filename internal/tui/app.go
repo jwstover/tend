@@ -696,10 +696,8 @@ type app struct {
 
 	// Gate outcome picker overlay (runview.go): the outcomes the waiting
 	// gate routes, for a gate whose edges go beyond approve/reject.
-	gatePickerOpen      bool
+	gatePicker          picker[string]
 	gatePickerStepRunID int64
-	gatePickerOutcomes  []string
-	gatePickerSel       int
 
 	// Takeover picker overlay (takeover.go): what to do with a paused run
 	// once its step's session has been driven by hand and returned.
@@ -1412,7 +1410,7 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// And the gate outcome picker (run view).
-	if a.gatePickerOpen {
+	if a.gatePicker.open {
 		return a.handleGatePickerKey(msg)
 	}
 
@@ -2978,7 +2976,7 @@ func (a app) View() tea.View {
 	// the design's splice.
 	if a.paletteOpen || a.helpOpen || a.urlPicker.open || a.sessionPicker.open ||
 		a.projectPicker.open || a.parentPicker.open || a.depPicker.open || a.lp.open || a.wfPicker.open || a.wfRunPicker.open || a.searchOpen ||
-		a.gatePickerOpen || a.takeover.open || a.retry.open {
+		a.gatePicker.open || a.takeover.open || a.retry.open {
 		box := a.paletteView()
 		switch {
 		case a.helpOpen:
@@ -3001,7 +2999,7 @@ func (a app) View() tea.View {
 			box = a.workflowRunPickerView()
 		case a.searchOpen:
 			box = a.searchView()
-		case a.gatePickerOpen:
+		case a.gatePicker.open:
 			box = a.gatePickerView()
 		case a.takeover.open:
 			box = a.takeoverPickerView()
