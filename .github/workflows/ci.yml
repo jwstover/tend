@@ -39,3 +39,42 @@ jobs:
         uses: golangci/golangci-lint-action@v8
         with:
           version: latest
+
+  # The Elixir port lives in elixir/ and builds alongside the Go tree, which
+  # stays the shipped one. Toolchain versions come from elixir/.tool-versions.
+  elixir:
+    name: Elixir
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: elixir
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: erlef/setup-beam@v1
+        with:
+          version-file: elixir/.tool-versions
+          version-type: strict
+
+      # deps/ and _build/ are cached together: the store's SQLite driver is a
+      # NIF and would otherwise be compiled from C on every run. The key is
+      # the lock file, so a dependency change starts from a clean slate.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            elixir/deps
+            elixir/_build
+          key: ${{ runner.os }}-mix-${{ hashFiles('elixir/.tool-versions', 'elixir/mix.lock') }}
+          restore-keys: ${{ runner.os }}-mix-
+
+      - name: Install dependencies
+        run: mix deps.get
+
+      - name: Compile
+        run: mix compile --warnings-as-errors
+
+      - name: Test
+        run: mix test
+
+      - name: Format
+        run: mix format --check-formatted
