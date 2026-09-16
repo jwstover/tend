@@ -21,6 +21,7 @@ import (
 	"github.com/jwstover/tend/internal/agent"
 	"github.com/jwstover/tend/internal/jira"
 	"github.com/jwstover/tend/internal/task"
+	"github.com/jwstover/tend/internal/usage"
 	"github.com/jwstover/tend/internal/workflow"
 )
 
@@ -155,7 +156,7 @@ type ChangeWatcher interface {
 // TUI without live updates rather than refusing to start; the caller owns
 // the watcher's lifetime and closes it after Run returns.
 //
-// Both pollers run on their own goroutines (pollCtx), stopped when Run
+// The pollers run on their own goroutines (pollCtx), stopped when Run
 // returns, rather than as tea.Cmds driven by the Program's event loop: that
 // loop is unavailable for the entire time any session is attached through
 // tend (tea.ExecProcess pauses it to hand the terminal to the child
@@ -168,6 +169,7 @@ func Run(ctx context.Context, s Store, watcher ChangeWatcher, dbPath string) err
 	p := tea.NewProgram(newApp(ctx, s, dbPath), tea.WithContext(ctx))
 	go runSessionPoller(pollCtx, s, p.Send)
 	startQuotaPoller(pollCtx, p.Send)
+	startUsagePoller(pollCtx, p.Send)
 	if watcher != nil {
 		go runChangeWatcher(pollCtx, watcher, changePollInterval, p.Send)
 	}
@@ -583,6 +585,18 @@ type app struct {
 	quota       agent.Quota
 	quotaLoaded bool
 	quotaStale  bool
+
+	// Claude token usage, scanned out of ~/.claude/projects on a slow
+	// poll (usage.go). usageEntries is every deduplicated assistant
+	// message on the machine, held in memory rather than cached in
+	// SQLite -- the transcripts are already the durable copy -- so a
+	// breakdown can group it by project, model or session. Nothing
+	// renders these yet; the usage view is tend task #29, and the scan
+	// is the expensive half it needs.
+	usage        usage.Summary
+	usageEntries []usage.Entry
+	usageSkipped int
+	usageLoaded  bool
 
 	// Triage session: the cards still to process (head = current) and how
 	// many left the inbox since entering triage. Both reset on entry.
@@ -1076,6 +1090,9 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case quotaMsg:
 		return a.applyQuota(msg), nil
+
+	case usageMsg:
+		return a.applyUsage(msg), nil
 
 	case sessionsPolledMsg:
 		// Standup and workflows render no session markers, so there's
