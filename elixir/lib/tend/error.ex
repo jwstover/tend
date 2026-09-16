@@ -45,8 +45,9 @@ defmodule Tend.Error do
 
     * the interpolating errors the task surface of the store port raises
       (`:unknown_state`, `:priority_out_of_range`, `:task_not_found`,
-      `:invalid_timestamp`), and the two cycle refusals its hierarchy surface
-      raises (`:own_parent`, `:own_subtask`);
+      `:invalid_timestamp`), the two cycle refusals its hierarchy surface
+      raises (`:own_parent`, `:own_subtask`), and the wrap its projects surface
+      puts around the sentinel above (`:project_not_found`);
     * the store's descriptive tuples, raised by `Tend.Store.open/1`,
       `Tend.Store.Migrator` and `Tend.Store.Watcher` (`:db_directory_failed`,
       `:db_open_failed`, `:pragma_failed`, `:migration_failed`,
@@ -132,6 +133,7 @@ defmodule Tend.Error do
           | {:unknown_state, String.t()}
           | {:priority_out_of_range, term()}
           | {:task_not_found, integer()}
+          | {:project_not_found, integer() | String.t()}
           | {:own_parent, integer()}
           | {:own_subtask, integer(), integer()}
           | {:invalid_timestamp, String.t(), String.t()}
@@ -210,6 +212,19 @@ defmodule Tend.Error do
   # itself and reproduce the sentence Go would have printed around it.
   def message({:task_not_found, id}) do
     "loading task #{id}: no rows in result set"
+  end
+
+  # fmt.Errorf("project %d: %w", id, task.ErrProjectNotFound) in
+  # Store.GetProject, and fmt.Errorf("project %q: %w", n,
+  # task.ErrProjectNotFound) in Store.ProjectByName. Go wraps the sentinel
+  # rather than restating it, so its own message is spliced in here rather
+  # than duplicated, the same move message({:in_use, ...}) makes.
+  def message({:project_not_found, id}) when is_integer(id) do
+    "project #{id}: #{Map.fetch!(@sentinels, :project_not_found)}"
+  end
+
+  def message({:project_not_found, name}) when is_binary(name) do
+    "project #{quote_go(name)}: #{Map.fetch!(@sentinels, :project_not_found)}"
   end
 
   # fmt.Errorf("task %d cannot be its own parent", taskID) and

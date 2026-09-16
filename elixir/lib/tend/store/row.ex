@@ -78,6 +78,7 @@ defmodule Tend.Store.Row do
   """
 
   alias Tend.Task
+  alias Tend.Task.Project
   alias Tend.Task.Session
   alias Tend.Task.SessionStatus
   alias Tend.Task.State
@@ -197,8 +198,53 @@ defmodule Tend.Store.Row do
     end)
   end
 
-  # The shared body of to_tasks/1, to_workflows/1 and to_sessions/1: map every
-  # row, stop at the first that will not map, keep the query's order.
+  @doc """
+  Maps one `projects` row -- the seven columns every project query selects, in
+  order -- into a `Tend.Task.Project`, with `live_count` supplied separately.
+
+  The counterpart of Go's `projectToDomain`. `live_count` is not a column of
+  `projects`: only `@list_projects`' `LEFT JOIN` knows it, and every other
+  caller passes `0` -- the same "nobody counted" zero `to_workflow/2`'s
+  `step_count` uses.
+  """
+  @spec to_project(list(), integer()) :: {:ok, Project.t()} | {:error, error()}
+  def to_project([id, name, sort_order, archived_at, created_at, updated_at, cwd], live_count)
+      when is_integer(live_count) do
+    with {:ok, created} <- stamp(created_at, "project #{id} created_at"),
+         {:ok, updated} <- stamp(updated_at, "project #{id} updated_at"),
+         {:ok, archived} <- optional_stamp(archived_at, "project #{id} archived_at") do
+      {:ok,
+       %Project{
+         id: id,
+         name: name,
+         sort_order: sort_order,
+         archived_at: archived,
+         created_at: created,
+         updated_at: updated,
+         cwd: cwd,
+         live_count: live_count
+       }}
+    end
+  end
+
+  @doc """
+  Maps every row of `@list_projects`, stopping at the first that will not map.
+
+  Those rows carry an eighth column, the joined live top-level task count,
+  which Go splits back off into `projectToDomain`'s second argument; this does
+  the same split. The all-or-nothing behaviour is `to_tasks/1`'s, for the same
+  reason.
+  """
+  @spec to_projects([list()]) :: {:ok, [Project.t()]} | {:error, error()}
+  def to_projects(rows) when is_list(rows) do
+    all(rows, fn [id, name, sort_order, archived_at, created_at, updated_at, cwd, live_count] ->
+      to_project([id, name, sort_order, archived_at, created_at, updated_at, cwd], live_count)
+    end)
+  end
+
+  # The shared body of to_tasks/1, to_workflows/1, to_sessions/1 and
+  # to_projects/1: map every row, stop at the first that will not map, keep
+  # the query's order.
   defp all(rows, mapper) do
     rows
     |> Enum.reduce_while({:ok, []}, fn row, {:ok, acc} ->
@@ -347,6 +393,19 @@ defmodule Tend.Store.Row do
     millis = microsecond |> div(1000) |> Integer.to_string() |> String.pad_leading(3, "0")
 
     Calendar.strftime(utc, "%Y-%m-%d %H:%M:%S") <> "." <> millis
+  end
+
+  @doc """
+  Renders a `DateTime` in the layout `datetime('now')` writes: whole seconds,
+  no fractional part.
+
+  The formatting half of `parse_time/1` -- Go has no named function for it
+  either, just the inline `time.Now().UTC().Format(sqliteTimeLayout)` that
+  `Store.SetProjectArchived` uses to stamp `archived_at`.
+  """
+  @spec format_time(DateTime.t()) :: String.t()
+  def format_time(%DateTime{} = at) do
+    at |> DateTime.shift_zone!("Etc/UTC") |> Calendar.strftime("%Y-%m-%d %H:%M:%S")
   end
 
   # Go's sessionToDomain discards parseStatusTime's error and keeps the zero
