@@ -658,10 +658,9 @@ type app struct {
 
 	// Step attribute picker overlay: model, permission mode, or the target
 	// step of the edge being drafted.
-	wfPickerOpen   bool
+	wfPicker       picker[wfPickerOption]
 	wfPickerKind   wfPickerKind
 	wfPickerStepID int64
-	wfPickerSel    int
 
 	// Gate outcome picker overlay (runview.go): the outcomes the waiting
 	// gate routes, for a gate whose edges go beyond approve/reject.
@@ -1260,7 +1259,7 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// And a step attribute picker (workflows view).
-	if a.wfPickerOpen {
+	if a.wfPicker.open {
 		return a.handleWfPickerKey(msg)
 	}
 
@@ -2757,7 +2756,7 @@ func (a app) View() tea.View {
 	// body rows. A panel taller than the screen loses its top rows, like
 	// the design's splice.
 	if a.paletteOpen || a.helpOpen || a.urlPicker.open || a.sessionPicker.open ||
-		a.projectPicker.open || a.parentPicker.open || a.depPicker.open || a.wfPickerOpen || a.wfRunPicker.open ||
+		a.projectPicker.open || a.parentPicker.open || a.depPicker.open || a.wfPicker.open || a.wfRunPicker.open ||
 		a.gatePickerOpen || a.takeover.open || a.retry.open {
 		box := a.paletteView()
 		switch {
@@ -2773,7 +2772,7 @@ func (a app) View() tea.View {
 			box = a.parentPickerView()
 		case a.depPicker.open:
 			box = a.dependencyPickerView()
-		case a.wfPickerOpen:
+		case a.wfPicker.open:
 			box = a.wfPickerView()
 		case a.wfRunPicker.open:
 			box = a.workflowRunPickerView()
