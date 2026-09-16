@@ -442,6 +442,131 @@ defmodule Tend.Store.RowTest do
     end
   end
 
+  # The seven columns every project query but @list_projects selects, in the
+  # order to_project/2 reads them. @list_projects' eighth, joined live_count
+  # column is appended by the to_projects/1 cases below.
+  defp project_row(overrides \\ []) do
+    values =
+      Map.merge(
+        %{
+          id: 3,
+          name: "tend",
+          sort_order: 0,
+          archived_at: nil,
+          created_at: "2026-09-14 08:30:00",
+          updated_at: "2026-09-14 08:30:00",
+          cwd: ""
+        },
+        Map.new(overrides)
+      )
+
+    Enum.map(
+      [:id, :name, :sort_order, :archived_at, :created_at, :updated_at, :cwd],
+      &Map.fetch!(values, &1)
+    )
+  end
+
+  describe "to_project/2" do
+    test "maps every column into its field, with the live count supplied apart" do
+      assert {:ok, project} =
+               Row.to_project(
+                 project_row(
+                   id: 42,
+                   name: "tend-cli",
+                   sort_order: 2,
+                   created_at: "2026-09-14 08:30:00",
+                   updated_at: "2026-09-14 09:00:00",
+                   cwd: "/tmp/tend"
+                 ),
+                 5
+               )
+
+      assert project.id == 42
+      assert project.name == "tend-cli"
+      assert project.sort_order == 2
+      assert project.archived_at == nil
+      assert project.created_at == ~U[2026-09-14 08:30:00Z]
+      assert project.updated_at == ~U[2026-09-14 09:00:00Z]
+      assert project.cwd == "/tmp/tend"
+      assert project.live_count == 5
+    end
+
+    test "a zero live_count is what every caller but the listing passes" do
+      assert {:ok, project} = Row.to_project(project_row(), 0)
+      assert project.live_count == 0
+    end
+
+    test "a NULL archived_at is nil, an unarchived project" do
+      assert {:ok, project} = Row.to_project(project_row(archived_at: nil), 0)
+      assert project.archived_at == nil
+    end
+
+    test "archived_at parses like the other two timestamps when it is set" do
+      assert {:ok, project} =
+               Row.to_project(project_row(archived_at: "2026-09-14 10:00:00"), 0)
+
+      assert project.archived_at == ~U[2026-09-14 10:00:00Z]
+    end
+
+    test "an unparseable timestamp names the column it came from" do
+      assert {:error, {:invalid_timestamp, "project 3 created_at", "yesterday"}} =
+               Row.to_project(project_row(created_at: "yesterday"), 0)
+
+      assert {:error, {:invalid_timestamp, "project 3 updated_at", ""}} =
+               Row.to_project(project_row(updated_at: ""), 0)
+
+      assert {:error, {:invalid_timestamp, "project 3 archived_at", "nope"}} =
+               Row.to_project(project_row(archived_at: "nope"), 0)
+    end
+  end
+
+  describe "to_projects/1" do
+    test "splits the joined live_count off the row and keeps the query's order" do
+      rows = [
+        project_row(id: 1, name: "empty") ++ [0],
+        project_row(id: 2, name: "busy") ++ [3]
+      ]
+
+      assert {:ok, [first, second]} = Row.to_projects(rows)
+      assert {first.name, first.live_count} == {"empty", 0}
+      assert {second.name, second.live_count} == {"busy", 3}
+    end
+
+    test "stops at the first row that will not map, and takes no rows in stride" do
+      rows = [project_row(id: 1) ++ [0], project_row(id: 2, updated_at: "nope") ++ [0]]
+
+      assert {:error, {:invalid_timestamp, "project 2 updated_at", "nope"}} =
+               Row.to_projects(rows)
+
+      assert Row.to_projects([]) == {:ok, []}
+    end
+  end
+
+  describe "format_time/1 (Go's sqliteTimeLayout formatter)" do
+    test "renders exactly what datetime('now') would have written" do
+      assert Row.format_time(~U[2026-09-14 08:30:00Z]) == "2026-09-14 08:30:00"
+      assert Row.format_time(~U[2026-01-02 03:04:05Z]) == "2026-01-02 03:04:05"
+    end
+
+    test "drops any fractional second, unlike format_status_time/1" do
+      assert Row.format_time(~U[2026-09-14 08:30:00.123456Z]) == "2026-09-14 08:30:00"
+    end
+
+    test "is the exact inverse of parse_time/1 for a whole-second value" do
+      for stored <- ["2026-09-14 08:30:00", "2026-12-31 23:59:59", "2026-01-01 00:00:00"] do
+        assert {:ok, parsed} = Row.parse_time(stored)
+        assert Row.format_time(parsed) == stored
+      end
+    end
+
+    test "renders in UTC, as Go's t.UTC().Format does" do
+      shifted = %{~U[2026-09-14 08:30:00Z] | utc_offset: 3600, time_zone: "Etc/GMT-1"}
+      shifted = %{shifted | hour: 9}
+
+      assert Row.format_time(shifted) == "2026-09-14 08:30:00"
+    end
+  end
+
   describe "to_task_session/1" do
     test "splits the session's twelve columns from the owning task's two" do
       row = session_row() ++ ["fix the bug", "doing"]
