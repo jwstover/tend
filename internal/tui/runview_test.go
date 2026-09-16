@@ -789,6 +789,57 @@ func TestRunViewGateOffersPickerForOtherOutcomes(t *testing.T) {
 	})
 }
 
+// Typing fuzzy-filters the gate's outcomes, resets the cursor, and a digit
+// picks the visible match.
+func TestGatePickerTypeToFilter(t *testing.T) {
+	ctx := context.Background()
+	stubRunnerAlive(t, true)
+	m, s := newTestApp(t)
+	l := newLiveRun(t, s, workflow.RunRunning)
+	edges, err := s.ListEdges(ctx, l.wf.ID)
+	if err != nil {
+		t.Fatalf("ListEdges: %v", err)
+	}
+	for _, e := range edges {
+		if e.FromStepID == l.gate.ID {
+			if err := s.DeleteEdge(ctx, e.ID); err != nil {
+				t.Fatalf("DeleteEdge: %v", err)
+			}
+		}
+	}
+	for _, outcome := range []string{"ship", "hold", "reject"} {
+		if _, err := s.SetEdge(ctx, l.gate.ID, outcome, l.agent.ID, nil); err != nil {
+			t.Fatalf("SetEdge(%s): %v", outcome, err)
+		}
+	}
+	l.atGate(t, s)
+	m = drive(t, m, refreshMsg{})
+	m = openRun(t, m)
+	m = drive(t, m, keyPress('o'))
+	if !m.(app).gatePicker.open {
+		t.Fatal("o did not open the picker")
+	}
+
+	m = typeText(t, m, "hol")
+	a := m.(app)
+	matches := a.gatePicker.matches()
+	if len(matches) != 1 || matches[0] != "hold" {
+		t.Fatalf("matches after typing hol = %v, want just hold", matches)
+	}
+	if a.gatePicker.sel != 0 {
+		t.Errorf("sel after typing = %d, want reset to 0", a.gatePicker.sel)
+	}
+
+	m = drive(t, m, keyPress('1'))
+	if m.(app).gatePicker.open {
+		t.Error("digit on the filtered match should pick and close")
+	}
+	waitFor(t, "gate decided as hold", func() bool {
+		sr, err := s.GetStepRun(ctx, l.stepRun.ID)
+		return err == nil && sr.Finished() && sr.Outcome == "hold"
+	})
+}
+
 // Picking reject from the picker goes through the same feedback modal as
 // `x`; a pick on a gate that was decided meanwhile is dropped.
 func TestRunViewGatePickerRejectAsksForFeedback(t *testing.T) {
