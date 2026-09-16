@@ -2,10 +2,8 @@ package tui
 
 import (
 	"fmt"
-	"strings"
 
 	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
 
 	"github.com/jwstover/tend/internal/task"
 )
@@ -18,59 +16,42 @@ import (
 // openProjectPicker arms the picker for a task, starting on the project
 // the task is already in so Enter is a no-op rather than a surprise.
 func (a *app) openProjectPicker(t task.Task) {
-	a.projectPickerOpen = true
 	a.projectPickerTaskID = t.ID
 	a.projectPickerLabel = t.Title
-	a.projectPickerSel = 0
+	a.projectPicker = picker[task.Project]{
+		open: true, items: a.activeProjects(), numbered: true,
+		label: func(p task.Project) string { return p.Name },
+	}
 	for i, p := range a.activeProjects() {
 		if p.ID == t.ProjectID {
-			a.projectPickerSel = i
+			a.projectPicker.sel = i
 			break
 		}
 	}
+	a.projectPicker.scroll(a.height)
 }
 
 func (a *app) closeProjectPicker() {
-	a.projectPickerOpen = false
 	a.projectPickerTaskID = 0
 	a.projectPickerLabel = ""
-	a.projectPickerSel = 0
+	a.projectPicker = picker[task.Project]{}
 }
 
 // handleProjectPickerKey owns the keyboard while the picker is open.
 func (a app) handleProjectPickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	projects := a.activeProjects()
-
-	switch msg.String() {
-	case "esc":
+	id := a.projectPickerTaskID
+	action, idx := a.projectPicker.key(msg, a.height)
+	switch action {
+	case pickerCancel:
 		a.closeProjectPicker()
 		return a, nil
-	case "enter":
-		sel, id := a.projectPickerSel, a.projectPickerTaskID
+	case pickerPick:
+		p, ok := a.projectPicker.at(idx)
 		a.closeProjectPicker()
-		if sel >= 0 && sel < len(projects) {
-			return a, a.moveTaskToProject(id, projects[sel])
+		if !ok {
+			return a, nil
 		}
-		return a, nil
-	case "up", "ctrl+p":
-		if a.projectPickerSel > 0 {
-			a.projectPickerSel--
-		}
-		return a, nil
-	case "down", "ctrl+n":
-		if a.projectPickerSel < len(projects)-1 {
-			a.projectPickerSel++
-		}
-		return a, nil
-	}
-	// A digit 1-9 picks that project directly, like the URL picker.
-	if len(msg.Text) == 1 && msg.Text[0] >= '1' && msg.Text[0] <= '9' {
-		if idx := int(msg.Text[0] - '1'); idx < len(projects) {
-			id := a.projectPickerTaskID
-			p := projects[idx]
-			a.closeProjectPicker()
-			return a, a.moveTaskToProject(id, p)
-		}
+		return a, a.moveTaskToProject(id, p)
 	}
 	return a, nil
 }
@@ -84,43 +65,23 @@ func (a app) moveTaskToProject(taskID int64, p task.Project) tea.Cmd {
 }
 
 // projectPickerView renders the chooser box: a title row naming the task,
-// a divider, then the numbered projects with the current one marked.
+// a divider, the filter prompt, then the numbered projects with the
+// current one marked.
 func (a app) projectPickerView() string {
 	s, g := a.styles, a.styles.Glyphs
-	w := max(a.width, 20)
-	cb := s.CardBorder
-	hbar := strings.Repeat(g.RuleH, w-4)
-
-	row := func(content string) string {
-		gap := max(w-5-lipgloss.Width(content), 0)
-		return "  " + cb.Render(g.RuleV) + " " + content +
-			strings.Repeat(" ", gap) + cb.Render(g.RuleV)
-	}
-
-	title := truncTail(a.projectPickerLabel, max(w-30, 10), g.Ellipsis)
-	lines := []string{"  " + cb.Render(g.BoxTL+hbar+g.BoxTR)}
-	lines = append(lines, row(s.Accent.Bold(true).Render(g.CaretClosed+" ")+
-		s.Title.Render("move ")+s.Dimmed.Render(title)+
-		s.Muted.Render("  to project")))
-	lines = append(lines, "  "+cb.Render(g.TeeRight+hbar+g.TeeLeft))
-
-	projects := a.activeProjects()
-	if len(projects) == 0 {
-		lines = append(lines, row(s.Muted.Render("no projects yet - press [ then n to make one")))
-	}
-	sel := min(a.projectPickerSel, len(projects)-1)
-	for i, p := range projects {
-		num := fmt.Sprintf("%d ", i+1)
-		count := s.CountLabel.Render(fmt.Sprintf("  %d", p.LiveCount))
-		var content string
-		if i == sel {
-			content = s.SelBar.Render(g.SelBar+" ") + s.Accent.Render(num) +
-				s.Title.Render(p.Name) + count
-		} else {
-			content = "  " + s.Muted.Render(num) + s.Dimmed.Render(p.Name) + count
-		}
-		lines = append(lines, row(content))
-	}
-	lines = append(lines, "  "+cb.Render(g.BoxBL+hbar+g.BoxBR))
-	return strings.Join(lines, "\n")
+	title := truncTail(a.projectPickerLabel, max(a.width-30, 10), g.Ellipsis)
+	return a.projectPicker.render(s, a.width, a.height, pickerView[task.Project]{
+		icon:  s.Accent.Bold(true).Render(g.CaretClosed + " "),
+		title: s.Title.Render("move ") + s.Dimmed.Render(title),
+		hint:  s.Muted.Render("  to project"),
+		row: func(p task.Project, selected bool, w int) string {
+			count := s.CountLabel.Render(fmt.Sprintf("  %d", p.LiveCount))
+			if selected {
+				return s.Title.Render(p.Name) + count
+			}
+			return s.Dimmed.Render(p.Name) + count
+		},
+		empty:   "no projects yet - press [ then n to make one",
+		noMatch: "no matching projects",
+	})
 }

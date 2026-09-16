@@ -775,10 +775,9 @@ type app struct {
 
 	// URL picker overlay: choose one link from a task with multiple links.
 	// Project picker overlay: choose which project a task belongs to.
-	projectPickerOpen   bool
+	projectPicker       picker[task.Project]
 	projectPickerTaskID int64
 	projectPickerLabel  string
-	projectPickerSel    int
 
 	// Parent picker overlay (parentpicker.go): choose which task, or the
 	// top level, a task hangs under. Rows are the project's other tasks as
@@ -1376,7 +1375,7 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// So does an open project picker.
-	if a.projectPickerOpen {
+	if a.projectPicker.open {
 		return a.handleProjectPickerKey(msg)
 	}
 
@@ -2981,7 +2980,7 @@ func (a app) View() tea.View {
 	// body rows. A panel taller than the screen loses its top rows, like
 	// the design's splice.
 	if a.paletteOpen || a.helpOpen || a.urlPickerOpen || a.sessionPicker.open ||
-		a.projectPickerOpen || a.parentPicker.open || a.depPicker.open || a.lp.open || a.wfPickerOpen || a.wfRunPicker.open || a.searchOpen ||
+		a.projectPicker.open || a.parentPicker.open || a.depPicker.open || a.lp.open || a.wfPickerOpen || a.wfRunPicker.open || a.searchOpen ||
 		a.gatePickerOpen || a.takeover.open || a.retry.open {
 		box := a.paletteView()
 		switch {
@@ -2991,7 +2990,7 @@ func (a app) View() tea.View {
 			box = a.urlPickerView()
 		case a.sessionPicker.open:
 			box = a.sessionPickerView()
-		case a.projectPickerOpen:
+		case a.projectPicker.open:
 			box = a.projectPickerView()
 		case a.parentPicker.open:
 			box = a.parentPickerView()
