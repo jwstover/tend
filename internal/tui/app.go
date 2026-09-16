@@ -752,13 +752,10 @@ type app struct {
 	// Dependency picker overlay (dependencypicker.go): which open tasks the
 	// selected one waits on. A multi-select that stays open across toggles,
 	// so checked tracks the edges as the store confirms them.
-	depPickerOpen    bool
+	depPicker        picker[dependencyRow]
 	depPickerTaskID  int64
 	depPickerProject int64 // the task's project; rows elsewhere show their project name
 	depPickerLabel   string
-	depPickerQuery   string
-	depPickerSel     int
-	depPickerRows    []dependencyRow
 	depPickerChecked map[int64]bool
 
 	urlPickerOpen bool
@@ -1261,7 +1258,7 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// And the dependency picker.
-	if a.depPickerOpen {
+	if a.depPicker.open {
 		return a.handleDependencyPickerKey(msg)
 	}
 
@@ -2763,7 +2760,7 @@ func (a app) View() tea.View {
 	// body rows. A panel taller than the screen loses its top rows, like
 	// the design's splice.
 	if a.paletteOpen || a.helpOpen || a.urlPickerOpen || a.sessionPicker.open ||
-		a.projectPickerOpen || a.parentPicker.open || a.depPickerOpen || a.wfPickerOpen || a.wfRunPicker.open ||
+		a.projectPickerOpen || a.parentPicker.open || a.depPicker.open || a.wfPickerOpen || a.wfRunPicker.open ||
 		a.gatePickerOpen || a.takeover.open || a.retry.open {
 		box := a.paletteView()
 		switch {
@@ -2777,7 +2774,7 @@ func (a app) View() tea.View {
 			box = a.projectPickerView()
 		case a.parentPicker.open:
 			box = a.parentPickerView()
-		case a.depPickerOpen:
+		case a.depPicker.open:
 			box = a.dependencyPickerView()
 		case a.wfPickerOpen:
 			box = a.wfPickerView()
