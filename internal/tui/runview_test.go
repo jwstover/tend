@@ -754,8 +754,8 @@ func TestRunViewGateOffersPickerForOtherOutcomes(t *testing.T) {
 	// Outcomes list in the store's order (alphabetical).
 	m = drive(t, m, keyPress('a'))
 	a := m.(app)
-	if !a.gatePickerOpen || !strings.Contains(a.status.text, "routes hold, reject, ship") {
-		t.Fatalf("picker open=%v status=%+v, want the picker with a note on what the gate routes", a.gatePickerOpen, a.status)
+	if !a.gatePicker.open || !strings.Contains(a.status.text, "routes hold, reject, ship") {
+		t.Fatalf("picker open=%v status=%+v, want the picker with a note on what the gate routes", a.gatePicker.open, a.status)
 	}
 	content = ansi.Strip(m.View().Content)
 	for _, want := range []string{"decide review", "1 hold", "2 reject", "3 ship", "asks for feedback"} {
@@ -767,19 +767,20 @@ func TestRunViewGateOffersPickerForOtherOutcomes(t *testing.T) {
 		t.Fatal("an unrouted approve finished the gate")
 	}
 	m = drive(t, m, esc())
-	if m.(app).gatePickerOpen {
+	if m.(app).gatePicker.open {
 		t.Fatal("esc did not close the picker")
 	}
 
-	// `o` opens it directly; j/k move; enter picks the highlight (hold).
+	// `o` opens it directly; ↓/↑ move (j/k are filter text in here); enter
+	// picks the highlight (hold).
 	m = drive(t, m, keyPress('o'))
-	if !m.(app).gatePickerOpen {
+	if !m.(app).gatePicker.open {
 		t.Fatal("o did not open the picker")
 	}
-	m = drive(t, m, keyPress('j'))
-	m = drive(t, m, keyPress('k'))
+	m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyUp})
 	m = drive(t, m, enter())
-	if a := m.(app); a.gatePickerOpen || a.gatePickerOutcomes != nil {
+	if a := m.(app); a.gatePicker.open || a.gatePicker.items != nil {
 		t.Error("picker state not cleared after a pick")
 	}
 	waitFor(t, "gate decided as hold", func() bool {
@@ -802,8 +803,8 @@ func TestRunViewGatePickerRejectAsksForFeedback(t *testing.T) {
 	m = drive(t, m, keyPress('o'))
 	m = drive(t, m, keyPress('2')) // approve, reject: 2 is reject
 	a := m.(app)
-	if a.gatePickerOpen || !a.modal.Active() || a.modal.kind != modalGateFeedback || a.modal.extra != "reject" {
-		t.Fatalf("picker=%v modal=%+v, want the feedback modal for reject", a.gatePickerOpen, a.modal)
+	if a.gatePicker.open || !a.modal.Active() || a.modal.kind != modalGateFeedback || a.modal.extra != "reject" {
+		t.Fatalf("picker=%v modal=%+v, want the feedback modal for reject", a.gatePicker.open, a.modal)
 	}
 
 	// Someone else (the CLI) decides while the modal is open; the submit
@@ -918,9 +919,9 @@ func TestRunViewGatePickerDecidesWithMessage(t *testing.T) {
 	// the message instead of deciding outright.
 	m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyEnter, Mod: tea.ModCtrl})
 	a := m.(app)
-	if a.gatePickerOpen || !a.modal.Active() || a.modal.kind != modalGateFeedback || a.modal.extra != "continue" ||
+	if a.gatePicker.open || !a.modal.Active() || a.modal.kind != modalGateFeedback || a.modal.extra != "continue" ||
 		!strings.Contains(a.modal.title, "continue review") {
-		t.Fatalf("picker=%v modal=%+v, want the message modal for continue", a.gatePickerOpen, a.modal)
+		t.Fatalf("picker=%v modal=%+v, want the message modal for continue", a.gatePicker.open, a.modal)
 	}
 	if sr, _ := s.GetStepRun(ctx, l.stepRun.ID); sr.Finished() {
 		t.Fatal("ctrl+enter decided the gate before the message was written")

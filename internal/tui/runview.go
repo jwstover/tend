@@ -1137,13 +1137,16 @@ func (a *app) pickGateOutcome() tea.Cmd {
 
 // openGatePicker arms the picker over outcomes for the gate step run cur.
 func (a *app) openGatePicker(cur workflow.StepRun, outcomes []string) {
-	a.gatePickerOpen, a.gatePickerStepRunID, a.gatePickerSel = true, cur.ID, 0
-	a.gatePickerOutcomes = slices.Clone(outcomes)
+	a.gatePickerStepRunID = cur.ID
+	a.gatePicker = picker[string]{
+		open: true, items: slices.Clone(outcomes), numbered: true, footer: 1,
+		label: func(o string) string { return o },
+	}
 }
 
 func (a *app) closeGatePicker() {
-	a.gatePickerOpen, a.gatePickerStepRunID, a.gatePickerSel = false, 0, 0
-	a.gatePickerOutcomes = nil
+	a.gatePickerStepRunID = 0
+	a.gatePicker = picker[string]{}
 }
 
 // handleGatePickerKey owns the keyboard while the picker is open, in the
@@ -1153,13 +1156,13 @@ func (a *app) closeGatePicker() {
 // message for the next step, the picker's counterpart of `A`. A pick
 // lands on the gate the picker was opened for; if the run has moved on
 // meanwhile (someone else decided it), the pick is dropped rather than
-// misapplied.
+// misapplied. j/k are filter text here, not navigation.
 func (a app) handleGatePickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	outcomes := a.gatePickerOutcomes
 	pick := func(idx int, withMessage bool) (tea.Model, tea.Cmd) {
 		stepRunID := a.gatePickerStepRunID
+		outcome, ok := a.gatePicker.at(idx)
 		a.closeGatePicker()
-		if idx < 0 || idx >= len(outcomes) {
+		if !ok {
 			return a, nil
 		}
 		cur, why, ok := a.waitingGate()
@@ -1169,32 +1172,18 @@ func (a app) handleGatePickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if cur.ID != stepRunID {
 			return a, statusCmd(flash{text: "the run moved on; the gate you were deciding is gone"})
 		}
-		return a, a.applyGateOutcome(cur, outcomes[idx], withMessage)
+		return a, a.applyGateOutcome(cur, outcome, withMessage)
 	}
 	if key.Matches(msg, a.modal.submitMulti) {
-		return pick(a.gatePickerSel, true)
+		return pick(a.gatePicker.sel, true)
 	}
-	switch msg.String() {
-	case "esc":
+	action, idx := a.gatePicker.key(msg, a.height)
+	switch action {
+	case pickerCancel:
 		a.closeGatePicker()
 		return a, nil
-	case "enter":
-		return pick(a.gatePickerSel, false)
-	case "up", "ctrl+p", "k":
-		if a.gatePickerSel > 0 {
-			a.gatePickerSel--
-		}
-		return a, nil
-	case "down", "ctrl+n", "j":
-		if a.gatePickerSel < len(outcomes)-1 {
-			a.gatePickerSel++
-		}
-		return a, nil
-	}
-	if len(msg.Text) == 1 && msg.Text[0] >= '1' && msg.Text[0] <= '9' {
-		if idx := int(msg.Text[0] - '1'); idx < len(outcomes) {
-			return pick(idx, false)
-		}
+	case pickerPick:
+		return pick(idx, false)
 	}
 	return a, nil
 }
@@ -1204,46 +1193,28 @@ func (a app) handleGatePickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 // asks for feedback; the footer says how to send a message with any other.
 func (a app) gatePickerView() string {
 	s, g := a.styles, a.styles.Glyphs
-	w := max(a.width, 20)
-	cb := s.CardBorder
-	hbar := strings.Repeat(g.RuleH, w-4)
-
-	row := func(content string) string {
-		gap := max(w-5-lipgloss.Width(content), 0)
-		return "  " + cb.Render(g.RuleV) + " " + content +
-			strings.Repeat(" ", gap) + cb.Render(g.RuleV)
-	}
-
 	name := "gate"
 	for _, sr := range a.rv.stepRuns {
 		if sr.ID == a.gatePickerStepRunID {
-			name = truncTail(a.rv.stepNames[sr.StepID], max(w-30, 10), g.Ellipsis)
+			name = truncTail(a.rv.stepNames[sr.StepID], max(a.width-30, 10), g.Ellipsis)
 		}
 	}
-	lines := []string{"  " + cb.Render(g.BoxTL+hbar+g.BoxTR)}
-	lines = append(lines, row(s.State[task.StateBlocked].Bold(true).Render(g.Session[task.SessionBlocked]+" ")+
-		s.Title.Render("decide ")+s.Dimmed.Render(name)+
-		s.Muted.Render("  ⏎ or type a number")))
-	lines = append(lines, "  "+cb.Render(g.TeeRight+hbar+g.TeeLeft))
-
-	sel := min(a.gatePickerSel, len(a.gatePickerOutcomes)-1)
-	for i, o := range a.gatePickerOutcomes {
-		num := fmt.Sprintf("%d ", i+1)
-		label := o
-		if o == workflow.OutcomeReject {
-			label += s.Muted.Render("  asks for feedback")
-		}
-		var content string
-		if i == sel {
-			content = s.SelBar.Render(g.SelBar+" ") + s.Accent.Render(num) + s.Title.Render(label)
-		} else {
-			content = "  " + s.Muted.Render(num) + s.Dimmed.Render(label)
-		}
-		lines = append(lines, row(content))
-	}
-	lines = append(lines, row(s.Muted.Render("ctrl+⏎ decide with a message for the next step")))
-	lines = append(lines, "  "+cb.Render(g.BoxBL+hbar+g.BoxBR))
-	return strings.Join(lines, "\n")
+	return a.gatePicker.render(s, a.width, a.height, pickerView[string]{
+		icon:  s.State[task.StateBlocked].Bold(true).Render(g.Session[task.SessionBlocked] + " "),
+		title: s.Title.Render("decide ") + s.Dimmed.Render(name),
+		hint:  s.Muted.Render("  ⏎ or type a number"),
+		row: func(o string, selected bool, w int) string {
+			label := o
+			if o == workflow.OutcomeReject {
+				label += s.Muted.Render("  asks for feedback")
+			}
+			if selected {
+				return s.Title.Render(label)
+			}
+			return s.Dimmed.Render(label)
+		},
+		footer: s.Muted.Render("ctrl+⏎ decide with a message for the next step"),
+	})
 }
 
 // statusCmd flashes without touching the store.
