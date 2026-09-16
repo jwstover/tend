@@ -105,7 +105,7 @@ func TestRunWorkflowKeyWithNoWorkflowsFlashes(t *testing.T) {
 
 	m = stepW(t, m)
 	a := m.(app)
-	if a.wfRunPickerOpen {
+	if a.wfRunPicker.open {
 		t.Error("picker should not open with no workflows")
 	}
 	if !strings.Contains(a.status.text, "no workflows") {
@@ -128,7 +128,7 @@ func TestRunWorkflowPickerOpensAndDismisses(t *testing.T) {
 
 	m = stepW(t, m)
 	a := m.(app)
-	if !a.wfRunPickerOpen {
+	if !a.wfRunPicker.open {
 		t.Fatal("picker not open with a workflow to pick")
 	}
 	if a.wfRunPickerTask.ID != tk.ID {
@@ -145,7 +145,7 @@ func TestRunWorkflowPickerOpensAndDismisses(t *testing.T) {
 	}
 
 	m = drive(t, m, esc())
-	if m.(app).wfRunPickerOpen {
+	if m.(app).wfRunPicker.open {
 		t.Error("picker still open after esc")
 	}
 }
@@ -370,8 +370,8 @@ func TestRunWorkflowPickerTypeToFilter(t *testing.T) {
 	}
 	// Move the cursor first so the reset on typing is observable.
 	m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyDown})
-	if m.(app).wfRunPickerSel != 1 {
-		t.Fatalf("sel after down = %d, want 1", m.(app).wfRunPickerSel)
+	if m.(app).wfRunPicker.sel != 1 {
+		t.Fatalf("sel after down = %d, want 1", m.(app).wfRunPicker.sel)
 	}
 
 	// "sos" is a substring of nothing and an in-order match of one name.
@@ -380,8 +380,8 @@ func TestRunWorkflowPickerTypeToFilter(t *testing.T) {
 	if got := wfRunPickerNames(m); len(got) != 1 || got[0] != "Simple One-shot" {
 		t.Fatalf("rows after typing sos = %q, want just Simple One-shot", got)
 	}
-	if a.wfRunPickerSel != 0 {
-		t.Errorf("sel after typing = %d, want reset to 0", a.wfRunPickerSel)
+	if a.wfRunPicker.sel != 0 {
+		t.Errorf("sel after typing = %d, want reset to 0", a.wfRunPicker.sel)
 	}
 	content := ansi.Strip(m.View().Content)
 	for _, want := range []string{"sos", "Simple One-shot"} {
@@ -402,7 +402,7 @@ func TestRunWorkflowPickerTypeToFilter(t *testing.T) {
 	}
 	// Enter with nothing to pick dismisses rather than running anything.
 	m = drive(t, m, enter())
-	if m.(app).wfRunPickerOpen {
+	if m.(app).wfRunPicker.open {
 		t.Fatal("enter on an empty match list should close the picker")
 	}
 
@@ -413,13 +413,13 @@ func TestRunWorkflowPickerTypeToFilter(t *testing.T) {
 		t.Fatalf("rows after typing ship = %q, want just Review then ship", got)
 	}
 	m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyBackspace})
-	if got := m.(app).wfRunPickerQuery; got != "shi" {
+	if got := m.(app).wfRunPicker.query; got != "shi" {
 		t.Fatalf("query after backspace = %q, want shi", got)
 	}
 	m = typeText(t, m, "p")
 	runnable(t)
 	m2, cmd := m.Update(keyPress('1'))
-	if m2.(app).wfRunPickerOpen {
+	if m2.(app).wfRunPicker.open {
 		t.Fatal("digit should pick and close")
 	}
 	if cmd == nil {
@@ -435,7 +435,7 @@ func TestRunWorkflowPickerTypeToFilter(t *testing.T) {
 // wfRunPickerNames is the picker's visible workflow names.
 func wfRunPickerNames(m tea.Model) []string {
 	var out []string
-	for _, w := range m.(app).wfRunPickerMatches() {
+	for _, w := range m.(app).wfRunPicker.matches() {
 		out = append(out, w.Name)
 	}
 	return out
