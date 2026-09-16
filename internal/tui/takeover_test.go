@@ -193,8 +193,8 @@ func TestTakeoverFinishedStepOffersContinueOnly(t *testing.T) {
 	m = drive(t, m, takeoverReturn(l, stepSessionRow(t, l, m).ID))
 
 	a := m.(app)
-	if choices := a.takeover.choices(); !a.takeover.open || len(choices) != 2 {
-		t.Fatalf("picker = %+v with %d choices, want continue and abandon only", a.takeover, len(choices))
+	if !a.takeover.open || len(a.takeover.items) != 2 {
+		t.Fatalf("picker = %+v with %d choices, want continue and abandon only", a.takeover, len(a.takeover.items))
 	}
 	content := ansi.Strip(m.View().Content)
 	if !strings.Contains(content, "handed off as done") || strings.Contains(content, "rerun the step") {
@@ -257,6 +257,43 @@ func TestTakeoverRerunClearsStepSession(t *testing.T) {
 	}
 	if a := m.(app); !strings.Contains(a.status.text, "rerun") {
 		t.Errorf("status = %+v, want a rerun flash", a.status)
+	}
+}
+
+// Typing fuzzy-filters the choice-stage rows, resets the cursor, and a
+// digit picks the visible match.
+func TestTakeoverPickerTypeToFilter(t *testing.T) {
+	ctx := context.Background()
+	stubRunnerAlive(t, false)
+	resumed := stubResumeRunner(t)
+	m, s := newTestApp(t)
+	l := newLiveRun(t, s, workflow.RunPaused)
+	m = drive(t, m, refreshMsg{})
+	m = drive(t, m, takeoverReturn(l, stepSessionRow(t, l, m).ID))
+	if !m.(app).takeover.open {
+		t.Fatal("picker did not open")
+	}
+
+	m = typeText(t, m, "rerun")
+	a := m.(app)
+	matches := a.takeover.matches()
+	if len(matches) != 1 || matches[0].label != "rerun the step" {
+		t.Fatalf("matches after typing rerun = %+v, want just rerun the step", matches)
+	}
+	if a.takeover.sel != 0 {
+		t.Errorf("sel after typing = %d, want reset to 0", a.takeover.sel)
+	}
+
+	m = drive(t, m, keyPress('1'))
+	if m.(app).takeover.open {
+		t.Error("digit on the filtered match should pick and close")
+	}
+	waitFor(t, "step session cleared", func() bool {
+		sr, err := s.GetStepRun(ctx, l.stepRun.ID)
+		return err == nil && sr.SessionExternalID == "" && !sr.Finished()
+	})
+	if resumed.runID != l.run.ID {
+		t.Errorf("runner resumed for run %d, want %d", resumed.runID, l.run.ID)
 	}
 }
 
