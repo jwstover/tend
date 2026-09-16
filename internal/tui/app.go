@@ -782,14 +782,11 @@ type app struct {
 
 	// Parent picker overlay (parentpicker.go): choose which task, or the
 	// top level, a task hangs under. Rows are the project's other tasks as
-	// breadcrumb paths; the query narrows them like the palette's.
-	parentPickerOpen   bool
+	// breadcrumb paths, fuzzy-filtered like the palette's.
+	parentPicker       picker[parentRow]
 	parentPickerTaskID int64
 	parentPickerFrom   *int64 // the task's parent when the picker opened; nil = top level
 	parentPickerLabel  string
-	parentPickerQuery  string
-	parentPickerSel    int
-	parentPickerRows   []parentRow
 	// A confirmed move, until its refreshMsg lands: the reload then drops
 	// the stale child caches on both ends and expands the new parent.
 	pendingMove *parentMove
@@ -1387,7 +1384,7 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// And the parent picker.
-	if a.parentPickerOpen {
+	if a.parentPicker.open {
 		return a.handleParentPickerKey(msg)
 	}
 
@@ -2987,7 +2984,7 @@ func (a app) View() tea.View {
 	// body rows. A panel taller than the screen loses its top rows, like
 	// the design's splice.
 	if a.paletteOpen || a.helpOpen || a.urlPickerOpen || a.sessionPicker.open ||
-		a.projectPickerOpen || a.parentPickerOpen || a.depPickerOpen || a.lp.open || a.wfPickerOpen || a.wfRunPicker.open || a.searchOpen ||
+		a.projectPickerOpen || a.parentPicker.open || a.depPickerOpen || a.lp.open || a.wfPickerOpen || a.wfRunPicker.open || a.searchOpen ||
 		a.gatePickerOpen || a.takeover.open || a.retry.open {
 		box := a.paletteView()
 		switch {
@@ -2999,7 +2996,7 @@ func (a app) View() tea.View {
 			box = a.sessionPickerView()
 		case a.projectPickerOpen:
 			box = a.projectPickerView()
-		case a.parentPickerOpen:
+		case a.parentPicker.open:
 			box = a.parentPickerView()
 		case a.depPickerOpen:
 			box = a.dependencyPickerView()

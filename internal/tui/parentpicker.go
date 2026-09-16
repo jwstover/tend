@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
 
 	"github.com/jwstover/tend/internal/task"
 )
@@ -110,91 +109,40 @@ func parentCandidates(t task.Task, all []task.Task) []parentRow {
 
 // openParentPicker arms the picker with the loaded candidates.
 func (a *app) openParentPicker(msg parentCandidatesMsg) {
-	a.parentPickerOpen = true
 	a.parentPickerTaskID = msg.task.ID
 	a.parentPickerFrom = msg.task.ParentID
 	a.parentPickerLabel = msg.task.Title
-	a.parentPickerQuery = ""
-	a.parentPickerSel = 0
-	a.parentPickerRows = parentCandidates(msg.task, msg.all)
+	a.parentPicker = picker[parentRow]{
+		open: true, items: parentCandidates(msg.task, msg.all), numbered: true,
+		label: func(r parentRow) string { return r.label },
+	}
 }
 
 func (a *app) closeParentPicker() {
-	a.parentPickerOpen = false
 	a.parentPickerTaskID = 0
 	a.parentPickerFrom = nil
 	a.parentPickerLabel = ""
-	a.parentPickerQuery = ""
-	a.parentPickerSel = 0
-	a.parentPickerRows = nil
-}
-
-// parentPickerMatches narrows the rows to those whose breadcrumb contains
-// the query, case-insensitively. The top-level row is just another row
-// here: it stays while nothing is typed and has to match once something is.
-func (a app) parentPickerMatches() []parentRow {
-	q := strings.ToLower(strings.TrimSpace(a.parentPickerQuery))
-	if q == "" {
-		return a.parentPickerRows
-	}
-	var out []parentRow
-	for _, r := range a.parentPickerRows {
-		if strings.Contains(strings.ToLower(r.label), q) {
-			out = append(out, r)
-		}
-	}
-	return out
+	a.parentPicker = picker[parentRow]{}
 }
 
 // handleParentPickerKey owns the keyboard while the picker is open: type
 // to filter, ↑/↓ (or ctrl+p/ctrl+n) to move, a digit or ⏎ picks, esc
 // dismisses.
 func (a app) handleParentPickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	rows := a.parentPickerMatches()
-	pick := func(r parentRow) (tea.Model, tea.Cmd) {
-		id := a.parentPickerTaskID
-		a.pendingMove = &parentMove{taskID: id, from: a.parentPickerFrom, to: r.id}
+	id, from := a.parentPickerTaskID, a.parentPickerFrom
+	action, idx := a.parentPicker.key(msg, a.height)
+	switch action {
+	case pickerCancel:
 		a.closeParentPicker()
+		return a, nil
+	case pickerPick:
+		r, ok := a.parentPicker.at(idx)
+		a.closeParentPicker()
+		if !ok {
+			return a, nil
+		}
+		a.pendingMove = &parentMove{taskID: id, from: from, to: r.id}
 		return a, a.moveTaskToParent(id, r.id, r.label)
-	}
-
-	switch msg.String() {
-	case "esc":
-		a.closeParentPicker()
-		return a, nil
-	case "enter":
-		if sel := a.parentPickerSel; sel >= 0 && sel < len(rows) {
-			return pick(rows[sel])
-		}
-		a.closeParentPicker()
-		return a, nil
-	case "up", "ctrl+p":
-		if a.parentPickerSel > 0 {
-			a.parentPickerSel--
-		}
-		return a, nil
-	case "down", "ctrl+n":
-		if a.parentPickerSel < len(rows)-1 {
-			a.parentPickerSel++
-		}
-		return a, nil
-	case "backspace":
-		if r := []rune(a.parentPickerQuery); len(r) > 0 {
-			a.parentPickerQuery = string(r[:len(r)-1])
-		}
-		a.parentPickerSel = 0
-		return a, nil
-	}
-	// A digit 1-9 picks that visible row directly, like the project picker.
-	if len(msg.Text) == 1 && msg.Text[0] >= '1' && msg.Text[0] <= '9' {
-		if idx := int(msg.Text[0] - '1'); idx < len(rows) {
-			return pick(rows[idx])
-		}
-		return a, nil
-	}
-	if msg.Text != "" {
-		a.parentPickerQuery += msg.Text
-		a.parentPickerSel = 0
 	}
 	return a, nil
 }
@@ -239,44 +187,19 @@ func (a *app) settlePendingMove() {
 // current one marked.
 func (a app) parentPickerView() string {
 	s, g := a.styles, a.styles.Glyphs
-	w := max(a.width, 20)
-	cb := s.CardBorder
-	hbar := strings.Repeat(g.RuleH, w-4)
-
-	row := func(content string) string {
-		gap := max(w-5-lipgloss.Width(content), 0)
-		return "  " + cb.Render(g.RuleV) + " " + content +
-			strings.Repeat(" ", gap) + cb.Render(g.RuleV)
-	}
-
-	title := truncTail(a.parentPickerLabel, max(w-30, 10), g.Ellipsis)
-	lines := []string{"  " + cb.Render(g.BoxTL+hbar+g.BoxTR)}
-	lines = append(lines, row(s.Accent.Bold(true).Render(g.CaretClosed+" ")+
-		s.Title.Render("move ")+s.Dimmed.Render(title)+
-		s.Muted.Render("  to parent")))
-	lines = append(lines, "  "+cb.Render(g.TeeRight+hbar+g.TeeLeft))
-	lines = append(lines, row(s.Accent.Bold(true).Render("❯ ")+
-		s.Title.Render(a.parentPickerQuery)+s.Accent.Render("▏")))
-
-	rows := a.parentPickerMatches()
-	switch {
-	case len(a.parentPickerRows) == 0:
-		lines = append(lines, row("  "+s.Muted.Render("no other tasks in this project")))
-	case len(rows) == 0:
-		lines = append(lines, row("  "+s.Muted.Render("no matching tasks")))
-	}
-	sel := min(a.parentPickerSel, len(rows)-1)
-	for i, r := range rows {
-		num := fmt.Sprintf("%d ", i+1)
-		label := truncTail(r.label, max(w-12, 10), g.Ellipsis)
-		var content string
-		if i == sel {
-			content = s.SelBar.Render(g.SelBar+" ") + s.Accent.Render(num) + s.Title.Render(label)
-		} else {
-			content = "  " + s.Muted.Render(num) + s.Dimmed.Render(label)
-		}
-		lines = append(lines, row(content))
-	}
-	lines = append(lines, "  "+cb.Render(g.BoxBL+hbar+g.BoxBR))
-	return strings.Join(lines, "\n")
+	title := truncTail(a.parentPickerLabel, max(a.width-30, 10), g.Ellipsis)
+	return a.parentPicker.render(s, a.width, a.height, pickerView[parentRow]{
+		icon:  s.Accent.Bold(true).Render(g.CaretClosed + " "),
+		title: s.Title.Render("move ") + s.Dimmed.Render(title),
+		hint:  s.Muted.Render("  to parent"),
+		row: func(r parentRow, selected bool, w int) string {
+			label := truncTail(r.label, max(w, 10), g.Ellipsis)
+			if selected {
+				return s.Title.Render(label)
+			}
+			return s.Dimmed.Render(label)
+		},
+		empty:   "no other tasks in this project",
+		noMatch: "no matching tasks",
+	})
 }
