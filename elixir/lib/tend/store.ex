@@ -31,6 +31,7 @@ defmodule Tend.Store do
 
   alias Exqlite.Sqlite3
   alias Tend.Store.Migrator
+  alias Tend.Store.Watcher
 
   @typedoc """
   An open store: the connection, and the path it was opened on.
@@ -54,8 +55,8 @@ defmodule Tend.Store do
   @spec open(String.t()) :: {:ok, t()} | {:error, term()}
   def open(path) do
     with :ok <- ensure_directory(path),
-         {:ok, conn} <- connect(path) do
-      case prepare(conn) do
+         {:ok, conn} <- open_connection(path) do
+      case Migrator.migrate(conn) do
         :ok ->
           {:ok, %__MODULE__{conn: conn, path: path}}
 
@@ -64,6 +65,43 @@ defmodule Tend.Store do
           {:error, reason}
       end
     end
+  end
+
+  @doc """
+  Opens a connection on `path` with the pragmas above and nothing else: no
+  directory creation, no migration ladder.
+
+  This is the Elixir counterpart of Go's `dsnFor` -- the one place the pragma
+  set is written down, shared by `open/1` and by the change watcher, whose
+  pinned connection has to be configured exactly like a store's but must never
+  migrate. Everything else should go through `open/1`.
+  """
+  @spec open_connection(String.t()) :: {:ok, Sqlite3.db()} | {:error, term()}
+  def open_connection(path) do
+    with {:ok, conn} <- connect(path) do
+      case pragmas(conn) do
+        :ok ->
+          {:ok, conn}
+
+        {:error, reason} ->
+          Sqlite3.close(conn)
+          {:error, reason}
+      end
+    end
+  end
+
+  @doc """
+  Starts a `Tend.Store.Watcher` on the file this store was opened on.
+
+  The port of Go's `(*Store).Watch`. The watcher gets its own connection, so
+  it shares nothing with this one and neither closing ends the other; `opts`
+  are `Tend.Store.Watcher.start_link/1`'s, minus `:path`.
+
+  Nothing in the port calls this yet -- there is no UI to reload.
+  """
+  @spec watch(t(), keyword()) :: GenServer.on_start()
+  def watch(%__MODULE__{path: path}, opts \\ []) do
+    opts |> Keyword.put(:path, path) |> Watcher.start_link()
   end
 
   @doc """
@@ -83,12 +121,6 @@ defmodule Tend.Store do
     case Sqlite3.open(path) do
       {:ok, conn} -> {:ok, conn}
       {:error, reason} -> {:error, {:db_open_failed, path, reason}}
-    end
-  end
-
-  defp prepare(conn) do
-    with :ok <- pragmas(conn) do
-      Migrator.migrate(conn)
     end
   end
 
