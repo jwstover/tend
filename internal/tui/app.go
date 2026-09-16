@@ -715,14 +715,10 @@ type app struct {
 
 	// Session picker overlay: choose an existing session to resume, or
 	// launch a new one, for a task.
-	sessionPickerOpen      bool
+	sessionPicker          picker[task.Session]
 	sessionPickerTaskID    int64
 	sessionPickerProjectID int64 // the task's project, for its default cwd
 	sessionPickerLabel     string
-	sessionPickerSessions  []task.Session
-	sessionPickerQuery     string // type-to-filter over the session labels
-	sessionPickerSel       int    // 0 = "+ new session", k = the k-th matching session
-	sessionPickerTop       int    // first matching session row in the scroll window
 
 	// Command palette overlay: a fuzzy-matched command list anchored just
 	// above the footer.
@@ -1278,7 +1274,7 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// An open session picker swallows all keys.
-	if a.sessionPickerOpen {
+	if a.sessionPicker.open {
 		return a.handleSessionPickerKey(msg)
 	}
 
@@ -2769,7 +2765,7 @@ func (a app) View() tea.View {
 	// Palette and help splice in just above the footer, over the bottom
 	// body rows. A panel taller than the screen loses its top rows, like
 	// the design's splice.
-	if a.paletteOpen || a.helpOpen || a.urlPickerOpen || a.sessionPickerOpen ||
+	if a.paletteOpen || a.helpOpen || a.urlPickerOpen || a.sessionPicker.open ||
 		a.projectPickerOpen || a.parentPickerOpen || a.depPickerOpen || a.wfPickerOpen || a.wfRunPicker.open ||
 		a.gatePickerOpen || a.takeover.open || a.retry.open {
 		box := a.paletteView()
@@ -2778,7 +2774,7 @@ func (a app) View() tea.View {
 			box = a.helpView()
 		case a.urlPickerOpen:
 			box = a.urlPickerView()
-		case a.sessionPickerOpen:
+		case a.sessionPicker.open:
 			box = a.sessionPickerView()
 		case a.projectPickerOpen:
 			box = a.projectPickerView()
