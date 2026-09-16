@@ -295,7 +295,7 @@ func TestResumeStepSessionRefusedWhileRunLive(t *testing.T) {
 	l := newLiveRun(t, s, workflow.RunRunning)
 	m = drive(t, m, refreshMsg{})
 	m = stepR(t, m)
-	if !m.(app).sessionPickerOpen {
+	if !m.(app).sessionPicker.open {
 		t.Fatal("session picker not open")
 	}
 
