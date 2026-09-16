@@ -158,3 +158,29 @@ func TestPickerRenderFitsWidthAndShowsOverflow(t *testing.T) {
 		t.Errorf("a 20-item picker on a 30-row terminal should show the overflow row:\n%s", view)
 	}
 }
+
+func TestPalettePicksKeepsAliasTierAndAddRow(t *testing.T) {
+	cmds := []paletteCommand{
+		{label: "Toggle detail pane"},
+		{label: "Quit", aliases: []string{"q", "quit"}},
+		{label: "Quick-add to inbox"},
+	}
+
+	got := palettePicks("q", cmds)
+	if len(got) == 0 || got[0].label != "Quit" {
+		t.Fatalf("palettePicks(q) = %q, want Quit first (an exact alias beats a fuzzy hit)", paletteLabels(got))
+	}
+
+	got = palettePicks("add buy milk", cmds)
+	if len(got) == 0 || got[0].label != `Add task: "buy milk"` {
+		t.Fatalf(`palettePicks(add buy milk) = %q, want the synthetic add row first`, paletteLabels(got))
+	}
+}
+
+func paletteLabels(cmds []paletteCommand) []string {
+	out := make([]string, len(cmds))
+	for i, c := range cmds {
+		out[i] = c.label
+	}
+	return out
+}
