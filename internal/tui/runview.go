@@ -912,32 +912,26 @@ func (a app) retryRunCmd(runID int64, fresh bool, what string) tea.Cmd {
 // --- retry picker -----------------------------------------------------------
 
 // retryPicker is the overlay's state: the failed run and the unfinished
-// step run it failed at, as the view had them when `p` was pressed.
+// step run it failed at, as the view had them when `p` was pressed. The
+// embedded picker's items are the two ways runner.Retry can re-enter the
+// step, built once at open time.
 type retryPicker struct {
-	open     bool
+	picker[choiceRow]
 	run      workflow.Run
 	stepRun  workflow.StepRun
 	stepName string
-	sel      int
 }
 
-// retryChoice is one row of the picker.
-type retryChoice struct {
-	label, desc string
-	act         func(a *app) tea.Cmd
-}
-
-// choices is the picker's rows: the two ways runner.Retry can re-enter the
-// step. Every row closes the picker as it acts.
-func (p retryPicker) choices() []retryChoice {
-	run, name := p.run, p.stepName
+// retryChoices is the picker's rows. Every row closes the picker as it
+// acts.
+func retryChoices(run workflow.Run, name string) []choiceRow {
 	closing := func(f func(a *app) tea.Cmd) func(a *app) tea.Cmd {
 		return func(a *app) tea.Cmd {
 			a.closeRetryPicker()
 			return f(a)
 		}
 	}
-	return []retryChoice{
+	return []choiceRow{
 		{
 			label: "retry the step",
 			desc:  "continue " + name + "'s session, told what went wrong",
@@ -957,7 +951,13 @@ func (a *app) openRetryPicker(run workflow.Run, cur workflow.StepRun) {
 	if name == "" {
 		name = fmt.Sprintf("step %d", cur.StepID)
 	}
-	a.retry = retryPicker{open: true, run: run, stepRun: cur, stepName: name}
+	a.retry = retryPicker{
+		picker: picker[choiceRow]{
+			open: true, items: retryChoices(run, name), numbered: true, footer: 1,
+			label: func(c choiceRow) string { return c.label },
+		},
+		run: run, stepRun: cur, stepName: name,
+	}
 }
 
 func (a *app) closeRetryPicker() {
@@ -965,38 +965,21 @@ func (a *app) closeRetryPicker() {
 }
 
 // handleRetryPickerKey owns the keyboard while the picker is open, in the
-// other pickers' mould: arrows, j/k or ctrl-n/ctrl-p move, a digit picks
+// other pickers' mould: arrows or ctrl-n/ctrl-p move, a digit picks
 // directly, Enter picks the highlight. esc backs out -- the run stays
-// failed, and the flash says how to come back to it.
+// failed, and the flash says how to come back to it. j/k are filter text.
 func (a app) handleRetryPickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	p := a.retry
-	rows := len(p.choices())
-	pick := func(idx int) (tea.Model, tea.Cmd) {
-		if idx < 0 || idx >= rows {
-			return a, nil
-		}
-		return a, p.choices()[idx].act(&a)
-	}
-	switch msg.String() {
-	case "esc":
+	runID := a.retry.run.ID
+	action, idx := a.retry.key(msg, a.height)
+	switch action {
+	case pickerCancel:
 		a.closeRetryPicker()
-		a.status = flash{text: fmt.Sprintf("run %d stays failed — p retries it", p.run.ID)}
+		a.status = flash{text: fmt.Sprintf("run %d stays failed — p retries it", runID)}
 		return a, nil
-	case "enter":
-		return pick(p.sel)
-	case "up", "ctrl+p", "k":
-		if a.retry.sel > 0 {
-			a.retry.sel--
+	case pickerPick:
+		if c, ok := a.retry.at(idx); ok {
+			return a, c.act(&a)
 		}
-		return a, nil
-	case "down", "ctrl+n", "j":
-		if a.retry.sel < rows-1 {
-			a.retry.sel++
-		}
-		return a, nil
-	}
-	if len(msg.Text) == 1 && msg.Text[0] >= '1' && msg.Text[0] <= '9' {
-		return pick(int(msg.Text[0] - '1'))
 	}
 	return a, nil
 }
@@ -1007,39 +990,23 @@ func (a app) handleRetryPickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 func (a app) retryPickerView() string {
 	s, g := a.styles, a.styles.Glyphs
 	p := a.retry
-	w := max(a.width, 20)
-	cb := s.CardBorder
-	hbar := strings.Repeat(g.RuleH, w-4)
-
-	row := func(content string) string {
-		gap := max(w-5-lipgloss.Width(content), 0)
-		return "  " + cb.Render(g.RuleV) + " " + content +
-			strings.Repeat(" ", gap) + cb.Render(g.RuleV)
-	}
-	name := truncTail(p.stepName, max(w-40, 10), g.Ellipsis)
+	name := truncTail(p.stepName, max(a.width-40, 10), g.Ellipsis)
 	title := s.Title.Render("retry ") + s.Accent.Render(name) +
 		s.Dimmed.Render(fmt.Sprintf("  run %d failed", p.run.ID))
-	lines := []string{"  " + cb.Render(g.BoxTL+hbar+g.BoxTR)}
-	lines = append(lines, row(s.State[task.StateBlocked].Bold(true).Render(g.State[task.StateBlocked]+" ")+
-		title+s.Muted.Render("  ⏎ or type a number")))
-	lines = append(lines, "  "+cb.Render(g.TeeRight+hbar+g.TeeLeft))
-
-	choices := p.choices()
-	sel := min(p.sel, len(choices)-1)
-	for i, c := range choices {
-		num := fmt.Sprintf("%d ", i+1)
-		var content string
-		if i == sel {
-			content = s.SelBar.Render(g.SelBar+" ") + s.Accent.Render(num) + s.Title.Bold(true).Render(c.label)
-		} else {
-			content = "  " + s.Muted.Render(num) + s.Dimmed.Render(c.label)
-		}
-		content += s.Muted.Render("  " + truncTail(c.desc, max(w-12-lipgloss.Width(content), 10), g.Ellipsis))
-		lines = append(lines, row(content))
-	}
-	lines = append(lines, row(s.Muted.Render("esc leave the run as it is")))
-	lines = append(lines, "  "+cb.Render(g.BoxBL+hbar+g.BoxBR))
-	return strings.Join(lines, "\n")
+	return p.picker.render(s, a.width, a.height, pickerView[choiceRow]{
+		icon:  s.State[task.StateBlocked].Bold(true).Render(g.State[task.StateBlocked] + " "),
+		title: title,
+		hint:  s.Muted.Render("  ⏎ or type a number"),
+		row: func(c choiceRow, selected bool, w int) string {
+			label := s.Dimmed.Render(c.label)
+			if selected {
+				label = s.Title.Bold(true).Render(c.label)
+			}
+			desc := s.Muted.Render("  " + truncTail(c.desc, max(w-lipgloss.Width(c.label)-2, 10), g.Ellipsis))
+			return label + desc
+		},
+		footer: s.Muted.Render("esc leave the run as it is"),
+	})
 }
 
 // waitingGate is the gate step run the run is parked at, or the reason it
