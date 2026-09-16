@@ -711,14 +711,10 @@ type app struct {
 	retry retryPicker
 
 	// Workflow-run picker overlay (workflowrun.go): choose a workflow to
-	// run on a task. wfRunPickerQuery is the type-to-filter text and
-	// wfRunPickerSel indexes the filtered rows. wfRunPending is the
-	// validated request while its cwd prompt is open, nil otherwise.
-	wfRunPickerOpen      bool
-	wfRunPickerTask      task.Task
-	wfRunPickerWorkflows []workflow.Workflow
-	wfRunPickerQuery     string
-	wfRunPickerSel       int
+	// run on a task. wfRunPending is the validated request while its cwd
+	// prompt is open, nil otherwise.
+	wfRunPicker     picker[workflow.Workflow]
+	wfRunPickerTask task.Task
 
 	// Global task search overlay (search.go): searchQuery is the typed text,
 	// searchResults the matches for it and searchSel the highlighted one.
@@ -1425,7 +1421,7 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// As does the workflow-run picker.
-	if a.wfRunPickerOpen {
+	if a.wfRunPicker.open {
 		return a.handleWorkflowRunPickerKey(msg)
 	}
 
@@ -2995,7 +2991,7 @@ func (a app) View() tea.View {
 	// body rows. A panel taller than the screen loses its top rows, like
 	// the design's splice.
 	if a.paletteOpen || a.helpOpen || a.urlPickerOpen || a.sessionPickerOpen ||
-		a.projectPickerOpen || a.parentPickerOpen || a.depPickerOpen || a.lp.open || a.wfPickerOpen || a.wfRunPickerOpen || a.searchOpen ||
+		a.projectPickerOpen || a.parentPickerOpen || a.depPickerOpen || a.lp.open || a.wfPickerOpen || a.wfRunPicker.open || a.searchOpen ||
 		a.gatePickerOpen || a.takeover.open || a.retry.open {
 		box := a.paletteView()
 		switch {
@@ -3015,7 +3011,7 @@ func (a app) View() tea.View {
 			box = a.linkPickerView()
 		case a.wfPickerOpen:
 			box = a.wfPickerView()
-		case a.wfRunPickerOpen:
+		case a.wfRunPicker.open:
 			box = a.workflowRunPickerView()
 		case a.searchOpen:
 			box = a.searchView()
