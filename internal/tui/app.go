@@ -757,9 +757,7 @@ type app struct {
 	depPickerLabel   string
 	depPickerChecked map[int64]bool
 
-	urlPickerOpen bool
-	urlPickerURLs []link
-	urlPickerSel  int
+	urlPicker picker[link]
 
 	helpOpen   bool // `?` key-reference overlay
 	helpScroll int  // first body row of the overlay on screen (help.go)
@@ -1242,7 +1240,7 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	a.pendingSelectID = 0
 
 	// An open URL picker swallows all keys.
-	if a.urlPickerOpen {
+	if a.urlPicker.open {
 		return a.handleURLPickerKey(msg)
 	}
 
@@ -2758,14 +2756,14 @@ func (a app) View() tea.View {
 	// Palette and help splice in just above the footer, over the bottom
 	// body rows. A panel taller than the screen loses its top rows, like
 	// the design's splice.
-	if a.paletteOpen || a.helpOpen || a.urlPickerOpen || a.sessionPicker.open ||
+	if a.paletteOpen || a.helpOpen || a.urlPicker.open || a.sessionPicker.open ||
 		a.projectPicker.open || a.parentPicker.open || a.depPicker.open || a.wfPickerOpen || a.wfRunPicker.open ||
 		a.gatePickerOpen || a.takeover.open || a.retry.open {
 		box := a.paletteView()
 		switch {
 		case a.helpOpen:
 			box = a.helpView()
-		case a.urlPickerOpen:
+		case a.urlPicker.open:
 			box = a.urlPickerView()
 		case a.sessionPicker.open:
 			box = a.sessionPickerView()
