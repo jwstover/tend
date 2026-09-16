@@ -719,9 +719,7 @@ type app struct {
 
 	// Command palette overlay: a fuzzy-matched command list anchored just
 	// above the footer.
-	paletteOpen  bool
-	paletteQuery string
-	paletteSel   int
+	palette picker[paletteCommand]
 
 	// URL picker overlay: choose one link from a task with multiple links.
 	// Project picker overlay: choose which project a task belongs to.
@@ -1287,7 +1285,7 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// An open palette swallows all keys.
-	if a.paletteOpen {
+	if a.palette.open {
 		return a.handlePaletteKey(msg)
 	}
 
@@ -2753,7 +2751,7 @@ func (a app) View() tea.View {
 	// Palette and help splice in just above the footer, over the bottom
 	// body rows. A panel taller than the screen loses its top rows, like
 	// the design's splice.
-	if a.paletteOpen || a.helpOpen || a.urlPicker.open || a.sessionPicker.open ||
+	if a.palette.open || a.helpOpen || a.urlPicker.open || a.sessionPicker.open ||
 		a.projectPicker.open || a.parentPicker.open || a.depPicker.open || a.wfPicker.open || a.wfRunPicker.open ||
 		a.gatePicker.open || a.takeover.open || a.retry.open {
 		box := a.paletteView()
