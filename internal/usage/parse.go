@@ -168,17 +168,25 @@ func TranscriptRoot() (string, error) {
 // reports no entries and no error: a machine that has never run claude
 // interactively is not a failure, it is an empty total.
 //
-// A file that cannot be read is skipped rather than failing the scan --
-// one unreadable session must not blank the whole usage view -- and the
-// count of skipped files is returned so a caller can say so.
+// A file or directory that cannot be read is skipped rather than failing
+// the scan -- one unreadable session must not blank the whole usage view
+// -- and the count of skipped files and directories is returned so a
+// caller can say so.
 func ScanTranscripts(root string) (entries []Entry, skipped int, err error) {
 	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			// An unreadable directory is skipped along with its contents.
-			if d != nil && d.IsDir() {
-				return fs.SkipDir
+			// The root itself -- WalkDir reports its lstat failure with a nil
+			// DirEntry. Returned so a missing tree is answered by the
+			// os.IsNotExist check below, rather than counted as one skipped
+			// file.
+			if d == nil {
+				return err
 			}
 			skipped++
+			// An unreadable directory is skipped along with its contents.
+			if d.IsDir() {
+				return fs.SkipDir
+			}
 			return nil
 		}
 		if d.IsDir() || !strings.HasSuffix(d.Name(), ".jsonl") {
