@@ -33,14 +33,13 @@ defmodule Tend.Template.ParseError do
     * `line` -- its 1-based line, counting `\\n`
     * `column` -- its 1-based column, in bytes from the start of the line
 
-  ## Folding into `Tend.Error`
+  ## Folded into `Tend.Error`
 
-  `Tend.Error` does not exist on this branch (it arrives with the task-core
-  sub-task), so this is a free-standing exception rather than a `Tend.Error`
-  variant. When the two meet, `ErrInvalidPrompt`'s Elixir counterpart becomes
-  a `Tend.Error` whose `reason` is `:invalid_prompt` and whose cause is this
-  struct, and the wrapper prepends `invalid prompt template: ` to
-  `Exception.message/1` here. The composed string is
+  This stays a free-standing exception -- the template tree depends on nothing
+  -- but `ErrInvalidPrompt`'s Elixir counterpart now exists:
+  `Tend.Workflow.Prompt` returns `{:error, {:invalid_prompt, error}}` carrying
+  this struct, and `Tend.Error.message/1` prepends `invalid prompt template: `
+  to `Exception.message/1` here. The composed string is
 
       invalid prompt template: template: prompt:1:4: unexpected {{end}} at byte 3
 
@@ -48,8 +47,8 @@ defmodule Tend.Template.ParseError do
 
       invalid prompt template: template: prompt:1: unexpected {{end}}
 
-  so the wrapper needs no change, but whoever writes it should know it is
-  inheriting the richer message above on purpose.
+  so the wrapper needed no change, but it inherits the richer message above on
+  purpose.
   """
 
   alias Tend.Template.Position
