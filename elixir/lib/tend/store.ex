@@ -4,8 +4,9 @@ defmodule Tend.Store do
 
   A port of `internal/store`, built up in parts: opening the file and getting
   the schema onto it, the flat task surface on top of that, then the workflow
-  definition rows, the agent-session and tmux-session surface, and the task
-  hierarchy and project assignment. Nothing calls any of it yet -- the CLI
+  definition rows, the agent-session and tmux-session surface, the task
+  hierarchy and project assignment, and the project rows themselves plus the
+  `active_project_id` setting. Nothing calls any of it yet -- the CLI
   commands, MCP tools and TUI views that would are later phases.
 
   Built on the raw `Exqlite.Sqlite3` API rather than Ecto. The Go store is
@@ -526,6 +527,79 @@ defmodule Tend.Store do
   SELECT id, name, sort_order, archived_at, created_at, updated_at, cwd
   FROM projects
   WHERE id = ?
+  """
+
+  @create_project """
+  INSERT INTO projects (name)
+  VALUES (?)
+  RETURNING id, name, sort_order, archived_at, created_at, updated_at, cwd
+  """
+
+  @get_project_by_name """
+  SELECT id, name, sort_order, archived_at, created_at, updated_at, cwd
+  FROM projects
+  WHERE name = ?
+  """
+
+  @list_projects """
+  SELECT p.id, p.name, p.sort_order, p.archived_at, p.created_at, p.updated_at, p.cwd, COALESCE(c.live, 0) AS live_count
+  FROM projects p
+  LEFT JOIN (
+    SELECT t.project_id AS pid, COUNT(*) AS live
+    FROM tasks t
+    JOIN states s ON s.name = t.state
+    WHERE s.is_terminal = 0
+      AND s.hidden_by_default = 0
+      AND t.parent_id IS NULL
+      AND (t.snooze_until IS NULL OR t.snooze_until <= date('now'))
+    GROUP BY t.project_id
+  ) c ON c.pid = p.id
+  ORDER BY p.sort_order, p.name
+  """
+
+  @rename_project """
+  UPDATE projects
+  SET name       = ?,
+      updated_at = datetime('now')
+  WHERE id = ?
+  """
+
+  @set_project_cwd """
+  UPDATE projects
+  SET cwd        = ?,
+      updated_at = datetime('now')
+  WHERE id = ?
+  """
+
+  @set_project_archived """
+  UPDATE projects
+  SET archived_at = ?,
+      updated_at  = datetime('now')
+  WHERE id = ?
+  """
+
+  @delete_project """
+  DELETE FROM projects
+  WHERE id = ?
+  """
+
+  @reassign_project_tasks """
+  UPDATE tasks
+  SET project_id = ?1,
+      updated_at = datetime('now')
+  WHERE project_id = ?2
+  """
+
+  @get_setting """
+  SELECT value
+  FROM settings
+  WHERE key = ?
+  """
+
+  @set_setting """
+  INSERT INTO settings (key, value)
+  VALUES (?, ?)
+  ON CONFLICT(key) DO UPDATE SET value = excluded.value
   """
 
   # -- capture ---------------------------------------------------------------
@@ -1565,6 +1639,187 @@ defmodule Tend.Store do
     )
   end
 
+  # -- projects ----------------------------------------------------------------
+  #
+  # The project rows themselves, plus the `active_project_id` setting that
+  # remembers which project column the TUI was last on. A port of
+  # `internal/store/projects.go`. Nothing calls any of it yet -- `tend
+  # projects` is a later phase.
+
+  # The port of Go's settingActiveProject. Deliberately not a capture target:
+  # capture with no project named goes to the default project, so the shell
+  # has no hidden state steering it; this key is read and written by the TUI
+  # alone.
+  @setting_active_project "active_project_id"
+
+  @doc """
+  Adds a project. Names are unique case-insensitively; a collision surfaces as
+  the driver's constraint error, exactly as `create_workflow/3`'s does.
+  """
+  @spec create_project(t(), String.t()) :: {:ok, Project.t()} | {:error, Tend.Error.t()}
+  def create_project(store, name) do
+    with {:ok, n} <- Project.normalize_name(name),
+         {:ok, row} <- insert_one(store, @create_project, [n], "creating project #{quoted(n)}") do
+      Row.to_project(row, 0)
+    end
+  end
+
+  @doc """
+  Loads one project by id.
+  """
+  @spec get_project(t(), integer()) :: {:ok, Project.t()} | {:error, Tend.Error.t()}
+  def get_project(store, id) when is_integer(id) do
+    case query(store, @get_project, [id], "loading project #{id}") do
+      {:ok, [row]} -> Row.to_project(row, 0)
+      {:ok, []} -> {:error, {:project_not_found, id}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc """
+  Resolves a project by name, case-insensitively.
+
+  Callers that accept a name from the user (`tend add -p`) match
+  `{:project_not_found, _}` rather than creating one, so a typo can't silently
+  spawn a project.
+  """
+  @spec project_by_name(t(), String.t()) :: {:ok, Project.t()} | {:error, Tend.Error.t()}
+  def project_by_name(store, name) do
+    with {:ok, n} <- Project.normalize_name(name) do
+      case query(store, @get_project_by_name, [n], "loading project #{quoted(n)}") do
+        {:ok, [row]} -> Row.to_project(row, 0)
+        {:ok, []} -> {:error, {:project_not_found, n}}
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  @doc """
+  Every project with its live top-level task count, archived ones included --
+  the projects column filters those out itself, and `tend projects` wants to
+  show them.
+  """
+  @spec list_projects(t()) :: {:ok, [Project.t()]} | {:error, Tend.Error.t()}
+  def list_projects(store) do
+    with {:ok, rows} <- query(store, @list_projects, [], "listing projects") do
+      Row.to_projects(rows)
+    end
+  end
+
+  @doc """
+  Changes a project's name.
+  """
+  @spec rename_project(t(), integer(), String.t()) :: :ok | {:error, Tend.Error.t()}
+  def rename_project(store, id, name) when is_integer(id) do
+    with {:ok, n} <- Project.normalize_name(name) do
+      execute(store, @rename_project, [n, id], "renaming project #{id}")
+    end
+  end
+
+  @doc """
+  Records the directory a new Claude session on one of the project's tasks
+  should default to (see `Tend.Task.Project.cwd`); `""` clears it.
+
+  The value is normalized (`Tend.Task.Project.normalize_cwd/1`) but not
+  checked against the filesystem, for the reasons given there.
+  """
+  @spec set_project_cwd(t(), integer(), String.t()) :: :ok | {:error, Tend.Error.t()}
+  def set_project_cwd(store, id, cwd) when is_integer(id) and is_binary(cwd) do
+    execute(
+      store,
+      @set_project_cwd,
+      [Project.normalize_cwd(cwd), id],
+      "setting project #{id} cwd"
+    )
+  end
+
+  @doc """
+  Hides or restores a project in the projects column.
+
+  Archiving leaves its tasks alone: they keep their `project_id` and reappear
+  if it's unarchived.
+  """
+  @spec set_project_archived(t(), integer(), boolean()) :: :ok | {:error, Tend.Error.t()}
+  def set_project_archived(store, id, archived) when is_integer(id) and is_boolean(archived) do
+    at = if archived, do: Row.format_time(DateTime.utc_now()), else: nil
+    execute(store, @set_project_archived, [at, id], "archiving project #{id}")
+  end
+
+  @doc """
+  Removes a project after reassigning its tasks to the default project, both
+  in one transaction -- the orphan prevention a foreign key would otherwise
+  provide (see migration 00007).
+
+  The default project itself is refused with `:protected_project`: it is the
+  reassignment target and the capture fallback, so deleting it would strand
+  every path that leans on it. An `active_project_id/1` pointing at the
+  deleted row needs no cleanup -- it falls back when the row is missing.
+  """
+  @spec delete_project(t(), integer()) :: :ok | {:error, Tend.Error.t()}
+  def delete_project(store, id) when is_integer(id) do
+    if id == Project.default_id() do
+      {:error, :protected_project}
+    else
+      transaction(store, fn store ->
+        with :ok <-
+               execute(
+                 store,
+                 @reassign_project_tasks,
+                 [Project.default_id(), id],
+                 "reassigning tasks out of project #{id}"
+               ) do
+          execute(store, @delete_project, [id], "deleting project #{id}")
+        end
+      end)
+    end
+  end
+
+  @doc """
+  The project the TUI should reopen on, falling back to the default project
+  whenever the stored value is missing, unparseable or points at a project
+  that has since been deleted.
+
+  Never fails on a bad value -- a corrupt UI preference should not stop the
+  TUI from starting.
+  """
+  @spec active_project_id(t()) :: {:ok, integer()} | {:error, Tend.Error.t()}
+  def active_project_id(store) do
+    case query(store, @get_setting, [@setting_active_project], "reading active project") do
+      {:ok, [[value]]} -> resolve_active_project(store, value)
+      {:ok, []} -> {:ok, Project.default_id()}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # Integer.parse/1 matching {id, ""} only: strconv.ParseInt("12abc") fails,
+  # where Integer.parse/1 would otherwise return {12, "abc"}.
+  defp resolve_active_project(store, value) do
+    case Integer.parse(value) do
+      {id, ""} ->
+        case query(store, @get_project, [id], "resolving active project #{id}") do
+          {:ok, [_row]} -> {:ok, id}
+          {:ok, []} -> {:ok, Project.default_id()}
+          {:error, reason} -> {:error, reason}
+        end
+
+      _ ->
+        {:ok, Project.default_id()}
+    end
+  end
+
+  @doc """
+  Records the project the TUI should reopen on.
+  """
+  @spec set_active_project(t(), integer()) :: :ok | {:error, Tend.Error.t()}
+  def set_active_project(store, id) when is_integer(id) do
+    execute(
+      store,
+      @set_setting,
+      [@setting_active_project, Integer.to_string(id)],
+      "setting active project to #{id}"
+    )
+  end
+
   # -- transactions ----------------------------------------------------------
 
   @doc """
@@ -1587,9 +1842,9 @@ defmodule Tend.Store do
   would block every later write on it.
 
   Nothing in the task surface is multi-statement; `delete_workflow/2`,
-  `duplicate_workflow/3`, `set_project/3` and `set_parent/3` are its callers
-  today, and the rest -- `SetTags`, `DeleteProject` -- are later parts of the
-  store port.
+  `duplicate_workflow/3`, `set_project/3`, `set_parent/3` and
+  `delete_project/2` are its callers today, and the rest -- `SetTags` -- is a
+  later part of the store port.
   """
   @spec transaction(t(), (t() -> result)) :: result | {:error, Tend.Error.t()} when result: var
   def transaction(%__MODULE__{} = store, fun) when is_function(fun, 1) do
