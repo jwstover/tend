@@ -9,6 +9,7 @@ import (
 
 	"github.com/jwstover/tend/internal/store/gen"
 	"github.com/jwstover/tend/internal/task"
+	"github.com/jwstover/tend/internal/usage"
 	"github.com/jwstover/tend/internal/workflow"
 )
 
@@ -574,7 +575,7 @@ func (s *Store) SetRunTmuxSession(ctx context.Context, id int64, name string) er
 // the run), so sr.Iteration is ignored; sr.RunID, StepID,
 // SessionExternalID, PromptRendered, SystemPrompt, Model, PermissionMode,
 // AdvisorModel, Input and Feedback are taken as given. Outcome,
-// Deliverable, LogPath and EndedAt start empty.
+// Deliverable, LogPath, Usage and EndedAt start empty.
 func (s *Store) CreateStepRun(ctx context.Context, sr workflow.StepRun) (workflow.StepRun, error) {
 	var out workflow.StepRun
 	err := s.inTx(ctx, func(q *gen.Queries) error {
@@ -726,6 +727,22 @@ func (s *Store) SetStepRunSettings(ctx context.Context, id int64, model, permiss
 	return nil
 }
 
+// AddStepRunUsage adds one claude process's token counts to a step run's
+// running total. It adds rather than replaces because a step run that was
+// resumed, nudged or retried ran several processes against the same row,
+// each reporting only its own usage. An unknown id is a no-op, as
+// SetStepRunLogPath is: usage is accounting, not a guard.
+func (s *Store) AddStepRunUsage(ctx context.Context, id int64, t usage.Tokens) error {
+	if err := s.q.AddStepRunUsage(ctx, gen.AddStepRunUsageParams{
+		InputTokens: t.Input, OutputTokens: t.Output,
+		CacheCreationTokens: t.CacheCreation, CacheReadTokens: t.CacheRead,
+		ID: id,
+	}); err != nil {
+		return fmt.Errorf("adding usage to step run %d: %w", id, err)
+	}
+	return nil
+}
+
 // CreateStepRunSession is CreateSession for a session launched by a
 // workflow step: identical — written at launch, ahead of the handoff, with
 // status 'starting' — plus the back-pointer that lets the SESSIONS section
@@ -824,6 +841,12 @@ func stepRunToDomain(row gen.WorkflowStepRun) (workflow.StepRun, error) {
 		Model: row.Model, PermissionMode: row.PermissionMode, AdvisorModel: row.AdvisorModel,
 		Input: row.Input, Feedback: row.Feedback,
 		Outcome: row.Outcome, Deliverable: row.Deliverable, LogPath: row.LogPath,
+		Usage: usage.Tokens{
+			Input:         row.InputTokens,
+			Output:        row.OutputTokens,
+			CacheCreation: row.CacheCreationTokens,
+			CacheRead:     row.CacheReadTokens,
+		},
 		StartedAt: started, EndedAt: ended,
 	}, nil
 }
