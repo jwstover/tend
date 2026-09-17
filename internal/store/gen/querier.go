@@ -13,6 +13,11 @@ type Querier interface {
 	// OR IGNORE so recording a dependency that already exists is a no-op
 	// rather than a constraint error: SetDependencies re-adds the survivors.
 	AddDependency(ctx context.Context, arg AddDependencyParams) error
+	// Token counts accumulate rather than replace: a result event reports one
+	// claude process's usage, and a step run that was resumed, nudged or
+	// retried ran several against the same row. Adding is what keeps the row
+	// agreeing with usage.ParseStepLog's tally of the same log.
+	AddStepRunUsage(ctx context.Context, arg AddStepRunUsageParams) error
 	// Appends text as a new paragraph: an empty body just becomes the text,
 	// otherwise trailing whitespace is trimmed and a blank line separates the
 	// old body from the new text. Done in SQL so the append is atomic.

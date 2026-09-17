@@ -16,6 +16,7 @@ import (
 	"github.com/jwstover/tend/internal/agent"
 	"github.com/jwstover/tend/internal/store"
 	"github.com/jwstover/tend/internal/task"
+	"github.com/jwstover/tend/internal/usage"
 	"github.com/jwstover/tend/internal/workflow"
 )
 
@@ -1202,6 +1203,51 @@ func TestRunNudgesOnceForMissingHandoff(t *testing.T) {
 	}
 	if !strings.Contains(f.log.String(), "asked once to hand off") {
 		t.Errorf("runner log should record the nudge:\n%s", f.log)
+	}
+}
+
+// A nudge runs a second claude process against the same step run, so its
+// usage must add to the first attempt's rather than replace it -- the
+// case an absolute SET would get wrong (tend task #28).
+func TestRunRecordsStepUsage(t *testing.T) {
+	f := newFixture(t)
+	f.step("implement", workflow.StepAgent)
+	f.step("review", workflow.StepAgent)
+	f.step("ship", workflow.StepAgent)
+	f.edge("implement", "done", "review", nil)
+	f.edge("review", "approve", "ship", nil)
+	f.edge("review", "reject", "implement", nil)
+	firstUsage := usage.Tokens{Input: 5, Output: 50, CacheCreation: 100, CacheRead: 1000}
+	nudgeUsage := usage.Tokens{Input: 2, Output: 20, CacheCreation: 0, CacheRead: 400}
+	f.exec.handle = func(_ context.Context, req StepExec) (agent.HeadlessResult, error) {
+		if req.StepRun.StepID != f.steps["review"].ID {
+			return success("ok"), nil
+		}
+		if !req.Resume {
+			res := success("LGTM, approving.")
+			res.Usage = firstUsage
+			return res, nil
+		}
+		if err := f.s.FinishStepRun(f.ctx, req.StepRun.ID, "approve", "LGTM"); err != nil {
+			t.Errorf("FinishStepRun from the nudged agent: %v", err)
+		}
+		res := success("Called finish_step.")
+		res.Usage = nudgeUsage
+		return res, nil
+	}
+	run := f.run()
+
+	if err := f.runner().Run(f.ctx, run.ID, false); err != nil {
+		t.Fatalf("Run: %v\n%s", err, f.log)
+	}
+	srs := f.stepRuns(run.ID)
+	if len(srs) != 3 {
+		t.Fatalf("step runs = %+v, want implement, review, ship", srs)
+	}
+	review := srs[1]
+	want := firstUsage.Add(nudgeUsage)
+	if review.Usage != want {
+		t.Errorf("review step run Usage = %+v, want the first attempt plus the nudge's, %+v", review.Usage, want)
 	}
 }
 
