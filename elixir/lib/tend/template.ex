@@ -120,7 +120,9 @@ defmodule Tend.Template do
   atom key or an underscored `:title` one, first hit winning.
   `Tend.Template.Renderer` documents the rule and the two shapes the data has
   to keep for the output to stay Go's: an empty string is `""` and never
-  `nil`, an empty list is `[]` and never `nil`.
+  `nil`, an empty list is `[]` and never `nil`. It is *printing* that tells
+  the two apart, not `{{range}}` -- `{{range}}` over a `nil` takes the
+  `{{else}}` arm, as it does in Go.
   """
 
   alias Tend.Template.AST
