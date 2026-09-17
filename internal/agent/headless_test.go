@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jwstover/tend/internal/usage"
 )
 
 func TestHeadlessCmdArgv(t *testing.T) {
@@ -138,6 +140,22 @@ func TestParseStreamCountsPermissionDenials(t *testing.T) {
 	}
 	if got.IsError {
 		t.Error("IsError should be false: claude reports a denied run as success")
+	}
+}
+
+// The result event's usage object is what settle persists per step run
+// (tend task #28), so parsing it losslessly matters as much as the other
+// result fields.
+func TestParseStreamReadsUsage(t *testing.T) {
+	line := `{"type":"result","subtype":"success","is_error":false,"result":"pong",` +
+		`"usage":{"input_tokens":5,"output_tokens":50,"cache_creation_input_tokens":100,"cache_read_input_tokens":1000}}`
+	got, err := ParseStream(strings.NewReader(line + "\n"))
+	if err != nil {
+		t.Fatalf("ParseStream: %v", err)
+	}
+	want := usage.Tokens{Input: 5, Output: 50, CacheCreation: 100, CacheRead: 1000}
+	if got.Usage != want {
+		t.Errorf("Usage = %+v, want %+v", got.Usage, want)
 	}
 }
 

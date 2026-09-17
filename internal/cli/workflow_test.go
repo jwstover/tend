@@ -10,6 +10,7 @@ import (
 
 	"github.com/jwstover/tend/internal/runner"
 	"github.com/jwstover/tend/internal/task"
+	"github.com/jwstover/tend/internal/usage"
 	"github.com/jwstover/tend/internal/workflow"
 )
 
@@ -355,6 +356,16 @@ func (f *fakeWorkflowStore) SetStepRunSettings(_ context.Context, id int64, mode
 	for i := range f.stepRuns {
 		if f.stepRuns[i].ID == id {
 			f.stepRuns[i].Model, f.stepRuns[i].PermissionMode, f.stepRuns[i].AdvisorModel = model, permissionMode, advisorModel
+			return nil
+		}
+	}
+	return workflow.ErrStepRunNotFound
+}
+
+func (f *fakeWorkflowStore) AddStepRunUsage(_ context.Context, id int64, t usage.Tokens) error {
+	for i := range f.stepRuns {
+		if f.stepRuns[i].ID == id {
+			f.stepRuns[i].Usage = f.stepRuns[i].Usage.Add(t)
 			return nil
 		}
 	}
