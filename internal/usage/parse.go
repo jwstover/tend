@@ -168,17 +168,25 @@ func TranscriptRoot() (string, error) {
 // reports no entries and no error: a machine that has never run claude
 // interactively is not a failure, it is an empty total.
 //
-// A file that cannot be read is skipped rather than failing the scan --
-// one unreadable session must not blank the whole usage view -- and the
-// count of skipped files is returned so a caller can say so.
+// A file or directory that cannot be read is skipped rather than failing
+// the scan -- one unreadable session must not blank the whole usage view
+// -- and the count of skipped files and directories is returned so a
+// caller can say so.
 func ScanTranscripts(root string) (entries []Entry, skipped int, err error) {
 	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			// An unreadable directory is skipped along with its contents.
-			if d != nil && d.IsDir() {
-				return fs.SkipDir
+			// The root itself -- WalkDir reports its lstat failure with a nil
+			// DirEntry. Returned so a missing tree is answered by the
+			// os.IsNotExist check below, rather than counted as one skipped
+			// file.
+			if d == nil {
+				return err
 			}
 			skipped++
+			// An unreadable directory is skipped along with its contents.
+			if d.IsDir() {
+				return fs.SkipDir
+			}
 			return nil
 		}
 		if d.IsDir() || !strings.HasSuffix(d.Name(), ".jsonl") {
@@ -201,6 +209,72 @@ func ScanTranscripts(root string) (entries []Entry, skipped int, err error) {
 	entries = Dedup(entries)
 	sortByTime(entries)
 	return entries, skipped, nil
+}
+
+// Fingerprint is a cheap summary of the transcript tree: how many .jsonl
+// files it holds, how many bytes they total, and the newest mtime among
+// them. Claude only appends to a session transcript and only adds files,
+// so any of the three moving means there is something new to read -- and
+// none of them moving means a rescan would produce exactly what the last
+// one did.
+//
+// The zero value is "nothing seen yet". It compares equal to an empty
+// tree, which is correct: there is nothing to scan in either case.
+type Fingerprint struct {
+	Files  int
+	Bytes  int64
+	Newest time.Time
+}
+
+// Equal reports whether two fingerprints describe the same tree. A method
+// rather than ==, because two time.Time values can be the same instant
+// with different wall-clock and monotonic representations.
+func (f Fingerprint) Equal(o Fingerprint) bool {
+	return f.Files == o.Files && f.Bytes == o.Bytes && f.Newest.Equal(o.Newest)
+}
+
+// FingerprintTranscripts stats every session transcript under root
+// without opening one. A full scan parses tens of megabytes; this is one
+// stat per file, so a poller can ask "is there anything new?" often and
+// pay for the parse only when the answer is yes.
+//
+// It skips what it cannot read and reports no error for a root that does
+// not exist, exactly as ScanTranscripts does -- the two must agree about
+// what the tree is, or the guard would suppress a scan of files the scan
+// itself would have read.
+func FingerprintTranscripts(root string) (Fingerprint, error) {
+	var f Fingerprint
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if d == nil {
+				return err
+			}
+			if d.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if d.IsDir() || !strings.HasSuffix(d.Name(), ".jsonl") {
+			return nil
+		}
+		info, ierr := d.Info()
+		if ierr != nil {
+			return nil
+		}
+		f.Files++
+		f.Bytes += info.Size()
+		if info.ModTime().After(f.Newest) {
+			f.Newest = info.ModTime()
+		}
+		return nil
+	})
+	if err != nil {
+		if os.IsNotExist(err) {
+			return Fingerprint{}, nil
+		}
+		return Fingerprint{}, fmt.Errorf("stating claude transcripts: %w", err)
+	}
+	return f, nil
 }
 
 func trimSpace(b []byte) []byte {
