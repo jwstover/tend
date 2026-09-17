@@ -21,7 +21,8 @@ type Server struct {
 
 // New builds a Server whose tools default to (and, for get_current_task,
 // are pinned to) taskID. Every session also gets the workflow authoring
-// tools (workflows.go), which are bound to nothing. stepRunID is the
+// tools (workflows.go), which are bound to nothing, and the run
+// inspection tools (runs.go), which default to taskID. stepRunID is the
 // workflow step run the session is executing; non-zero adds
 // get_workflow_step and finish_step bound to it, zero (an ordinary
 // session) leaves the tool set at that.
@@ -36,6 +37,7 @@ func (s *Server) Run(ctx context.Context) error {
 	srv := mcp.NewServer(&mcp.Implementation{Name: "tend", Version: version.String()}, nil)
 	registerTools(srv, s.store, s.taskID)
 	registerWorkflowTools(srv, s.store)
+	registerRunTools(srv, s.store, s.taskID)
 	if s.stepRunID != 0 {
 		registerStepTools(srv, s.store, s.stepRunID)
 	}

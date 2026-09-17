@@ -56,6 +56,14 @@ type Store interface {
 	OutgoingEdges(ctx context.Context, stepID int64) ([]workflow.Edge, error)
 	FinishStepRun(ctx context.Context, id int64, outcome, deliverable string) error
 
+	// The run inspection tools (runs.go), available to every session:
+	// a task's run history and each run's step runs, read-only. The step
+	// log itself is a file (workflow.StepRun.LogPath), read outside the
+	// store.
+	GetRun(ctx context.Context, id int64) (workflow.Run, error)
+	ListRunsForTask(ctx context.Context, taskID int64) ([]workflow.Run, error)
+	ListStepRunsForRun(ctx context.Context, runID int64) ([]workflow.StepRun, error)
+
 	// The workflow authoring tools (workflows.go), available to every
 	// session: the same writes the TUI's workflows view makes, so an
 	// agent can draft a workflow the user then refines there.

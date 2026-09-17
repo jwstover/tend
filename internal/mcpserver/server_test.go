@@ -32,6 +32,7 @@ type fakeStore struct {
 	steps     map[int64]workflow.Step
 	edges     []workflow.Edge
 	stepRuns  map[int64]workflow.StepRun
+	runs      map[int64]workflow.Run
 
 	// onGetStep, when set, runs after GetStep has taken its copy and
 	// before it returns, so a test can stand in for another writer
@@ -47,6 +48,7 @@ func newFakeStore(seed ...task.Task) *fakeStore {
 		workflows: make(map[int64]workflow.Workflow),
 		steps:     make(map[int64]workflow.Step),
 		stepRuns:  make(map[int64]workflow.StepRun),
+		runs:      make(map[int64]workflow.Run),
 	}
 	for _, t := range seed {
 		s.tasks[t.ID] = t
@@ -286,6 +288,40 @@ func (s *fakeStore) GetStep(_ context.Context, id int64) (workflow.Step, error) 
 		s.onGetStep(id)
 	}
 	return st, nil
+}
+
+func (s *fakeStore) GetRun(_ context.Context, id int64) (workflow.Run, error) {
+	r, ok := s.runs[id]
+	if !ok {
+		return workflow.Run{}, workflow.ErrRunNotFound
+	}
+	return r, nil
+}
+
+// ListRunsForTask mirrors the store's ordering: newest first, by id
+// since the fake's runs share no real clock.
+func (s *fakeStore) ListRunsForTask(_ context.Context, taskID int64) ([]workflow.Run, error) {
+	var out []workflow.Run
+	for _, r := range s.runs {
+		if r.TaskID == taskID {
+			out = append(out, r)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID > out[j].ID })
+	return out, nil
+}
+
+// ListStepRunsForRun mirrors the store's ordering: the order they
+// started, by id since the fake's runs share no real clock.
+func (s *fakeStore) ListStepRunsForRun(_ context.Context, runID int64) ([]workflow.StepRun, error) {
+	var out []workflow.StepRun
+	for _, sr := range s.stepRuns {
+		if sr.RunID == runID {
+			out = append(out, sr)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
 }
 
 func (s *fakeStore) GetWorkflow(_ context.Context, id int64) (workflow.Workflow, error) {
@@ -667,6 +703,7 @@ func dialStep(t *testing.T, store Store, taskID, stepRunID int64) *mcp.ClientSes
 	srv := mcp.NewServer(&mcp.Implementation{Name: "tend-test"}, nil)
 	registerTools(srv, store, taskID)
 	registerWorkflowTools(srv, store)
+	registerRunTools(srv, store, taskID)
 	if stepRunID != 0 {
 		registerStepTools(srv, store, stepRunID)
 	}
