@@ -45,7 +45,8 @@ defmodule Tend.Error do
 
     * the interpolating errors the task surface of the store port raises
       (`:unknown_state`, `:priority_out_of_range`, `:task_not_found`,
-      `:invalid_timestamp`);
+      `:invalid_timestamp`), and the two cycle refusals its hierarchy surface
+      raises (`:own_parent`, `:own_subtask`);
     * the store's descriptive tuples, raised by `Tend.Store.open/1`,
       `Tend.Store.Migrator` and `Tend.Store.Watcher` (`:db_directory_failed`,
       `:db_open_failed`, `:pragma_failed`, `:migration_failed`,
@@ -131,6 +132,8 @@ defmodule Tend.Error do
           | {:unknown_state, String.t()}
           | {:priority_out_of_range, term()}
           | {:task_not_found, integer()}
+          | {:own_parent, integer()}
+          | {:own_subtask, integer(), integer()}
           | {:invalid_timestamp, String.t(), String.t()}
           | {:invalid_prompt, Exception.t()}
           | {:db_directory_failed, String.t(), term()}
@@ -207,6 +210,19 @@ defmodule Tend.Error do
   # itself and reproduce the sentence Go would have printed around it.
   def message({:task_not_found, id}) do
     "loading task #{id}: no rows in result set"
+  end
+
+  # fmt.Errorf("task %d cannot be its own parent", taskID) and
+  # fmt.Errorf("task %d cannot move under its own sub-task %d", taskID,
+  # *parentID) in Store.SetParent. Two refusals rather than one, because
+  # "you picked yourself" and "you picked something below you" are different
+  # mistakes and the second one names the sub-task that made it a cycle.
+  def message({:own_parent, id}) when is_integer(id) do
+    "task #{id} cannot be its own parent"
+  end
+
+  def message({:own_subtask, id, parent_id}) when is_integer(id) and is_integer(parent_id) do
+    "task #{id} cannot move under its own sub-task #{parent_id}"
   end
 
   # fmt.Errorf("parsing %q: %w", s, err) in store.parseTime, wrapped by

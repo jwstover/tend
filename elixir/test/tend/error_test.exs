@@ -103,6 +103,17 @@ defmodule Tend.ErrorTest do
                "inserting task: :misuse"
     end
 
+    test "renders the two cycle refusals SetParent raises" do
+      # fmt.Errorf("task %d cannot be its own parent", taskID) and
+      # fmt.Errorf("task %d cannot move under its own sub-task %d", ...).
+      # internal/store/parent_test.go matches on the substrings "own parent"
+      # and "own sub-task", so those are load-bearing wording.
+      assert Error.message({:own_parent, 7}) == "task 7 cannot be its own parent"
+
+      assert Error.message({:own_subtask, 7, 9}) ==
+               "task 7 cannot move under its own sub-task 9"
+    end
+
     test "refuses a reason nobody registered, and says how to fix it" do
       assert_raise ArgumentError, ~r/add it to Tend.Error/, fn -> Error.message(:invented) end
       assert_raise ArgumentError, fn -> Error.message({:invented, 1}) end
@@ -147,11 +158,18 @@ defmodule Tend.ErrorTest do
     {:data_version_failed, :timeout}
   ]
 
-  # The task surface of the store builds these three as well. They are listed
-  # apart from @store_reasons because their last element is a domain value --
-  # a state, a priority, an id -- and not a cause the layer underneath handed
-  # back, so the put_cause/2 sweep below does not apply to them.
-  @task_surface_reasons [:priority_out_of_range, :task_not_found, :unknown_state]
+  # The task surface of the store, and its hierarchy surface, build these as
+  # well. They are listed apart from @store_reasons because their last element
+  # is a domain value -- a state, a priority, an id -- and not a cause the
+  # layer underneath handed back, so the put_cause/2 sweep below does not apply
+  # to them.
+  @task_surface_reasons [
+    :priority_out_of_range,
+    :task_not_found,
+    :unknown_state,
+    :own_parent,
+    :own_subtask
+  ]
 
   # The cause is the last element of every store reason.
   defp put_cause(reason, cause) do
