@@ -137,21 +137,25 @@ type WorkflowStep struct {
 }
 
 type WorkflowStepRun struct {
-	ID                int64
-	RunID             int64
-	StepID            int64
-	Iteration         int64
-	SessionExternalID string
-	PromptRendered    string
-	Model             string
-	PermissionMode    string
-	Input             string
-	Outcome           string
-	Deliverable       string
-	LogPath           string
-	StartedAt         string
-	EndedAt           sql.NullString
-	Feedback          string
-	SystemPrompt      string
-	AdvisorModel      string
+	ID                  int64
+	RunID               int64
+	StepID              int64
+	Iteration           int64
+	SessionExternalID   string
+	PromptRendered      string
+	Model               string
+	PermissionMode      string
+	Input               string
+	Outcome             string
+	Deliverable         string
+	LogPath             string
+	StartedAt           string
+	EndedAt             sql.NullString
+	Feedback            string
+	SystemPrompt        string
+	AdvisorModel        string
+	InputTokens         int64
+	OutputTokens        int64
+	CacheCreationTokens int64
+	CacheReadTokens     int64
 }

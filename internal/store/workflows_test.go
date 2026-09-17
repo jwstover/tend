@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jwstover/tend/internal/usage"
 	"github.com/jwstover/tend/internal/workflow"
 )
 
@@ -632,6 +633,55 @@ func TestFinishRunAtStepEndsRunOnce(t *testing.T) {
 	}
 	if err := s.FinishRunAtStep(ctx, 9999, "done", ""); !errors.Is(err, workflow.ErrStepRunNotFound) {
 		t.Errorf("FinishRunAtStep(unknown) = %v, want ErrStepRunNotFound", err)
+	}
+}
+
+// AddStepRunUsage sums rather than replaces, because a step run that was
+// resumed, nudged or retried has several claude processes each reporting
+// only their own usage (tend task #28).
+func TestAddStepRunUsageAccumulates(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	w := mustWorkflow(t, s, "fix a bug")
+	st := mustStep(t, s, w.ID, "fix")
+	run := mustRun(t, s, w.ID)
+	sr, err := s.CreateStepRun(ctx, workflow.StepRun{RunID: run.ID, StepID: st.ID})
+	if err != nil {
+		t.Fatalf("CreateStepRun: %v", err)
+	}
+	if !sr.Usage.IsZero() {
+		t.Errorf("fresh step run Usage = %+v, want zero", sr.Usage)
+	}
+
+	if err := s.AddStepRunUsage(ctx, sr.ID, usage.Tokens{Input: 5, Output: 50, CacheCreation: 100, CacheRead: 1000}); err != nil {
+		t.Fatalf("AddStepRunUsage (1st): %v", err)
+	}
+	if err := s.AddStepRunUsage(ctx, sr.ID, usage.Tokens{Input: 3, Output: 20, CacheCreation: 0, CacheRead: 400}); err != nil {
+		t.Fatalf("AddStepRunUsage (2nd): %v", err)
+	}
+	want := usage.Tokens{Input: 8, Output: 70, CacheCreation: 100, CacheRead: 1400}
+
+	got, err := s.GetStepRun(ctx, sr.ID)
+	if err != nil {
+		t.Fatalf("GetStepRun: %v", err)
+	}
+	if got.Usage != want {
+		t.Errorf("GetStepRun Usage = %+v, want %+v", got.Usage, want)
+	}
+
+	list, err := s.ListStepRunsForRun(ctx, run.ID)
+	if err != nil {
+		t.Fatalf("ListStepRunsForRun: %v", err)
+	}
+	if len(list) != 1 || list[0].Usage != want {
+		t.Errorf("ListStepRunsForRun = %+v, want one row with Usage %+v", list, want)
+	}
+
+	if err := s.AddStepRunUsage(ctx, 9999, usage.Tokens{Input: 1}); err != nil {
+		t.Errorf("AddStepRunUsage(unknown id) = %v, want nil", err)
+	}
+	if got, err = s.GetStepRun(ctx, sr.ID); err != nil || got.Usage != want {
+		t.Errorf("Usage after an unknown-id call = %+v (err %v), want unchanged %+v", got.Usage, err, want)
 	}
 }
 

@@ -10,6 +10,38 @@ import (
 	"database/sql"
 )
 
+const addStepRunUsage = `-- name: AddStepRunUsage :exec
+UPDATE workflow_step_runs
+SET input_tokens          = input_tokens + ?1,
+    output_tokens         = output_tokens + ?2,
+    cache_creation_tokens = cache_creation_tokens + ?3,
+    cache_read_tokens     = cache_read_tokens + ?4
+WHERE id = ?5
+`
+
+type AddStepRunUsageParams struct {
+	InputTokens         int64
+	OutputTokens        int64
+	CacheCreationTokens int64
+	CacheReadTokens     int64
+	ID                  int64
+}
+
+// Token counts accumulate rather than replace: a result event reports one
+// claude process's usage, and a step run that was resumed, nudged or
+// retried ran several against the same row. Adding is what keeps the row
+// agreeing with usage.ParseStepLog's tally of the same log.
+func (q *Queries) AddStepRunUsage(ctx context.Context, arg AddStepRunUsageParams) error {
+	_, err := q.db.ExecContext(ctx, addStepRunUsage,
+		arg.InputTokens,
+		arg.OutputTokens,
+		arg.CacheCreationTokens,
+		arg.CacheReadTokens,
+		arg.ID,
+	)
+	return err
+}
+
 const claimRun = `-- name: ClaimRun :execrows
 UPDATE workflow_runs
 SET state = 'running',
@@ -158,7 +190,7 @@ VALUES (
   ?9,
   ?10
 )
-RETURNING id, run_id, step_id, iteration, session_external_id, prompt_rendered, model, permission_mode, input, outcome, deliverable, log_path, started_at, ended_at, feedback, system_prompt, advisor_model
+RETURNING id, run_id, step_id, iteration, session_external_id, prompt_rendered, model, permission_mode, input, outcome, deliverable, log_path, started_at, ended_at, feedback, system_prompt, advisor_model, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens
 `
 
 type CreateStepRunParams struct {
@@ -209,6 +241,10 @@ func (q *Queries) CreateStepRun(ctx context.Context, arg CreateStepRunParams) (W
 		&i.Feedback,
 		&i.SystemPrompt,
 		&i.AdvisorModel,
+		&i.InputTokens,
+		&i.OutputTokens,
+		&i.CacheCreationTokens,
+		&i.CacheReadTokens,
 	)
 	return i, err
 }
@@ -367,7 +403,7 @@ func (q *Queries) GetStep(ctx context.Context, id int64) (WorkflowStep, error) {
 }
 
 const getStepRun = `-- name: GetStepRun :one
-SELECT id, run_id, step_id, iteration, session_external_id, prompt_rendered, model, permission_mode, input, outcome, deliverable, log_path, started_at, ended_at, feedback, system_prompt, advisor_model
+SELECT id, run_id, step_id, iteration, session_external_id, prompt_rendered, model, permission_mode, input, outcome, deliverable, log_path, started_at, ended_at, feedback, system_prompt, advisor_model, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens
 FROM workflow_step_runs
 WHERE id = ?
 `
@@ -393,6 +429,10 @@ func (q *Queries) GetStepRun(ctx context.Context, id int64) (WorkflowStepRun, er
 		&i.Feedback,
 		&i.SystemPrompt,
 		&i.AdvisorModel,
+		&i.InputTokens,
+		&i.OutputTokens,
+		&i.CacheCreationTokens,
+		&i.CacheReadTokens,
 	)
 	return i, err
 }
@@ -658,7 +698,7 @@ func (q *Queries) ListRunsForTask(ctx context.Context, taskID int64) ([]Workflow
 }
 
 const listStepRunsForRun = `-- name: ListStepRunsForRun :many
-SELECT id, run_id, step_id, iteration, session_external_id, prompt_rendered, model, permission_mode, input, outcome, deliverable, log_path, started_at, ended_at, feedback, system_prompt, advisor_model
+SELECT id, run_id, step_id, iteration, session_external_id, prompt_rendered, model, permission_mode, input, outcome, deliverable, log_path, started_at, ended_at, feedback, system_prompt, advisor_model, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens
 FROM workflow_step_runs
 WHERE run_id = ?
 ORDER BY started_at, id
@@ -691,6 +731,10 @@ func (q *Queries) ListStepRunsForRun(ctx context.Context, runID int64) ([]Workfl
 			&i.Feedback,
 			&i.SystemPrompt,
 			&i.AdvisorModel,
+			&i.InputTokens,
+			&i.OutputTokens,
+			&i.CacheCreationTokens,
+			&i.CacheReadTokens,
 		); err != nil {
 			return nil, err
 		}

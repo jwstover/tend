@@ -54,6 +54,7 @@ import (
 
 	"github.com/jwstover/tend/internal/agent"
 	"github.com/jwstover/tend/internal/task"
+	"github.com/jwstover/tend/internal/usage"
 	"github.com/jwstover/tend/internal/workflow"
 )
 
@@ -82,6 +83,7 @@ type Store interface {
 	SetStepRunLogPath(ctx context.Context, id int64, path string) error
 	SetStepRunSession(ctx context.Context, id int64, externalID string) error
 	SetStepRunSettings(ctx context.Context, id int64, model, permissionMode, advisorModel string) error
+	AddStepRunUsage(ctx context.Context, id int64, t usage.Tokens) error
 
 	CreateStepRunSession(ctx context.Context, stepRunID, taskID int64, externalID, cwd, label, tmuxSession string) (task.Session, error)
 	SetSessionStatus(ctx context.Context, externalID string, status task.SessionStatus) error
@@ -625,10 +627,19 @@ func (r *Runner) execStep(ctx context.Context, run workflow.Run, tk task.Task, s
 // turn also ends without finish_step the run fails, naming the step and
 // the outcomes it was supposed to return, rather than routing on a
 // guessed "done" -- the same reasoning as the denials rule.
+//
+// Every attempt's usage is added to the step run here, before anything
+// else, so a nudged or crash-resumed step's total covers every process
+// that ran it, not just the one that finally settled the step.
 func (r *Runner) settle(ctx context.Context, run workflow.Run, tk task.Task, step workflow.Step, sr workflow.StepRun, res agent.HeadlessResult, runErr error, nudged bool) (workflow.StepRun, error) {
 	fin, err := r.Store.GetStepRun(ctx, sr.ID)
 	if err != nil {
 		return workflow.StepRun{}, err
+	}
+	if !res.Usage.IsZero() {
+		if err := r.Store.AddStepRunUsage(ctx, sr.ID, res.Usage); err != nil {
+			return workflow.StepRun{}, err
+		}
 	}
 	if fin.Finished() {
 		if res.PermissionDenials > 0 {

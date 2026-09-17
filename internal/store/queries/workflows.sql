@@ -307,3 +307,15 @@ WHERE id = ?;
 UPDATE workflow_step_runs
 SET session_external_id = ?
 WHERE id = ?;
+
+-- name: AddStepRunUsage :exec
+-- Token counts accumulate rather than replace: a result event reports one
+-- claude process's usage, and a step run that was resumed, nudged or
+-- retried ran several against the same row. Adding is what keeps the row
+-- agreeing with usage.ParseStepLog's tally of the same log.
+UPDATE workflow_step_runs
+SET input_tokens          = input_tokens + sqlc.arg(input_tokens),
+    output_tokens         = output_tokens + sqlc.arg(output_tokens),
+    cache_creation_tokens = cache_creation_tokens + sqlc.arg(cache_creation_tokens),
+    cache_read_tokens     = cache_read_tokens + sqlc.arg(cache_read_tokens)
+WHERE id = sqlc.arg(id);
