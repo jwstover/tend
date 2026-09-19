@@ -1480,14 +1480,24 @@ func (a app) runStepsLines(width int) []string {
 	return lines
 }
 
-// runLogHeading names the step whose log the right pane shows and how.
+// runLogHeading names the step whose log the right pane shows and how,
+// plus what the step cost in tokens. It goes here rather than on the step
+// rows because this is the widest pane; the usage text yields to the mode
+// label when it does not fit.
 func (a app) runLogHeading(width int) []string {
 	s := a.styles
 	heading := "  " + s.SubHeader.Render("LOG")
+	var usageParts [2]string
 	if sr, ok := a.rv.selected(); ok {
 		heading += s.Dimmed.Render(" · " + a.rv.stepNames[sr.StepID])
 		if sr.Iteration > 1 {
 			heading += s.Dimmed.Render(fmt.Sprintf(" ↺%d", sr.Iteration))
+		}
+		if !sr.Usage.IsZero() {
+			usageParts = [2]string{
+				fmt.Sprintf(" · %s tok", fmtTokens(sr.Usage.Total())),
+				fmt.Sprintf(" · %d%% cached", int(sr.Usage.CacheHitRatio()*100+0.5)),
+			}
 		}
 	}
 	mode := "rendered"
@@ -1496,6 +1506,14 @@ func (a app) runLogHeading(width int) []string {
 	}
 	if a.rv.follow {
 		mode += " · following"
+	}
+	// Drop the cache ratio first, then the whole segment, rather than
+	// wrap or push the mode label off.
+	for _, text := range []string{usageParts[0] + usageParts[1], usageParts[0], ""} {
+		if lipgloss.Width(heading)+runeWidth(text)+lipgloss.Width(mode)+2 <= width {
+			heading += s.Muted.Render(text)
+			break
+		}
 	}
 	gap := max(width-lipgloss.Width(heading)-lipgloss.Width(mode)-2, 1)
 	return []string{"", heading + strings.Repeat(" ", gap) + s.Faint.Render(mode)}
