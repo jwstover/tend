@@ -993,7 +993,7 @@ func (a app) retryPickerView() string {
 	name := truncTail(p.stepName, max(a.width-40, 10), g.Ellipsis)
 	title := s.Title.Render("retry ") + s.Accent.Render(name) +
 		s.Dimmed.Render(fmt.Sprintf("  run %d failed", p.run.ID))
-	return p.picker.render(s, a.width, a.height, pickerView[choiceRow]{
+	return p.render(s, a.width, a.height, pickerView[choiceRow]{
 		icon:  s.State[task.StateBlocked].Bold(true).Render(g.State[task.StateBlocked] + " "),
 		title: title,
 		hint:  s.Muted.Render("  ⏎ or type a number"),

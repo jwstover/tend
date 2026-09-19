@@ -382,7 +382,7 @@ func (a app) takeoverPickerView() string {
 			s.Dimmed.Render("  the edge it picks is where the run goes next")
 		footer = "esc back"
 	}
-	return p.picker.render(s, a.width, a.height, pickerView[choiceRow]{
+	return p.render(s, a.width, a.height, pickerView[choiceRow]{
 		icon:  s.Accent.Bold(true).Render("⚡ "),
 		title: title,
 		hint:  s.Muted.Render("  ⏎ or type a number"),
