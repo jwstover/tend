@@ -10,6 +10,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/jwstover/tend/internal/usage"
 
 	"github.com/jwstover/tend/internal/runner"
 	"github.com/jwstover/tend/internal/store"
@@ -1051,5 +1052,30 @@ func TestViewRunWithNoRunsFlashes(t *testing.T) {
 	a := m.(app)
 	if a.mode != modeList || !strings.Contains(a.status.text, "no workflow runs") {
 		t.Errorf("mode=%v status=%+v, want a no-runs flash in the list", a.mode, a.status)
+	}
+}
+
+func TestRunViewLogHeadingShowsStepUsage(t *testing.T) {
+	stubRunnerAlive(t, true)
+	m, s := newTestApp(t)
+	l := newLiveRun(t, s, workflow.RunRunning)
+	m = drive(t, m, tea.WindowSizeMsg{Width: 140, Height: 40})
+	m = drive(t, m, refreshMsg{})
+	m = openRun(t, m)
+	if c := ansi.Strip(m.View().Content); strings.Contains(c, " tok") {
+		t.Errorf("a step with no usage should show none:\n%s", c)
+	}
+
+	if err := s.AddStepRunUsage(context.Background(), l.stepRun.ID,
+		usage.Tokens{Input: 1000, CacheCreation: 1000, CacheRead: 8000, Output: 500}); err != nil {
+		t.Fatal(err)
+	}
+	m = drive(t, m, esc())
+	m = openRun(t, m)
+	content := ansi.Strip(m.View().Content)
+	for _, want := range []string{"10.5k tok", "80% cached"} {
+		if !strings.Contains(content, want) {
+			t.Errorf("log heading missing %q:\n%s", want, content)
+		}
 	}
 }
