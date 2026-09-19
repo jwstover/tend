@@ -1582,7 +1582,7 @@ func TestHelpOverlayColumns(t *testing.T) {
 	}
 
 	m = drive(t, m, keyPress('?'))
-	m = drive(t, m, tea.WindowSizeMsg{Width: 60, Height: 80})
+	m = drive(t, m, tea.WindowSizeMsg{Width: 60, Height: 100})
 	m = drive(t, m, keyPress('?'))
 	content = ansi.Strip(m.View().Content)
 	for _, line := range strings.Split(content, "\n") {
@@ -1591,7 +1591,7 @@ func TestHelpOverlayColumns(t *testing.T) {
 		}
 	}
 	if !strings.Contains(content, "RUN VIEW") || !strings.Contains(content, "NAVIGATE") {
-		t.Errorf("single-column help on an 80-row screen should show every group:\n%s", content)
+		t.Errorf("single-column help on a 100-row screen should show every group:\n%s", content)
 	}
 }
 

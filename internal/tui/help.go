@@ -56,6 +56,10 @@ func helpGroups() []helpGroup {
 			{"w", "run a workflow on the task"},
 			{"v", "watch the task's workflow run"},
 		}},
+		{"USAGE", []helpEntry{
+			{"$", "usage view: quota, tokens"},
+			{"j / k / g / G", "scroll"},
+		}},
 		{"AGENTS", []helpEntry{
 			{"A", "open the agents view"},
 			{"X", "open the schedules view (p pause, r run now)"},
