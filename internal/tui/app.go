@@ -280,6 +280,7 @@ const (
 	modeAgents    // a project's agent sessions (agents.go)
 	modeSchedules // every workflow schedule (schedules.go)
 	modeSettings  // the user-facing settings (settings.go)
+	modeUsage     // claude token usage and quota (usageview.go)
 )
 
 // pane identifies which column owns the keyboard. It replaces an earlier
@@ -623,12 +624,13 @@ type app struct {
 	// message on the machine, held in memory rather than cached in
 	// SQLite -- the transcripts are already the durable copy -- so a
 	// breakdown can group it by project, model or session. Nothing
-	// renders these yet; the usage view is tend task #29, and the scan
-	// is the expensive half it needs.
-	usage        usage.Summary
-	usageEntries []usage.Entry
-	usageSkipped int
-	usageLoaded  bool
+	// renders these directly: the usage view (usageview.go) reads the
+	// usageBreakdowns the poller rolled up, so View never walks entries.
+	usage           usage.Summary
+	usageEntries    []usage.Entry
+	usageSkipped    int
+	usageLoaded     bool
+	usageBreakdowns usageBreakdowns
 
 	// Triage session: the cards still to process (head = current) and how
 	// many left the inbox since entering triage. Both reset on entry.
@@ -748,6 +750,10 @@ type app struct {
 
 	// Settings view (settings.go).
 	stv settingsView
+
+	// Usage view (usageview.go): just the scroll offset; the data is the
+	// poller's, held in the usage fields above.
+	uv usageView
 
 	showDetail bool
 	focus      pane // which column owns j/k and the scroll keys
@@ -1184,7 +1190,7 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !msg.changed {
 			return a, tea.Batch(a.diffLoad(), a.runDiffLoad())
 		}
-		if a.mode == modeStandup || a.mode == modeWorkflows {
+		if a.mode == modeStandup || a.mode == modeWorkflows || a.mode == modeUsage {
 			return a, nil
 		}
 		switch a.mode {
@@ -1521,6 +1527,11 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return a.handleStandupKey(msg)
 	}
 
+	// The usage view is read-only: it scrolls and nothing else.
+	if a.mode == modeUsage {
+		return a.handleUsageKey(msg)
+	}
+
 	// Likewise the workflows view, which owns its own two panes and the
 	// `dd` chord within them.
 	if a.mode == modeWorkflows {
@@ -1722,6 +1733,10 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, a.keys.Settings):
 		a.startSettings()
 		return a, a.loadSettings()
+
+	case key.Matches(msg, a.keys.Usage):
+		a.startUsage()
+		return a, nil
 
 	case key.Matches(msg, a.keys.Note):
 		return a, a.modal.Open(modalLog, true, "note", 0, "")
@@ -2726,6 +2741,8 @@ func (a app) reloadCmd() tea.Cmd {
 	case modeSettings:
 		return a.loadSettings()
 	}
+	// modeUsage deliberately takes the default: its tasksLoadedMsg is
+	// dropped by the mode guard but still settles liveReloadInFlight.
 	return tea.Batch(a.loadScoped(), a.loadProjects())
 }
 
@@ -2974,6 +2991,9 @@ func (a app) View() tea.View {
 	case modeSettings:
 		splits = nil
 		body = a.settingsBody()
+	case modeUsage:
+		splits = nil
+		body = a.usageBody()
 	default:
 		body = a.listBody()
 	}
@@ -3090,6 +3110,8 @@ func (a app) headerLine() string {
 		left += s.HeaderView.Render("schedules")
 	case modeSettings:
 		left += s.HeaderView.Render("settings")
+	case modeUsage:
+		left += s.HeaderView.Render("usage")
 	default:
 		left += s.HeaderView.Render("live")
 		// State is the default and needs no announcing; any other grouping
@@ -3109,9 +3131,9 @@ func (a app) headerLine() string {
 	// says this, but it hides on a narrow terminal and triage never shows
 	// it at all -- so without this you cannot tell whether you are
 	// triaging one project or everything. Standup and workflows are
-	// deliberately global, so they stay unqualified; the run view names
-	// its run instead.
-	if a.mode != modeStandup && a.mode != modeWorkflows && a.mode != modeRun {
+	// deliberately global, so they stay unqualified, as is usage (every
+	// session on the machine); the run view names its run instead.
+	if a.mode != modeStandup && a.mode != modeWorkflows && a.mode != modeRun && a.mode != modeUsage {
 		if p, ok := a.selectedProject(); ok {
 			left += s.HeaderSep.Render("  ·  ") + s.HeaderView.Render(p.Name)
 		}
@@ -3152,6 +3174,13 @@ func (a app) headerLine() string {
 			noun = "session"
 		}
 		right = s.CountNum.Render(fmt.Sprintf("%d", len(a.av.rows))) + s.CountLabel.Render(" "+noun) + "  "
+	case a.mode == modeUsage:
+		// The summary is as of the last scan that saw a change, so say so.
+		if a.usageLoaded {
+			right = s.CountLabel.Render("as of "+relTime(a.usage.Now, time.Now())) + "  "
+		} else {
+			right = s.CountLabel.Render("scanning…") + "  "
+		}
 	case a.mode == modeTriage && len(a.triageQueue) > 0:
 		total := a.triageProcessed + len(a.triageQueue)
 		right = s.CountNum.Render(fmt.Sprintf("%d of %d", a.triageProcessed+1, total)) +
@@ -3349,6 +3378,9 @@ func (a app) footer() string {
 	}
 	if a.mode == modeSettings {
 		hints = a.settingsHints()
+	}
+	if a.mode == modeUsage {
+		hints = [][2]string{{"j/k", "scroll"}, {"g/G", "top / bottom"}, {"N", "note"}, {"esc/q", "back"}, {"?", "help"}}
 	}
 	return a.hintLine(hints)
 }

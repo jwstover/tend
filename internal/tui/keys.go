@@ -22,6 +22,7 @@ type keyMap struct {
 	Schedules      key.Binding // open the Schedules view (schedules.go)
 	Settings       key.Binding // open the Settings view (settings.go)
 	Agents         key.Binding // open the agents view: every session in the project (agents.go)
+	Usage          key.Binding // open the usage view (usageview.go)
 	RunWorkflow    key.Binding // run a workflow on the selected task (workflowrun.go)
 	ViewRun        key.Binding // watch the selected task's workflow run (runview.go)
 	LogEntry       key.Binding // note attached to the selected task
@@ -144,6 +145,7 @@ func defaultKeyMap() keyMap {
 		Schedules:    key.NewBinding(key.WithKeys("X"), key.WithHelp("X", "schedules")),
 		Settings:     key.NewBinding(key.WithKeys(","), key.WithHelp(",", "settings")),
 		Agents:       key.NewBinding(key.WithKeys("A"), key.WithHelp("A", "agents")),
+		Usage:        key.NewBinding(key.WithKeys("$"), key.WithHelp("$", "usage")),
 		RunWorkflow:  key.NewBinding(key.WithKeys("w"), key.WithHelp("w", "run workflow")),
 		ViewRun:      key.NewBinding(key.WithKeys("v"), key.WithHelp("v", "watch run")),
 		LogEntry:     key.NewBinding(key.WithKeys("U"), key.WithHelp("U", "note on task")),
