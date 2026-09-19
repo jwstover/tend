@@ -79,7 +79,7 @@ func TestSessionsKeyNoSessionsOpensCwdPrompt(t *testing.T) {
 	if a.promptKind != promptSessionCwd {
 		t.Fatalf("promptKind = %v, want promptSessionCwd", a.promptKind)
 	}
-	if a.sessionPickerOpen {
+	if a.sessionPicker.open {
 		t.Error("picker should be skipped with no existing sessions")
 	}
 	if a.prompt.Value() != a.startCwd {
@@ -101,14 +101,14 @@ func TestSessionsKeyWithSessionsOpensPicker(t *testing.T) {
 
 	m = stepR(t, m)
 	a := m.(app)
-	if !a.sessionPickerOpen {
+	if !a.sessionPicker.open {
 		t.Fatal("picker not open with an existing session")
 	}
-	if len(a.sessionPickerSessions) != 1 || a.sessionPickerSessions[0].ExternalID != "ext-1" {
-		t.Errorf("sessionPickerSessions = %+v, want one session ext-1", a.sessionPickerSessions)
+	if len(a.sessionPicker.items) != 1 || a.sessionPicker.items[0].ExternalID != "ext-1" {
+		t.Errorf("sessionPicker.items = %+v, want one session ext-1", a.sessionPicker.items)
 	}
-	if a.sessionPickerSel != 0 {
-		t.Errorf("sessionPickerSel = %d, want 0 (+ new session)", a.sessionPickerSel)
+	if a.sessionPicker.sel != 0 {
+		t.Errorf("sessionPicker.sel = %d, want 0 (+ new session)", a.sessionPicker.sel)
 	}
 
 	content := ansi.Strip(m.View().Content)
@@ -134,7 +134,7 @@ func TestSessionPickerEnterOnNewRowOpensPromptWithLastCwd(t *testing.T) {
 
 	m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	a := m.(app)
-	if a.sessionPickerOpen {
+	if a.sessionPicker.open {
 		t.Error("picker still open after choosing + new session")
 	}
 	if a.promptKind != promptSessionCwd {
@@ -160,7 +160,7 @@ func TestSessionPickerDigitResumesAndClosesPicker(t *testing.T) {
 
 	// Step once so the resulting resume command (which shells out) isn't run.
 	m2, cmd := m.Update(keyPress('1'))
-	if m2.(app).sessionPickerOpen {
+	if m2.(app).sessionPicker.open {
 		t.Error("picker still open after choosing a session by digit")
 	}
 	if cmd == nil {
@@ -182,7 +182,7 @@ func TestSessionPickerEscDismisses(t *testing.T) {
 	m = stepR(t, m)
 
 	m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyEscape})
-	if m.(app).sessionPickerOpen {
+	if m.(app).sessionPicker.open {
 		t.Error("picker still open after esc")
 	}
 }
@@ -218,7 +218,7 @@ func sessionLabels(n int) []string {
 }
 
 // Twenty-five sessions used to render as twenty-five rows and push the
-// box off the top of the screen. The picker now shows sessionPickerMaxRows
+// box off the top of the screen. The picker now shows pickerMaxRows
 // at a time, newest first, and says how many are scrolled off.
 func TestSessionPickerClampsToMaxRows(t *testing.T) {
 	m := pickerWithSessions(t, sessionLabels(25)...)
@@ -247,8 +247,8 @@ func TestSessionPickerScrollsWithTheHighlight(t *testing.T) {
 		m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyDown})
 	}
 	a := m.(app)
-	if a.sessionPickerSel != 11 || a.sessionPickerTop != 1 {
-		t.Fatalf("sel, top = %d, %d; want 11, 1", a.sessionPickerSel, a.sessionPickerTop)
+	if a.sessionPicker.sel != 11 || a.sessionPicker.top != 1 {
+		t.Fatalf("sel, top = %d, %d; want 11, 1", a.sessionPicker.sel, a.sessionPicker.top)
 	}
 	content := ansi.Strip(m.View().Content)
 	for _, want := range []string{"s-24", "s-15", "↑ 1 more", "↓ 14 more"} {
@@ -265,8 +265,8 @@ func TestSessionPickerScrollsWithTheHighlight(t *testing.T) {
 		m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyUp})
 	}
 	a = m.(app)
-	if a.sessionPickerSel != 0 || a.sessionPickerTop != 0 {
-		t.Errorf("sel, top = %d, %d after moving back up; want 0, 0", a.sessionPickerSel, a.sessionPickerTop)
+	if a.sessionPicker.sel != 0 || a.sessionPicker.top != 0 {
+		t.Errorf("sel, top = %d, %d after moving back up; want 0, 0", a.sessionPicker.sel, a.sessionPicker.top)
 	}
 }
 
@@ -278,12 +278,12 @@ func TestSessionPickerDigitPicksVisibleRow(t *testing.T) {
 		m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyDown})
 	}
 	a := m.(app)
-	rows := a.sessionPickerMatches()
-	if got := rows[a.sessionPickerTop].Label; got != "s-24" {
+	rows := a.sessionPicker.matches()
+	if got := rows[a.sessionPicker.top].Label; got != "s-24" {
 		t.Fatalf("first visible row is %q, want s-24", got)
 	}
 	m2, cmd := m.Update(keyPress('1'))
-	if m2.(app).sessionPickerOpen {
+	if m2.(app).sessionPicker.open {
 		t.Error("picker still open after choosing a session by digit")
 	}
 	if cmd == nil {
@@ -315,10 +315,10 @@ func TestSessionPickerTypeToFilter(t *testing.T) {
 		m = drive(t, m, keyPress(r))
 	}
 	a := m.(app)
-	if a.sessionPickerQuery != "bta" {
-		t.Fatalf("query = %q, want bta", a.sessionPickerQuery)
+	if a.sessionPicker.query != "bta" {
+		t.Fatalf("query = %q, want bta", a.sessionPicker.query)
 	}
-	rows := a.sessionPickerMatches()
+	rows := a.sessionPicker.matches()
 	if len(rows) != 1 || rows[0].Label != "beta repo" {
 		t.Fatalf("matches = %+v, want just beta repo", rows)
 	}
@@ -329,7 +329,7 @@ func TestSessionPickerTypeToFilter(t *testing.T) {
 
 	m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyDown}) // onto the one match
 	m2, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if m2.(app).sessionPickerOpen {
+	if m2.(app).sessionPicker.open {
 		t.Error("picker still open after enter on a filtered match")
 	}
 	if cmd == nil {
@@ -352,32 +352,9 @@ func TestSessionPickerNoMatchThenBackspace(t *testing.T) {
 		m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyBackspace})
 	}
 	a := m.(app)
-	if a.sessionPickerQuery != "" || len(a.sessionPickerMatches()) != 2 {
+	if a.sessionPicker.query != "" || len(a.sessionPicker.matches()) != 2 {
 		t.Errorf("query = %q with %d matches after backspacing; want the full list back",
-			a.sessionPickerQuery, len(a.sessionPickerMatches()))
-	}
-}
-
-func TestSessionPickerWindow(t *testing.T) {
-	cases := []struct {
-		name             string
-		sel, top, n, vis int
-		want             int
-	}{
-		{"new row keeps the window", 0, 3, 25, 10, 3},
-		{"inside the window", 5, 0, 25, 10, 0},
-		{"one past the bottom scrolls by one", 11, 0, 25, 10, 1},
-		{"far below jumps", 25, 0, 25, 10, 15},
-		{"above the window pulls it up", 2, 5, 25, 10, 1},
-		{"window never overruns the end", 25, 20, 25, 10, 15},
-		{"fewer rows than the window", 3, 2, 3, 10, 0},
-		{"no rows", 0, 0, 0, 10, 0},
-	}
-	for _, c := range cases {
-		if got := sessionPickerWindow(c.sel, c.top, c.n, c.vis); got != c.want {
-			t.Errorf("%s: sessionPickerWindow(%d, %d, %d, %d) = %d, want %d",
-				c.name, c.sel, c.top, c.n, c.vis, got, c.want)
-		}
+			a.sessionPicker.query, len(a.sessionPicker.matches()))
 	}
 }
 

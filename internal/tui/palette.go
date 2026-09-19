@@ -165,14 +165,12 @@ func (a app) paletteCommands() []paletteCommand {
 	}
 }
 
-// paletteMatches filters the commands against the typed query,
-// case-insensitively. `add <text>` (and `a <text>`) becomes a synthetic
-// capture entry, preserving the old typed command; exact alias matches
-// come next, then label substrings.
-func (a app) paletteMatches() []paletteCommand {
-	raw := strings.TrimSpace(a.paletteQuery)
+// palettePicks is the palette's own filter: `add <text>` (and `a <text>`)
+// becomes a synthetic capture entry, preserving the old typed command;
+// exact alias matches come next; then the fuzzy hits over the labels.
+func palettePicks(query string, cmds []paletteCommand) []paletteCommand {
+	raw := strings.TrimSpace(query)
 	q := strings.ToLower(raw)
-	cmds := a.paletteCommands()
 
 	var out []paletteCommand
 	if name, rest, _ := strings.Cut(raw, " "); name != "" {
@@ -189,105 +187,63 @@ func (a app) paletteMatches() []paletteCommand {
 	if q == "" {
 		return append(out, cmds...)
 	}
+	var rest []paletteCommand
 	for _, c := range cmds {
 		if slices.Contains(c.aliases, q) {
 			out = append(out, c)
+		} else {
+			rest = append(rest, c)
 		}
 	}
-	for _, c := range cmds {
-		if !slices.Contains(c.aliases, q) && strings.Contains(strings.ToLower(c.label), q) {
-			out = append(out, c)
-		}
-	}
-	return out
+	return append(out, fuzzyFilter(query, rest, func(c paletteCommand) string { return c.label })...)
 }
 
 func (a *app) openPalette() {
-	a.paletteOpen, a.paletteQuery, a.paletteSel = true, "", 0
+	a.palette = picker[paletteCommand]{open: true, items: a.paletteCommands(), filter: palettePicks}
 }
 
 func (a *app) closePalette() {
-	a.paletteOpen, a.paletteQuery, a.paletteSel = false, "", 0
+	a.palette = picker[paletteCommand]{}
 }
 
 // handlePaletteKey owns the keyboard while the palette is open: type to
-// filter, ↑/↓ (or ctrl+p/ctrl+n) to move, ⏎ runs, esc dismisses.
+// filter, ↑/↓ (or ctrl+p/ctrl+n) to move, ⏎ runs, esc dismisses. Every
+// digit is filter text -- the palette is not numbered.
 func (a app) handlePaletteKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	items := a.paletteMatches()
-	switch msg.String() {
-	case "esc":
+	action, idx := a.palette.key(msg, a.height)
+	switch action {
+	case pickerCancel:
 		a.closePalette()
 		return a, nil
-	case "enter":
-		sel := a.paletteSel
+	case pickerPick:
+		c, ok := a.palette.at(idx)
 		a.closePalette()
-		if sel >= 0 && sel < len(items) {
-			return items[sel].act(a)
+		if !ok {
+			return a, nil
 		}
-		return a, nil
-	case "up", "ctrl+p":
-		if a.paletteSel > 0 {
-			a.paletteSel--
-		}
-		return a, nil
-	case "down", "ctrl+n":
-		if a.paletteSel < len(items)-1 {
-			a.paletteSel++
-		}
-		return a, nil
-	case "backspace":
-		if r := []rune(a.paletteQuery); len(r) > 0 {
-			a.paletteQuery = string(r[:len(r)-1])
-		}
-		a.paletteSel = 0
-		return a, nil
-	}
-	if msg.Text != "" {
-		a.paletteQuery += msg.Text
-		a.paletteSel = 0
+		return c.act(a)
 	}
 	return a, nil
 }
 
-// paletteView renders the fuzzy-finder box: a prompt row, a divider, then
-// the filtered commands, each with a right-aligned key hint.
+// paletteView renders the fuzzy-finder box: a prompt row (there is no
+// title row above it), then the filtered commands, each with a
+// right-aligned key hint.
 func (a app) paletteView() string {
-	s, g := a.styles, a.styles.Glyphs
-	w := max(a.width, 20)
-	cb := s.CardBorder
-	hbar := strings.Repeat(g.RuleH, w-4)
-
-	// Rows sit between `  │ ` and a closing `│` at the last column.
-	row := func(content string) string {
-		gap := max(w-5-lipgloss.Width(content), 0)
-		return "  " + cb.Render(g.RuleV) + " " + content +
-			strings.Repeat(" ", gap) + cb.Render(g.RuleV)
-	}
-
-	lines := []string{"  " + cb.Render(g.BoxTL+hbar+g.BoxTR)}
-	lines = append(lines, row(s.Accent.Bold(true).Render("❯ ")+
-		s.Title.Render(a.paletteQuery)+s.Accent.Render("▏")))
-	lines = append(lines, "  "+cb.Render(g.TeeRight+hbar+g.TeeLeft))
-
-	items := a.paletteMatches()
-	sel := min(a.paletteSel, len(items)-1)
-	if len(items) == 0 {
-		lines = append(lines, row("  "+s.Muted.Render("no matching commands")))
-	}
-	for i, it := range items {
-		var content string
-		if i == sel {
-			content = s.SelBar.Render(g.SelBar+" ") +
-				s.Accent.Render(it.icon+"  ") + s.Title.Bold(true).Render(it.label)
-		} else {
-			content = "  " + s.Muted.Render(it.icon+"  ") + s.Dimmed.Render(it.label)
-		}
-		if it.hint != "" {
-			gap := max(w-5-lipgloss.Width(content)-lipgloss.Width(it.hint)-1, 1)
-			content += strings.Repeat(" ", gap) + s.Faint.Render(it.hint)
-		}
-		lines = append(lines, row(content))
-	}
-	lines = append(lines, "  "+cb.Render(g.BoxBL+hbar+g.BoxBR))
-	return strings.Join(lines, "\n")
+	s := a.styles
+	return a.palette.render(s, a.width, a.height, pickerView[paletteCommand]{
+		row: func(c paletteCommand, selected bool, w int) string {
+			icon, title := s.Muted.Render(c.icon+"  "), s.Dimmed.Render(c.label)
+			if selected {
+				icon, title = s.Accent.Render(c.icon+"  "), s.Title.Bold(true).Render(c.label)
+			}
+			content := icon + title
+			if c.hint != "" {
+				gap := max(w-lipgloss.Width(content)-lipgloss.Width(c.hint)-1, 1)
+				content += strings.Repeat(" ", gap) + s.Faint.Render(c.hint)
+			}
+			return content
+		},
+		noMatch: "no matching commands",
+	})
 }

@@ -3,7 +3,6 @@ package tui
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -241,29 +240,23 @@ const (
 )
 
 // takeoverPicker is the overlay's state: the paused run and the step run
-// the session belonged to, as re-read when the session returned.
+// the session belonged to, as re-read when the session returned. Both
+// stages (§ below) share the one embedded picker; moving between them
+// swaps its items.
 type takeoverPicker struct {
-	open     bool
+	picker[choiceRow]
 	run      workflow.Run
 	stepRun  workflow.StepRun
 	stepName string
 	outcomes []string
 	stage    takeoverStage
-	sel      int
 }
 
-// takeoverChoice is one row of the picker's first stage.
-type takeoverChoice struct {
-	label, desc string
-	act         func(a *app) tea.Cmd
-}
-
-// choices is the first stage's rows. A step that already handed off --
-// finish_step was called from inside the session -- has nothing left to
-// decide but whether to go on, so the hand-back and rerun rows are left
-// out and continuing needs no outcome.
-func (p takeoverPicker) choices() []takeoverChoice {
-	run, sr := p.run, p.stepRun
+// takeoverChoices is the first stage's rows. A step that already handed
+// off -- finish_step was called from inside the session -- has nothing
+// left to decide but whether to go on, so the hand-back and rerun rows
+// are left out and continuing needs no outcome.
+func takeoverChoices(run workflow.Run, sr workflow.StepRun, stepName string) []choiceRow {
 	// Every row but the outcome stage's entry point closes the picker as
 	// it acts; chooseTakeoverOutcome moves to that stage instead.
 	closing := func(f func(a *app) tea.Cmd) func(a *app) tea.Cmd {
@@ -272,32 +265,32 @@ func (p takeoverPicker) choices() []takeoverChoice {
 			return f(a)
 		}
 	}
-	var out []takeoverChoice
+	var out []choiceRow
 	if sr.Finished() {
-		out = append(out, takeoverChoice{
+		out = append(out, choiceRow{
 			label: "continue the run",
-			desc:  fmt.Sprintf("%s handed off as %s; a runner routes on it", p.stepName, sr.Outcome),
+			desc:  fmt.Sprintf("%s handed off as %s; a runner routes on it", stepName, sr.Outcome),
 			act:   closing(func(a *app) tea.Cmd { return a.resumeRunCmd(run.ID, "") }),
 		})
 	} else {
 		out = append(out,
-			takeoverChoice{
+			choiceRow{
 				label: "continue the run",
-				desc:  "finish " + p.stepName + " by hand: pick its outcome, paste a deliverable, and a runner routes on it",
+				desc:  "finish " + stepName + " by hand: pick its outcome, paste a deliverable, and a runner routes on it",
 				act:   func(a *app) tea.Cmd { return a.chooseTakeoverOutcome() },
 			},
-			takeoverChoice{
+			choiceRow{
 				label: "hand the step back",
 				desc:  "a runner continues this session headlessly and finishes the step",
-				act:   closing(func(a *app) tea.Cmd { return a.resumeRunCmd(run.ID, p.stepName+" handed back") }),
+				act:   closing(func(a *app) tea.Cmd { return a.resumeRunCmd(run.ID, stepName+" handed back") }),
 			},
-			takeoverChoice{
+			choiceRow{
 				label: "rerun the step",
-				desc:  "a fresh session on the same step run; the runner starts " + p.stepName + " over",
-				act:   closing(func(a *app) tea.Cmd { return a.rerunStepCmd(run.ID, sr.ID, p.stepName) }),
+				desc:  "a fresh session on the same step run; the runner starts " + stepName + " over",
+				act:   closing(func(a *app) tea.Cmd { return a.rerunStepCmd(run.ID, sr.ID, stepName) }),
 			})
 	}
-	return append(out, takeoverChoice{
+	return append(out, choiceRow{
 		label: "abandon the run",
 		desc:  fmt.Sprintf("cancel run %d; nothing else runs", run.ID),
 		act:   closing(func(a *app) tea.Cmd { return a.cancelPausedRunCmd(run.ID) }),
@@ -306,22 +299,35 @@ func (p takeoverPicker) choices() []takeoverChoice {
 
 // openTakeoverPicker arms the picker from the re-read run.
 func (a *app) openTakeoverPicker(msg takeoverReturnedMsg) {
-	a.takeover = takeoverPicker{open: true, run: msg.run, stepRun: msg.stepRun,
-		stepName: msg.stepName, outcomes: msg.outcomes}
+	a.takeover = takeoverPicker{
+		picker: picker[choiceRow]{
+			open: true, numbered: true, footer: 1,
+			items: takeoverChoices(msg.run, msg.stepRun, msg.stepName),
+			label: func(c choiceRow) string { return c.label },
+		},
+		run: msg.run, stepRun: msg.stepRun, stepName: msg.stepName, outcomes: msg.outcomes,
+	}
 }
 
 func (a *app) closeTakeoverPicker() {
 	a.takeover = takeoverPicker{}
 }
 
-// chooseTakeoverOutcome moves to the outcome stage. A step with no edges
-// ends the run on any outcome, so there is nothing to choose: it goes
-// straight to the deliverable as done.
+// chooseTakeoverOutcome moves to the outcome stage: the picker's items
+// become one row per outcome the step routes, each finishing the step
+// with it. A step with no edges ends the run on any outcome, so there is
+// nothing to choose: it goes straight to the deliverable as done.
 func (a *app) chooseTakeoverOutcome() tea.Cmd {
-	if len(a.takeover.outcomes) == 0 {
+	outcomes := a.takeover.outcomes
+	if len(outcomes) == 0 {
 		return a.askTakeoverDeliverable(workflow.OutcomeDone)
 	}
-	a.takeover.stage, a.takeover.sel = takeoverOutcome, 0
+	items := make([]choiceRow, len(outcomes))
+	for i, o := range outcomes {
+		items[i] = choiceRow{label: o, act: func(a *app) tea.Cmd { return a.askTakeoverDeliverable(o) }}
+	}
+	a.takeover.stage = takeoverOutcome
+	a.takeover.items, a.takeover.query, a.takeover.sel, a.takeover.top = items, "", 0, 0
 	return nil
 }
 
@@ -335,49 +341,28 @@ func (a *app) askTakeoverDeliverable(outcome string) tea.Cmd {
 }
 
 // handleTakeoverPickerKey owns the keyboard while the picker is open, in
-// the other pickers' mould: arrows, j/k or ctrl-n/ctrl-p move, a digit
-// picks directly, Enter picks the highlight. esc backs out of the outcome
+// the other pickers' mould: arrows or ctrl-n/ctrl-p move, a digit picks
+// directly, Enter picks the highlight. esc backs out of the outcome
 // stage to the choices, and out of the choices altogether -- the run
-// stays paused, and the flash says how to come back to it.
+// stays paused, and the flash says how to come back to it. j/k are filter
+// text in both stages.
 func (a app) handleTakeoverPickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	p := a.takeover
-	rows := len(p.choices())
-	if p.stage == takeoverOutcome {
-		rows = len(p.outcomes)
-	}
-	pick := func(idx int) (tea.Model, tea.Cmd) {
-		if idx < 0 || idx >= rows {
-			return a, nil
-		}
-		if p.stage == takeoverOutcome {
-			return a, a.askTakeoverDeliverable(p.outcomes[idx])
-		}
-		return a, p.choices()[idx].act(&a)
-	}
-	switch msg.String() {
-	case "esc":
-		if p.stage == takeoverOutcome {
-			a.takeover.stage, a.takeover.sel = takeoverChoose, 0
+	stage, run, sr, stepName := a.takeover.stage, a.takeover.run, a.takeover.stepRun, a.takeover.stepName
+	action, idx := a.takeover.key(msg, a.height)
+	switch action {
+	case pickerCancel:
+		if stage == takeoverOutcome {
+			a.takeover.stage = takeoverChoose
+			a.takeover.items, a.takeover.query, a.takeover.sel, a.takeover.top = takeoverChoices(run, sr, stepName), "", 0, 0
 			return a, nil
 		}
 		a.closeTakeoverPicker()
-		a.status = flash{text: fmt.Sprintf("run %d stays paused — t takes the step over again, p resumes it", p.run.ID)}
+		a.status = flash{text: fmt.Sprintf("run %d stays paused — t takes the step over again, p resumes it", run.ID)}
 		return a, nil
-	case "enter":
-		return pick(p.sel)
-	case "up", "ctrl+p", "k":
-		if a.takeover.sel > 0 {
-			a.takeover.sel--
+	case pickerPick:
+		if c, ok := a.takeover.at(idx); ok {
+			return a, c.act(&a)
 		}
-		return a, nil
-	case "down", "ctrl+n", "j":
-		if a.takeover.sel < rows-1 {
-			a.takeover.sel++
-		}
-		return a, nil
-	}
-	if len(msg.Text) == 1 && msg.Text[0] >= '1' && msg.Text[0] <= '9' {
-		return pick(int(msg.Text[0] - '1'))
 	}
 	return a, nil
 }
@@ -388,58 +373,32 @@ func (a app) handleTakeoverPickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 func (a app) takeoverPickerView() string {
 	s, g := a.styles, a.styles.Glyphs
 	p := a.takeover
-	w := max(a.width, 20)
-	cb := s.CardBorder
-	hbar := strings.Repeat(g.RuleH, w-4)
-
-	row := func(content string) string {
-		gap := max(w-5-lipgloss.Width(content), 0)
-		return "  " + cb.Render(g.RuleV) + " " + content +
-			strings.Repeat(" ", gap) + cb.Render(g.RuleV)
-	}
-	name := truncTail(p.stepName, max(w-40, 10), g.Ellipsis)
+	name := truncTail(p.stepName, max(a.width-40, 10), g.Ellipsis)
 	title := s.Title.Render("back from ") + s.Accent.Render(name) +
 		s.Dimmed.Render(fmt.Sprintf("  run %d is paused", p.run.ID))
+	footer := "esc leave the run paused"
 	if p.stage == takeoverOutcome {
 		title = s.Title.Render("outcome for ") + s.Accent.Render(name) +
 			s.Dimmed.Render("  the edge it picks is where the run goes next")
+		footer = "esc back"
 	}
-	lines := []string{"  " + cb.Render(g.BoxTL+hbar+g.BoxTR)}
-	lines = append(lines, row(s.Accent.Bold(true).Render("⚡ ")+title+s.Muted.Render("  ⏎ or type a number")))
-	lines = append(lines, "  "+cb.Render(g.TeeRight+hbar+g.TeeLeft))
-
-	type item struct{ label, desc string }
-	var items []item
-	if p.stage == takeoverOutcome {
-		for _, o := range p.outcomes {
-			items = append(items, item{label: o})
-		}
-	} else {
-		for _, c := range p.choices() {
-			items = append(items, item{c.label, c.desc})
-		}
-	}
-	sel := min(p.sel, len(items)-1)
-	for i, it := range items {
-		num := fmt.Sprintf("%d ", i+1)
-		var content string
-		if i == sel {
-			content = s.SelBar.Render(g.SelBar+" ") + s.Accent.Render(num) + s.Title.Bold(true).Render(it.label)
-		} else {
-			content = "  " + s.Muted.Render(num) + s.Dimmed.Render(it.label)
-		}
-		if it.desc != "" {
-			content += s.Muted.Render("  " + truncTail(it.desc, max(w-12-lipgloss.Width(content), 10), g.Ellipsis))
-		}
-		lines = append(lines, row(content))
-	}
-	back := "esc leave the run paused"
-	if p.stage == takeoverOutcome {
-		back = "esc back"
-	}
-	lines = append(lines, row(s.Muted.Render(back)))
-	lines = append(lines, "  "+cb.Render(g.BoxBL+hbar+g.BoxBR))
-	return strings.Join(lines, "\n")
+	return p.render(s, a.width, a.height, pickerView[choiceRow]{
+		icon:  s.Accent.Bold(true).Render("⚡ "),
+		title: title,
+		hint:  s.Muted.Render("  ⏎ or type a number"),
+		row: func(c choiceRow, selected bool, w int) string {
+			label := s.Dimmed.Render(c.label)
+			if selected {
+				label = s.Title.Bold(true).Render(c.label)
+			}
+			if c.desc == "" {
+				return label
+			}
+			desc := s.Muted.Render("  " + truncTail(c.desc, max(w-lipgloss.Width(c.label)-2, 10), g.Ellipsis))
+			return label + desc
+		},
+		footer: s.Muted.Render(footer),
+	})
 }
 
 // --- actions --------------------------------------------------------------

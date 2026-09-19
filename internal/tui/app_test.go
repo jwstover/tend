@@ -1341,11 +1341,13 @@ func TestPaletteFilterAndRun(t *testing.T) {
 	m, _ := newTestApp(t)
 
 	m = drive(t, m, keyPress(':'))
-	if !m.(app).paletteOpen {
+	if !m.(app).palette.open {
 		t.Fatal("palette not open after :")
 	}
 	content := ansi.Strip(m.View().Content)
-	for _, want := range []string{"❯", "Toggle detail pane", "Triage the inbox", "Quit"} {
+	// The palette now caps at ten rows like every other picker; Quit sits
+	// near the bottom of the full list and only shows up once filtered.
+	for _, want := range []string{"❯", "Toggle detail pane", "Triage the inbox", "more"} {
 		if !strings.Contains(content, want) {
 			t.Errorf("palette missing %q:\n%s", want, content)
 		}
@@ -1365,7 +1367,7 @@ func TestPaletteFilterAndRun(t *testing.T) {
 	}
 	m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	a := m.(app)
-	if a.paletteOpen {
+	if a.palette.open {
 		t.Error("palette still open after enter")
 	}
 	if a.mode != modeTriage {
@@ -1380,11 +1382,11 @@ func TestPaletteEscDismissesAndSwallowsKeys(t *testing.T) {
 	// While open, list keys are query text, not navigation/quit.
 	m = drive(t, m, keyPress('q'))
 	a := m.(app)
-	if !a.paletteOpen || a.paletteQuery != "q" {
-		t.Fatalf("palette state after typing q = (%v, %q), want (true, q)", a.paletteOpen, a.paletteQuery)
+	if !a.palette.open || a.palette.query != "q" {
+		t.Fatalf("palette state after typing q = (%v, %q), want (true, q)", a.palette.open, a.palette.query)
 	}
 	m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyEscape})
-	if m.(app).paletteOpen {
+	if m.(app).palette.open {
 		t.Error("palette still open after esc")
 	}
 }
@@ -1407,7 +1409,7 @@ func TestPaletteTypedQuitAlias(t *testing.T) {
 	if !quit {
 		t.Errorf("`:quit` did not produce tea.QuitMsg")
 	}
-	if m2.(app).paletteOpen {
+	if m2.(app).palette.open {
 		t.Error("palette still open after running quit")
 	}
 }
@@ -1707,7 +1709,7 @@ func TestOpenURLPickerMultipleLinks(t *testing.T) {
 
 	// `o` on a task with 2+ links opens the picker, listing every URL.
 	m = drive(t, m, keyPress('o'))
-	if !m.(app).urlPickerOpen {
+	if !m.(app).urlPicker.open {
 		t.Fatal("picker not open after o with multiple links")
 	}
 	content := ansi.Strip(m.View().Content)
@@ -1719,12 +1721,40 @@ func TestOpenURLPickerMultipleLinks(t *testing.T) {
 
 	// ↓ moves the selection; esc dismisses without opening anything.
 	m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyDown})
-	if sel := m.(app).urlPickerSel; sel != 1 {
+	if sel := m.(app).urlPicker.sel; sel != 1 {
 		t.Errorf("selection after ↓ = %d, want 1", sel)
 	}
 	m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyEscape})
-	if m.(app).urlPickerOpen {
+	if m.(app).urlPicker.open {
 		t.Error("picker still open after esc")
+	}
+}
+
+// Typing fuzzy-filters the links by label, resets the cursor, and a digit
+// picks the visible match.
+func TestURLPickerTypeToFilter(t *testing.T) {
+	m := twoLinkApp(t)
+	m = drive(t, m, keyPress('o'))
+	if got := m.(app).urlPicker.matches(); len(got) != 2 {
+		t.Fatalf("matches = %v, want both links", got)
+	}
+
+	m = typeText(t, m, "two")
+	a := m.(app)
+	matches := a.urlPicker.matches()
+	if len(matches) != 1 || matches[0].url != "https://example.com/two" {
+		t.Fatalf("matches after typing two = %v, want just .../two", matches)
+	}
+	if a.urlPicker.sel != 0 {
+		t.Errorf("sel after typing = %d, want reset to 0", a.urlPicker.sel)
+	}
+
+	m2, cmd := m.Update(keyPress('1'))
+	if m2.(app).urlPicker.open {
+		t.Error("digit on the filtered match should pick and close")
+	}
+	if cmd == nil {
+		t.Error("picking the filtered match did not produce an open command")
 	}
 }
 
@@ -1735,7 +1765,7 @@ func TestURLPickerDigitOpens(t *testing.T) {
 	// Typing the index opens that link and closes the picker. Step once so
 	// the resulting open command isn't run (it shells out to the OS opener).
 	m2, cmd := m.Update(keyPress('2'))
-	if m2.(app).urlPickerOpen {
+	if m2.(app).urlPicker.open {
 		t.Error("picker still open after typing an index")
 	}
 	if cmd == nil {
@@ -1744,7 +1774,7 @@ func TestURLPickerDigitOpens(t *testing.T) {
 
 	// An out-of-range digit is ignored: the picker stays open.
 	m3, _ := m.Update(keyPress('9'))
-	if !m3.(app).urlPickerOpen {
+	if !m3.(app).urlPicker.open {
 		t.Error("picker closed on an out-of-range digit")
 	}
 }
@@ -1769,7 +1799,7 @@ func TestOpenURLSingleLinkSkipsPicker(t *testing.T) {
 		t.Fatal("o did not produce a resolve command")
 	}
 	m3, cmd := m2.Update(cmd())
-	if m3.(app).urlPickerOpen {
+	if m3.(app).urlPicker.open {
 		t.Error("picker opened for a single link")
 	}
 	if cmd == nil {
@@ -1801,11 +1831,11 @@ func TestOpenURLIncludesLogEntryLinks(t *testing.T) {
 
 	// `o` offers both links: body first, then the log entry's.
 	m = drive(t, m, keyPress('o'))
-	if !m.(app).urlPickerOpen {
+	if !m.(app).urlPicker.open {
 		t.Fatal("picker not open when body and log each hold a link")
 	}
 	want := []link{{url: "https://example.com/body"}, {url: "https://example.com/from-log"}}
-	if got := m.(app).urlPickerURLs; !slices.Equal(got, want) {
+	if got := m.(app).urlPicker.items; !slices.Equal(got, want) {
 		t.Errorf("picker URLs = %v, want %v", got, want)
 	}
 }
@@ -1842,7 +1872,7 @@ func TestURLPickerShowsMarkdownLinkTitles(t *testing.T) {
 		{title: "the spec", url: "https://example.com/spec"},
 		{url: "https://example.com/bare"},
 	}
-	if got := m.(app).urlPickerURLs; !slices.Equal(got, want) {
+	if got := m.(app).urlPicker.items; !slices.Equal(got, want) {
 		t.Errorf("picker links = %v, want %v", got, want)
 	}
 	// Assert on the picker box alone — the detail pane behind it still

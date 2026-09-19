@@ -3,10 +3,8 @@ package tui
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
 
 	"github.com/jwstover/tend/internal/agent"
 	"github.com/jwstover/tend/internal/runner"
@@ -72,81 +70,36 @@ func (a *app) openWorkflowRunPicker(msg workflowsForRunMsg) tea.Cmd {
 		a.status = flash{text: "no workflows yet — press W to create one"}
 		return nil
 	}
-	a.wfRunPickerOpen = true
 	a.wfRunPickerTask = msg.t
-	a.wfRunPickerWorkflows = msg.workflows
-	a.wfRunPickerQuery = ""
-	a.wfRunPickerSel = 0
+	a.wfRunPicker = picker[workflow.Workflow]{
+		open: true, items: msg.workflows, numbered: true,
+		label: func(w workflow.Workflow) string { return w.Name },
+	}
 	return nil
 }
 
 func (a *app) closeWorkflowRunPicker() {
-	a.wfRunPickerOpen = false
 	a.wfRunPickerTask = task.Task{}
-	a.wfRunPickerWorkflows = nil
-	a.wfRunPickerQuery = ""
-	a.wfRunPickerSel = 0
-}
-
-// wfRunPickerMatches narrows the workflows to those whose name fuzzy-
-// matches the typed query (fuzzyFilter: substring hits first, then
-// in-order subsequence hits), in the list's order within each tier.
-// The digit shortcuts and the cursor both index this list, not the
-// full one.
-func (a app) wfRunPickerMatches() []workflow.Workflow {
-	return fuzzyFilter(a.wfRunPickerQuery, a.wfRunPickerWorkflows,
-		func(w workflow.Workflow) string { return w.Name })
+	a.wfRunPicker = picker[workflow.Workflow]{}
 }
 
 // handleWorkflowRunPickerKey owns the keyboard while the picker is open:
 // type to filter, arrows or ctrl-n/ctrl-p move, a digit picks that
 // visible row directly, Enter picks the highlight, esc dismisses.
 func (a app) handleWorkflowRunPickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	wfs := a.wfRunPickerMatches()
-	pick := func(idx int) (tea.Model, tea.Cmd) {
-		t := a.wfRunPickerTask
+	t := a.wfRunPickerTask
+	action, idx := a.wfRunPicker.key(msg, a.height)
+	switch action {
+	case pickerCancel:
 		a.closeWorkflowRunPicker()
-		if idx < 0 || idx >= len(wfs) {
+		return a, nil
+	case pickerPick:
+		w, ok := a.wfRunPicker.at(idx)
+		a.closeWorkflowRunPicker()
+		if !ok {
 			return a, nil
 		}
-		return a, a.checkWorkflowRunnableCmd(t, wfs[idx])
-	}
-
-	switch msg.String() {
-	case "esc":
-		a.closeWorkflowRunPicker()
-		return a, nil
-	case "enter":
-		return pick(a.wfRunPickerSel)
-	case "up", "ctrl+p":
-		if a.wfRunPickerSel > 0 {
-			a.wfRunPickerSel--
-		}
-		return a, nil
-	case "down", "ctrl+n":
-		if a.wfRunPickerSel < len(wfs)-1 {
-			a.wfRunPickerSel++
-		}
-		return a, nil
-	case "backspace":
-		if r := []rune(a.wfRunPickerQuery); len(r) > 0 {
-			a.wfRunPickerQuery = string(r[:len(r)-1])
-		}
-		a.wfRunPickerSel = 0
-		return a, nil
-	}
-	// A digit 1-9 picks that visible row directly, like the parent picker;
-	// a digit past the end is swallowed rather than typed, since no
-	// workflow name is likely to be found by it.
-	if len(msg.Text) == 1 && msg.Text[0] >= '1' && msg.Text[0] <= '9' {
-		if idx := int(msg.Text[0] - '1'); idx < len(wfs) {
-			return pick(idx)
-		}
-		return a, nil
-	}
-	if msg.Text != "" {
-		a.wfRunPickerQuery += msg.Text
-		a.wfRunPickerSel = 0
+		return a, a.checkWorkflowRunnableCmd(t, w)
 	}
 	return a, nil
 }
@@ -232,49 +185,25 @@ func (a app) startWorkflowRunCmd(req workflowRunRequest, cwd string) tea.Cmd {
 // mould: a title naming the task, a divider, the filter prompt, then the
 // numbered matching workflows with their step counts.
 func (a app) workflowRunPickerView() string {
-	s, g := a.styles, a.styles.Glyphs
-	w := max(a.width, 20)
-	cb := s.CardBorder
-	hbar := strings.Repeat(g.RuleH, w-4)
-
-	row := func(content string) string {
-		gap := max(w-5-lipgloss.Width(content), 0)
-		return "  " + cb.Render(g.RuleV) + " " + content +
-			strings.Repeat(" ", gap) + cb.Render(g.RuleV)
-	}
-
-	title := truncTail(a.wfRunPickerTask.Title, max(w-30, 10), g.Ellipsis)
-	lines := []string{"  " + cb.Render(g.BoxTL+hbar+g.BoxTR)}
-	lines = append(lines, row(s.Accent.Bold(true).Render("⚡ ")+
-		s.Title.Render("run workflow on ")+s.Dimmed.Render(title)+
-		s.Muted.Render("  type to filter, ⏎ or a digit picks")))
-	lines = append(lines, "  "+cb.Render(g.TeeRight+hbar+g.TeeLeft))
-	lines = append(lines, row(s.Accent.Bold(true).Render("❯ ")+
-		s.Title.Render(a.wfRunPickerQuery)+s.Accent.Render("▏")))
-
-	wfs := a.wfRunPickerMatches()
-	if len(wfs) == 0 {
-		lines = append(lines, row("  "+s.Muted.Render("no matching workflows")))
-	}
-	sel := min(a.wfRunPickerSel, len(wfs)-1)
-	for i, wf := range wfs {
-		num := fmt.Sprintf("%d ", i+1)
-		meta := fmt.Sprintf("%d steps", wf.StepCount)
-		switch wf.StepCount {
-		case 0:
-			meta = "no steps"
-		case 1:
-			meta = "1 step"
-		}
-		var content string
-		if i == sel {
-			content = s.SelBar.Render(g.SelBar+" ") + s.Accent.Render(num) +
-				s.Title.Render(wf.Name) + "  " + s.Muted.Render(meta)
-		} else {
-			content = "  " + s.Muted.Render(num) + s.Dimmed.Render(wf.Name) + "  " + s.Muted.Render(meta)
-		}
-		lines = append(lines, row(content))
-	}
-	lines = append(lines, "  "+cb.Render(g.BoxBL+hbar+g.BoxBR))
-	return strings.Join(lines, "\n")
+	s := a.styles
+	title := truncTail(a.wfRunPickerTask.Title, max(a.width-30, 10), s.Glyphs.Ellipsis)
+	return a.wfRunPicker.render(s, a.width, a.height, pickerView[workflow.Workflow]{
+		icon:  s.Accent.Bold(true).Render("⚡ "),
+		title: s.Title.Render("run workflow on ") + s.Dimmed.Render(title),
+		hint:  s.Muted.Render("  type to filter, ⏎ or a digit picks"),
+		row: func(wf workflow.Workflow, selected bool, w int) string {
+			meta := fmt.Sprintf("%d steps", wf.StepCount)
+			switch wf.StepCount {
+			case 0:
+				meta = "no steps"
+			case 1:
+				meta = "1 step"
+			}
+			if selected {
+				return s.Title.Render(wf.Name) + "  " + s.Muted.Render(meta)
+			}
+			return s.Dimmed.Render(wf.Name) + "  " + s.Muted.Render(meta)
+		},
+		noMatch: "no matching workflows",
+	})
 }

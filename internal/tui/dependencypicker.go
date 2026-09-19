@@ -4,7 +4,6 @@ import (
 	"cmp"
 	"fmt"
 	"slices"
-	"strings"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -133,6 +132,12 @@ func rank(later bool) int {
 	return 0
 }
 
+// dependencyRowLabel is what the filter matches: the title and project
+// together, so a query matching either field lands in fuzzyFilter's
+// substring or in-order-subsequence tier (fuzzyMatch skips whitespace in
+// the query, so a cross-field query still works).
+func dependencyRowLabel(r dependencyRow) string { return r.title + "  " + r.project }
+
 // openDependencyPicker arms the picker with the loaded candidates, the
 // current blockers checked.
 func (a *app) openDependencyPicker(msg dependencyCandidatesMsg) {
@@ -140,89 +145,38 @@ func (a *app) openDependencyPicker(msg dependencyCandidatesMsg) {
 	for _, blk := range msg.blockers {
 		checked[blk.ID] = true
 	}
-	a.depPickerOpen = true
 	a.depPickerTaskID = msg.task.ID
 	a.depPickerProject = msg.task.ProjectID
 	a.depPickerLabel = msg.task.Title
-	a.depPickerQuery = ""
-	a.depPickerSel = 0
 	a.depPickerChecked = checked
-	a.depPickerRows = dependencyCandidates(msg.task, msg.open, msg.projects, checked, msg.blockers)
+	a.depPicker = picker[dependencyRow]{
+		open: true, numbered: true, label: dependencyRowLabel,
+		items: dependencyCandidates(msg.task, msg.open, msg.projects, checked, msg.blockers),
+	}
 }
 
 func (a *app) closeDependencyPicker() {
-	a.depPickerOpen = false
 	a.depPickerTaskID = 0
 	a.depPickerProject = 0
 	a.depPickerLabel = ""
-	a.depPickerQuery = ""
-	a.depPickerSel = 0
-	a.depPickerRows = nil
 	a.depPickerChecked = nil
-}
-
-// dependencyPickerMatches narrows the rows to those whose title or
-// project name contains the query, case-insensitively.
-func (a app) dependencyPickerMatches() []dependencyRow {
-	q := strings.ToLower(strings.TrimSpace(a.depPickerQuery))
-	if q == "" {
-		return a.depPickerRows
-	}
-	var out []dependencyRow
-	for _, r := range a.depPickerRows {
-		if strings.Contains(strings.ToLower(r.title), q) ||
-			strings.Contains(strings.ToLower(r.project), q) {
-			out = append(out, r)
-		}
-	}
-	return out
+	a.depPicker = picker[dependencyRow]{}
 }
 
 // handleDependencyPickerKey owns the keyboard while the picker is open:
 // type to filter, ↑/↓ (or ctrl+p/ctrl+n) to move, a digit or ⏎ toggles
 // the row and keeps the picker up, esc dismisses.
 func (a app) handleDependencyPickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	rows := a.dependencyPickerMatches()
-	toggle := func(r dependencyRow) (tea.Model, tea.Cmd) {
-		return a, a.toggleDependency(a.depPickerTaskID, r, a.depPickerChecked[r.id])
-	}
-
-	switch msg.String() {
-	case "esc":
+	taskID := a.depPickerTaskID
+	action, idx := a.depPicker.key(msg, a.height)
+	switch action {
+	case pickerCancel:
 		a.closeDependencyPicker()
 		return a, nil
-	case "enter":
-		if sel := a.depPickerSel; sel >= 0 && sel < len(rows) {
-			return toggle(rows[sel])
+	case pickerPick:
+		if r, ok := a.depPicker.at(idx); ok {
+			return a, a.toggleDependency(taskID, r, a.depPickerChecked[r.id])
 		}
-		return a, nil
-	case "up", "ctrl+p":
-		if a.depPickerSel > 0 {
-			a.depPickerSel--
-		}
-		return a, nil
-	case "down", "ctrl+n":
-		if a.depPickerSel < len(rows)-1 {
-			a.depPickerSel++
-		}
-		return a, nil
-	case "backspace":
-		if r := []rune(a.depPickerQuery); len(r) > 0 {
-			a.depPickerQuery = string(r[:len(r)-1])
-		}
-		a.depPickerSel = 0
-		return a, nil
-	}
-	// A digit 1-9 toggles that visible row directly, like the project picker.
-	if len(msg.Text) == 1 && msg.Text[0] >= '1' && msg.Text[0] <= '9' {
-		if idx := int(msg.Text[0] - '1'); idx < len(rows) {
-			return toggle(rows[idx])
-		}
-		return a, nil
-	}
-	if msg.Text != "" {
-		a.depPickerQuery += msg.Text
-		a.depPickerSel = 0
 	}
 	return a, nil
 }
@@ -256,7 +210,7 @@ func (a app) toggleDependency(taskID int64, r dependencyRow, checked bool) tea.C
 // re-sorting on every toggle would move the row out from under the
 // cursor mid-visit.
 func (a *app) applyDependencyToggle(msg dependencyToggledMsg) tea.Cmd {
-	if a.depPickerOpen && a.depPickerTaskID == msg.taskID && a.depPickerChecked != nil {
+	if a.depPicker.open && a.depPickerTaskID == msg.taskID && a.depPickerChecked != nil {
 		a.depPickerChecked[msg.dependsOnID] = msg.added
 	}
 	text := fmt.Sprintf("#%d no longer waits on #%d", msg.taskID, msg.dependsOnID)
@@ -273,67 +227,38 @@ func (a *app) applyDependencyToggle(msg dependencyToggledMsg) tea.Cmd {
 // the current one marked and each blocker checked.
 func (a app) dependencyPickerView() string {
 	s, g := a.styles, a.styles.Glyphs
-	w := max(a.width, 20)
-	cb := s.CardBorder
-	hbar := strings.Repeat(g.RuleH, w-4)
-
-	row := func(content string) string {
-		gap := max(w-5-lipgloss.Width(content), 0)
-		return "  " + cb.Render(g.RuleV) + " " + content +
-			strings.Repeat(" ", gap) + cb.Render(g.RuleV)
-	}
-
-	title := truncTail(a.depPickerLabel, max(w-40, 10), g.Ellipsis)
-	head := s.Accent.Bold(true).Render(g.CaretClosed+" ") +
-		s.Title.Render("dependencies of ") +
-		s.Dimmed.Render(fmt.Sprintf("#%d %s", a.depPickerTaskID, title))
-	hint := s.FooterKey.Render("esc") + s.Muted.Render(" closes")
-	head += strings.Repeat(" ", max(w-5-lipgloss.Width(head)-lipgloss.Width(hint), 1)) + hint
-	lines := []string{"  " + cb.Render(g.BoxTL+hbar+g.BoxTR)}
-	lines = append(lines, row(head))
-	lines = append(lines, "  "+cb.Render(g.TeeRight+hbar+g.TeeLeft))
-	lines = append(lines, row(s.Accent.Bold(true).Render("❯ ")+
-		s.Title.Render(a.depPickerQuery)+s.Accent.Render("▏")))
-
-	rows := a.dependencyPickerMatches()
-	switch {
-	case len(a.depPickerRows) == 0:
-		lines = append(lines, row("  "+s.Muted.Render("no other open tasks")))
-	case len(rows) == 0:
-		lines = append(lines, row("  "+s.Muted.Render("no matching tasks")))
-	}
-	sel := min(a.depPickerSel, len(rows)-1)
-	for i, r := range rows {
-		num := fmt.Sprintf("%d ", i+1)
-		box := s.CheckOpen.Render(g.BoxUnchecked)
-		if a.depPickerChecked[r.id] {
-			box = s.CheckDone.Render(g.BoxChecked)
-		}
-		id := fmt.Sprintf("#%d", r.id)
-		// Title, project and id share the row: the title gives way first.
-		fixed := 2 + len(num) + lipgloss.Width(box) + 1 + 2 + len(id)
-		if r.project != "" {
-			fixed += 2 + runeWidth(r.project)
-		}
-		label := truncTail(r.title, max(w-5-fixed, 10), g.Ellipsis)
-		titleStyle, projStyle := s.Dimmed, s.Faint
-		if i == sel {
-			titleStyle, projStyle = s.Title, s.Muted
-		}
-		if r.done {
-			titleStyle = s.SubDoneText
-		}
-		content := "  " + s.Muted.Render(num)
-		if i == sel {
-			content = s.SelBar.Render(g.SelBar+" ") + s.Accent.Render(num)
-		}
-		content += box + " " + titleStyle.Render(label)
-		if r.project != "" {
-			content += "  " + projStyle.Render(r.project)
-		}
-		content += "  " + s.DetailFaint.Render(id)
-		lines = append(lines, row(content))
-	}
-	lines = append(lines, "  "+cb.Render(g.BoxBL+hbar+g.BoxBR))
-	return strings.Join(lines, "\n")
+	title := truncTail(a.depPickerLabel, max(a.width-40, 10), g.Ellipsis)
+	return a.depPicker.render(s, a.width, a.height, pickerView[dependencyRow]{
+		icon:  s.Accent.Bold(true).Render(g.CaretClosed + " "),
+		title: s.Title.Render("dependencies of ") + s.Dimmed.Render(fmt.Sprintf("#%d %s", a.depPickerTaskID, title)),
+		right: s.FooterKey.Render("esc") + s.Muted.Render(" closes"),
+		row: func(r dependencyRow, selected bool, w int) string {
+			box := s.CheckOpen.Render(g.BoxUnchecked)
+			if a.depPickerChecked[r.id] {
+				box = s.CheckDone.Render(g.BoxChecked)
+			}
+			id := fmt.Sprintf("#%d", r.id)
+			// Title, project and id share the row: the title gives way first.
+			fixed := lipgloss.Width(box) + 1 + 2 + len(id)
+			if r.project != "" {
+				fixed += 2 + runeWidth(r.project)
+			}
+			label := truncTail(r.title, max(w-fixed, 10), g.Ellipsis)
+			titleStyle, projStyle := s.Dimmed, s.Faint
+			if selected {
+				titleStyle, projStyle = s.Title, s.Muted
+			}
+			if r.done {
+				titleStyle = s.SubDoneText
+			}
+			content := box + " " + titleStyle.Render(label)
+			if r.project != "" {
+				content += "  " + projStyle.Render(r.project)
+			}
+			content += "  " + s.DetailFaint.Render(id)
+			return content
+		},
+		empty:   "no other open tasks",
+		noMatch: "no matching tasks",
+	})
 }
