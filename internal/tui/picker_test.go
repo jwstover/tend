@@ -95,7 +95,7 @@ func TestPickerDigitPicksVisibleRowElseTypes(t *testing.T) {
 	}
 
 	p2 := picker[string]{items: items, label: func(s string) string { return s }, numbered: true}
-	action, idx = p2.key(tea.KeyPressMsg{Code: '7', Text: "7"}, 0)
+	action, _ = p2.key(tea.KeyPressMsg{Code: '7', Text: "7"}, 0)
 	if action != pickerNone || p2.query != "7" {
 		t.Errorf("digit 7 past the end should type instead, got action=%v query=%q", action, p2.query)
 	}
