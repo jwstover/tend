@@ -83,6 +83,7 @@ func newRootCmd(open StoreFactory, runTUI TUIRunner, openMCP MCPStoreFactory, op
 	root.AddCommand(newLsCmd(openHere))
 	root.AddCommand(newProjectsCmd(openHere))
 	root.AddCommand(newStandupCmd(openHere))
+	root.AddCommand(newUsageCmd())
 	root.AddCommand(newLogCmd(openHere))
 	root.AddCommand(newMcpCmd(openMCPHere))
 	root.AddCommand(newAgentHookCmd(openHere))

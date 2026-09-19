@@ -176,6 +176,7 @@ tend/
 │   └── cli/                        # cobra commands
 │       ├── root.go                   #   command tree, Store/MCPStoreFactory/TUIRunner interfaces, --db resolution
 │       ├── add.go / ls.go / log.go / standup.go   #   fast, scriptable one-shots
+│       ├── usage.go                    #   `tend usage` — quota, 5h/7d/all-time token totals, breakdowns; --json for diffing
 │       ├── projects.go                 #   `tend projects` — list/add/rename/rm/archive/unarchive/cwd
 │       ├── auth.go                    #   `tend auth jira {login,status,logout}`
 │       ├── mcp.go                      #   hidden `tend mcp --task-id <id> [--step-run-id <id>]`, spawned by a launched claude session
@@ -392,6 +393,7 @@ Schema in `internal/store/migrations`, queries in `internal/store/queries`, gene
 | `tend projects add\|rename\|rm\|archive\|unarchive` | Manage projects. `rm` never deletes work — its tasks move to the default (`Unsorted`) project |
 | `tend log "<note>"` | Capture a standup note instantly, no TUI |
 | `tend standup` | Print a standup summary of recent activity as markdown |
+| `tend usage [--json] [--no-quota]` | Print Claude usage: the subscription quota (`claude -p /usage`; skipped with `--no-quota`, silently absent for an API-key login or a missing `claude`), 5h / 7d / all-time token totals with cache-hit ratio over every transcript under `~/.claude/projects` (`CLAUDE_CONFIG_DIR` honoured), and breakdowns by project cwd, model and main vs sub-agent. `--json` emits every token field (input, output, cache creation/read, ephemeral 5m/1h) so readings can be diffed between runs. Reads no SQLite. |
 | `tend auth jira login/status/logout` | Manage Jira credentials in the system keychain |
 | `tend workflow` / `tend workflow ls` | The workflow command group (`internal/cli/workflow.go`): the scriptable surface over the same store as the TUI, mirroring `tend projects`. Bare or `ls` lists workflows with their step counts. Authoring stays in the TUI (§7, `W`); names resolve, never create. |
 | `tend workflow start <workflow> --task <id> [--cwd <dir>]` | The CLI counterpart of the TUI's `w` chord: same pre-flight (steps exist, prompts render, `claude` and `tmux` present — each named when missing), same cwd default (task's last session, then project default, then the shell's), writes a `pending` run and launches its runner in tmux (`runner.Launch`). A runner that cannot start fails the run with the reason. |
