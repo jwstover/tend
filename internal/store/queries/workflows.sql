@@ -319,3 +319,16 @@ SET input_tokens          = input_tokens + sqlc.arg(input_tokens),
     cache_creation_tokens = cache_creation_tokens + sqlc.arg(cache_creation_tokens),
     cache_read_tokens     = cache_read_tokens + sqlc.arg(cache_read_tokens)
 WHERE id = sqlc.arg(id);
+
+-- name: AddStepRunEvent :exec
+INSERT INTO workflow_step_run_events (
+  step_run_id, name, session_id, model, query_source, agent_name, skill_name,
+  mcp_server_name, input_tokens, output_tokens, cache_read_tokens,
+  cache_creation_tokens, cost_usd, duration_ms, status_code, attributes,
+  occurred_at, received_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+
+-- name: ListStepRunEvents :many
+SELECT * FROM workflow_step_run_events
+WHERE step_run_id = ?
+ORDER BY occurred_at, id;

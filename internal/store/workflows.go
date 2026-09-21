@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -741,6 +742,92 @@ func (s *Store) AddStepRunUsage(ctx context.Context, id int64, t usage.Tokens) e
 		return fmt.Errorf("adding usage to step run %d: %w", id, err)
 	}
 	return nil
+}
+
+// AddStepRunEvents records OpenTelemetry events claude exported for a step
+// run (tend task #31), all or none. Enrichment only: it never touches the
+// usage columns. An unknown step run fails the foreign key and the caller
+// (the runner's receiver) logs it and carries on.
+func (s *Store) AddStepRunEvents(ctx context.Context, stepRunID int64, evs []workflow.StepEvent) error {
+	now := time.Now()
+	return s.inTx(ctx, func(q *gen.Queries) error {
+		for _, ev := range evs {
+			attrs := ev.Attributes
+			if attrs == nil {
+				attrs = map[string]string{}
+			}
+			raw, err := json.Marshal(attrs)
+			if err != nil {
+				return fmt.Errorf("encoding attributes of %s event: %w", ev.Name, err)
+			}
+			received := ev.ReceivedAt
+			if received.IsZero() {
+				received = now
+			}
+			occurred := ev.OccurredAt
+			if occurred.IsZero() {
+				occurred = received
+			}
+			if err := q.AddStepRunEvent(ctx, gen.AddStepRunEventParams{
+				StepRunID: stepRunID, Name: ev.Name, SessionID: ev.SessionID, Model: ev.Model,
+				QuerySource: ev.QuerySource, AgentName: ev.AgentName, SkillName: ev.SkillName,
+				McpServerName: ev.MCPServerName,
+				InputTokens:   ev.Tokens.Input, OutputTokens: ev.Tokens.Output,
+				CacheReadTokens: ev.Tokens.CacheRead, CacheCreationTokens: ev.Tokens.CacheCreation,
+				CostUsd: ev.CostUSD, DurationMs: ev.DurationMS, StatusCode: ev.StatusCode,
+				Attributes: string(raw),
+				OccurredAt: occurred.UTC().Format(statusTimeLayout),
+				ReceivedAt: received.UTC().Format(statusTimeLayout),
+			}); err != nil {
+				return fmt.Errorf("adding %s event to step run %d: %w", ev.Name, stepRunID, err)
+			}
+		}
+		return nil
+	})
+}
+
+// ListStepRunEvents returns a step run's telemetry events in the order
+// they occurred.
+func (s *Store) ListStepRunEvents(ctx context.Context, stepRunID int64) ([]workflow.StepEvent, error) {
+	rows, err := s.q.ListStepRunEvents(ctx, stepRunID)
+	if err != nil {
+		return nil, fmt.Errorf("listing events of step run %d: %w", stepRunID, err)
+	}
+	out := make([]workflow.StepEvent, 0, len(rows))
+	for _, row := range rows {
+		ev, err := stepEventToDomain(row)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, ev)
+	}
+	return out, nil
+}
+
+func stepEventToDomain(row gen.WorkflowStepRunEvent) (workflow.StepEvent, error) {
+	occurred, err := parseStatusTime(row.OccurredAt)
+	if err != nil {
+		return workflow.StepEvent{}, fmt.Errorf("step event %d occurred_at: %w", row.ID, err)
+	}
+	received, err := parseStatusTime(row.ReceivedAt)
+	if err != nil {
+		return workflow.StepEvent{}, fmt.Errorf("step event %d received_at: %w", row.ID, err)
+	}
+	attrs := map[string]string{}
+	if err := json.Unmarshal([]byte(row.Attributes), &attrs); err != nil {
+		return workflow.StepEvent{}, fmt.Errorf("step event %d attributes: %w", row.ID, err)
+	}
+	return workflow.StepEvent{
+		ID: row.ID, StepRunID: row.StepRunID, Name: row.Name, SessionID: row.SessionID,
+		Model: row.Model, QuerySource: row.QuerySource, AgentName: row.AgentName,
+		SkillName: row.SkillName, MCPServerName: row.McpServerName,
+		Tokens: usage.Tokens{
+			Input: row.InputTokens, Output: row.OutputTokens,
+			CacheRead: row.CacheReadTokens, CacheCreation: row.CacheCreationTokens,
+		},
+		CostUSD: row.CostUsd, DurationMS: row.DurationMs, StatusCode: row.StatusCode,
+		Attributes: attrs, OccurredAt: occurred, ReceivedAt: received,
+	}, nil
 }
 
 // CreateStepRunSession is CreateSession for a session launched by a

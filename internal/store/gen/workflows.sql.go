@@ -10,6 +10,60 @@ import (
 	"database/sql"
 )
 
+const addStepRunEvent = `-- name: AddStepRunEvent :exec
+INSERT INTO workflow_step_run_events (
+  step_run_id, name, session_id, model, query_source, agent_name, skill_name,
+  mcp_server_name, input_tokens, output_tokens, cache_read_tokens,
+  cache_creation_tokens, cost_usd, duration_ms, status_code, attributes,
+  occurred_at, received_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`
+
+type AddStepRunEventParams struct {
+	StepRunID           int64
+	Name                string
+	SessionID           string
+	Model               string
+	QuerySource         string
+	AgentName           string
+	SkillName           string
+	McpServerName       string
+	InputTokens         int64
+	OutputTokens        int64
+	CacheReadTokens     int64
+	CacheCreationTokens int64
+	CostUsd             float64
+	DurationMs          int64
+	StatusCode          int64
+	Attributes          string
+	OccurredAt          string
+	ReceivedAt          string
+}
+
+func (q *Queries) AddStepRunEvent(ctx context.Context, arg AddStepRunEventParams) error {
+	_, err := q.db.ExecContext(ctx, addStepRunEvent,
+		arg.StepRunID,
+		arg.Name,
+		arg.SessionID,
+		arg.Model,
+		arg.QuerySource,
+		arg.AgentName,
+		arg.SkillName,
+		arg.McpServerName,
+		arg.InputTokens,
+		arg.OutputTokens,
+		arg.CacheReadTokens,
+		arg.CacheCreationTokens,
+		arg.CostUsd,
+		arg.DurationMs,
+		arg.StatusCode,
+		arg.Attributes,
+		arg.OccurredAt,
+		arg.ReceivedAt,
+	)
+	return err
+}
+
 const addStepRunUsage = `-- name: AddStepRunUsage :exec
 UPDATE workflow_step_runs
 SET input_tokens          = input_tokens + ?1,
@@ -683,6 +737,55 @@ func (q *Queries) ListRunsForTask(ctx context.Context, taskID int64) ([]Workflow
 			&i.StartedAt,
 			&i.EndedAt,
 			&i.Error,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listStepRunEvents = `-- name: ListStepRunEvents :many
+SELECT id, step_run_id, name, session_id, model, query_source, agent_name, skill_name, mcp_server_name, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, duration_ms, status_code, attributes, occurred_at, received_at FROM workflow_step_run_events
+WHERE step_run_id = ?
+ORDER BY occurred_at, id
+`
+
+func (q *Queries) ListStepRunEvents(ctx context.Context, stepRunID int64) ([]WorkflowStepRunEvent, error) {
+	rows, err := q.db.QueryContext(ctx, listStepRunEvents, stepRunID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []WorkflowStepRunEvent{}
+	for rows.Next() {
+		var i WorkflowStepRunEvent
+		if err := rows.Scan(
+			&i.ID,
+			&i.StepRunID,
+			&i.Name,
+			&i.SessionID,
+			&i.Model,
+			&i.QuerySource,
+			&i.AgentName,
+			&i.SkillName,
+			&i.McpServerName,
+			&i.InputTokens,
+			&i.OutputTokens,
+			&i.CacheReadTokens,
+			&i.CacheCreationTokens,
+			&i.CostUsd,
+			&i.DurationMs,
+			&i.StatusCode,
+			&i.Attributes,
+			&i.OccurredAt,
+			&i.ReceivedAt,
 		); err != nil {
 			return nil, err
 		}
