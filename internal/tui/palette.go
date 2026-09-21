@@ -96,6 +96,11 @@ func (a app) paletteCommands() []paletteCommand {
 				a.startWorkflows()
 				return a, a.loadWorkflows(0)
 			}},
+		{icon: "◔", label: "Usage view", hint: "$", aliases: []string{"usage", "quota", "tokens"},
+			act: func(a app) (tea.Model, tea.Cmd) {
+				a.startUsage()
+				return a, nil
+			}},
 		{icon: "◉", label: "Agents view", hint: "A", aliases: []string{"agents", "sessions"},
 			act: func(a app) (tea.Model, tea.Cmd) {
 				a.startAgents()
