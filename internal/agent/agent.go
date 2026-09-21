@@ -94,6 +94,10 @@ type LaunchOpts struct {
 	// every builder here; "" adds nothing. Both forms may be set; claude
 	// takes both.
 	AppendSystemPromptFile string
+	// Telemetry points a headless step's OpenTelemetry export at the
+	// runner's receiver (tend task #31). Zero = no telemetry env; the
+	// interactive LaunchCmd/ResumeCmd ignore it.
+	Telemetry TelemetryEndpoints
 }
 
 // LaunchCmdWith is LaunchCmd plus the step-level options a workflow run

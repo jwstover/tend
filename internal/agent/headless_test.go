@@ -432,3 +432,52 @@ func TestRunHeadlessRealClaude(t *testing.T) {
 		t.Errorf("no transcript for %s under %s; the -p session would not be resumable", id, cwd)
 	}
 }
+
+func TestHeadlessCmdTelemetryEnv(t *testing.T) {
+	t.Setenv("OTEL_LOGS_EXPORTER", "console")
+	lastVal := func(env []string, key string) (string, bool) {
+		v, ok := "", false
+		for _, e := range env {
+			if k, val, _ := strings.Cut(e, "="); k == key {
+				v, ok = val, true
+			}
+		}
+		return v, ok
+	}
+
+	c := HeadlessCmd(context.Background(), "/tmp", "sid", "", "", LaunchOpts{Prompt: "p"})
+	if c.Env != nil {
+		t.Errorf("zero Telemetry: Env = %v, want nil", c.Env)
+	}
+
+	c = HeadlessCmd(context.Background(), "/tmp", "sid", "", "", LaunchOpts{
+		Prompt:    "p",
+		Telemetry: TelemetryEndpoints{Logs: "http://x/l", Metrics: "http://x/m"},
+	})
+	for k, want := range map[string]string{
+		"CLAUDE_CODE_ENABLE_TELEMETRY":                      "1",
+		"OTEL_EXPORTER_OTLP_PROTOCOL":                       "http/json",
+		"OTEL_LOGS_EXPORTER":                                "otlp",
+		"OTEL_EXPORTER_OTLP_LOGS_PROTOCOL":                  "http/json",
+		"OTEL_EXPORTER_OTLP_LOGS_ENDPOINT":                  "http://x/l",
+		"OTEL_LOGS_EXPORT_INTERVAL":                         "1000",
+		"OTEL_TRACES_EXPORTER":                              "none",
+		"OTEL_METRICS_EXPORTER":                             "otlp",
+		"OTEL_EXPORTER_OTLP_METRICS_PROTOCOL":               "http/json",
+		"OTEL_EXPORTER_OTLP_METRICS_ENDPOINT":               "http://x/m",
+		"OTEL_METRIC_EXPORT_INTERVAL":                       "1000",
+		"OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE": "delta",
+	} {
+		if got, ok := lastVal(c.Env, k); !ok || got != want {
+			t.Errorf("%s = %q (set %v), want %q", k, got, ok, want)
+		}
+	}
+	if got, _ := lastVal(c.Env, "OTEL_LOGS_EXPORTER"); got != "otlp" {
+		t.Errorf("user's OTEL_LOGS_EXPORTER not overridden: last = %q", got)
+	}
+
+	c = HeadlessCmd(context.Background(), "/tmp", "sid", "", "", LaunchOpts{Prompt: "p", Telemetry: TelemetryEndpoints{Logs: "http://x/l"}})
+	if _, ok := lastVal(c.Env, "OTEL_METRICS_EXPORTER"); ok {
+		t.Error("metrics env set without a metrics endpoint")
+	}
+}
