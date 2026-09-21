@@ -33,6 +33,7 @@ type fakeStore struct {
 	edges     []workflow.Edge
 	stepRuns  map[int64]workflow.StepRun
 	runs      map[int64]workflow.Run
+	events    map[int64][]workflow.StepEvent
 
 	// onGetStep, when set, runs after GetStep has taken its copy and
 	// before it returns, so a test can stand in for another writer
@@ -269,6 +270,10 @@ func (s *fakeStore) SetDue(_ context.Context, id int64, due *string) error {
 	t.Due = due
 	s.tasks[id] = t
 	return nil
+}
+
+func (s *fakeStore) ListStepRunEvents(_ context.Context, id int64) ([]workflow.StepEvent, error) {
+	return s.events[id], nil
 }
 
 func (s *fakeStore) GetStepRun(_ context.Context, id int64) (workflow.StepRun, error) {

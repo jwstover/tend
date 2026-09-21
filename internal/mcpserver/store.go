@@ -63,6 +63,9 @@ type Store interface {
 	GetRun(ctx context.Context, id int64) (workflow.Run, error)
 	ListRunsForTask(ctx context.Context, taskID int64) ([]workflow.Run, error)
 	ListStepRunsForRun(ctx context.Context, runID int64) ([]workflow.StepRun, error)
+	// ListStepRunEvents is the OpenTelemetry enrichment for one step run
+	// (tend task #31); empty for runs from before it, or that never flushed.
+	ListStepRunEvents(ctx context.Context, stepRunID int64) ([]workflow.StepEvent, error)
 
 	// The workflow authoring tools (workflows.go), available to every
 	// session: the same writes the TUI's workflows view makes, so an
