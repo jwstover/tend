@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -132,6 +133,87 @@ type usageOut struct {
 	// SubagentToolCalls is every sub-agent's together.
 	ToolCalls         []toolUsageOut `json:"tool_calls"`
 	SubagentToolCalls []toolUsageOut `json:"subagent_tool_calls"`
+	// Telemetry summarizes the step run's OpenTelemetry events; nil when it
+	// has none, so older runs read as before.
+	Telemetry *telemetryOut `json:"telemetry,omitempty"`
+}
+
+// telemetryOut is the enrichment summary of a step run's telemetry events.
+type telemetryOut struct {
+	Events        int                           `json:"events"`
+	APIRequests   int                           `json:"api_requests"`
+	ByQuerySource map[string]telemetryTotalsOut `json:"by_query_source"`
+	ByAgent       map[string]telemetryTotalsOut `json:"by_agent"`
+	ByModel       map[string]telemetryTotalsOut `json:"by_model"`
+	// APIErrors counts api_error events by status code ("429": 2).
+	APIErrors map[string]int `json:"api_errors"`
+	// SessionStarts sums the session.count metric by start_type; a
+	// "resume" entry measures whether session continuation happened.
+	SessionStarts map[string]int `json:"session_starts"`
+	Note          string         `json:"note"`
+}
+
+type telemetryTotalsOut struct {
+	Requests            int     `json:"requests"`
+	InputTokens         int64   `json:"input_tokens"`
+	OutputTokens        int64   `json:"output_tokens"`
+	CacheReadTokens     int64   `json:"cache_read_tokens"`
+	CacheCreationTokens int64   `json:"cache_creation_tokens"`
+	CostUSD             float64 `json:"cost_usd"`
+}
+
+const telemetryNote = "enrichment from OpenTelemetry; may undercount when a step exits before its exporter flushes -- the token fields above are authoritative"
+
+func (t *telemetryTotalsOut) add(ev workflow.StepEvent) {
+	t.Requests++
+	t.InputTokens += ev.Tokens.Input
+	t.OutputTokens += ev.Tokens.Output
+	t.CacheReadTokens += ev.Tokens.CacheRead
+	t.CacheCreationTokens += ev.Tokens.CacheCreation
+	t.CostUSD += ev.CostUSD
+}
+
+// summarizeEvents rolls a step run's telemetry events up by query source,
+// agent and model. nil for no events.
+func summarizeEvents(evs []workflow.StepEvent) *telemetryOut {
+	if len(evs) == 0 {
+		return nil
+	}
+	out := &telemetryOut{
+		Events:        len(evs),
+		ByQuerySource: map[string]telemetryTotalsOut{},
+		ByAgent:       map[string]telemetryTotalsOut{},
+		ByModel:       map[string]telemetryTotalsOut{},
+		APIErrors:     map[string]int{},
+		SessionStarts: map[string]int{},
+		Note:          telemetryNote,
+	}
+	bump := func(m map[string]telemetryTotalsOut, key string, ev workflow.StepEvent) {
+		t := m[key]
+		t.add(ev)
+		m[key] = t
+	}
+	for _, ev := range evs {
+		switch ev.Name {
+		case "api_request":
+			out.APIRequests++
+			src := ev.QuerySource
+			if src == "" {
+				src = "unknown"
+			}
+			bump(out.ByQuerySource, src, ev)
+			if ev.AgentName != "" {
+				bump(out.ByAgent, ev.AgentName, ev)
+			}
+			bump(out.ByModel, ev.Model, ev)
+		case "api_error":
+			out.APIErrors[strconv.FormatInt(ev.StatusCode, 10)]++
+		case "session.count":
+			n, _ := strconv.Atoi(ev.Attributes["value"])
+			out.SessionStarts[ev.Attributes["start_type"]] += n
+		}
+	}
+	return out
 }
 
 type modelUsageOut struct {
@@ -265,7 +347,10 @@ func registerRunTools(srv *mcp.Server, store Store, taskID int64) {
 			"tool name with the bytes each tool's results put back into the context, for the " +
 			"top-level agent and for its sub-agents. Counters are summed across resumes; " +
 			"cost and the per-model breakdown are the session totals from the last result. " +
-			"A gate has no log.",
+			"A gate has no log. When the run captured OpenTelemetry, a telemetry block adds " +
+			"requests, tokens and cost by query source, agent and model, API errors by " +
+			"status code, and session starts by start_type (resume vs fresh); it is " +
+			"best-effort enrichment and may undercount.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in struct {
 		StepRunID int64 `json:"step_run_id" jsonschema:"the step run id, from get_workflow_run"`
 	}) (*mcp.CallToolResult, usageOut, error) {
@@ -295,7 +380,12 @@ func registerRunTools(srv *mcp.Server, store Store, taskID int64) {
 		if err != nil {
 			return nil, usageOut{}, fmt.Errorf("step run %d (%s): %w", sr.ID, st.Name, err)
 		}
-		return nil, toUsageOut(sr, st, u), nil
+		out := toUsageOut(sr, st, u)
+		// Enrichment: a read error leaves it out rather than failing the tool.
+		if evs, err := store.ListStepRunEvents(ctx, sr.ID); err == nil {
+			out.Telemetry = summarizeEvents(evs)
+		}
+		return nil, out, nil
 	})
 }
 

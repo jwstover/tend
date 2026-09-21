@@ -37,6 +37,7 @@ func (e ClaudeExec) Run(ctx context.Context, req StepExec) (agent.HeadlessResult
 	opts := agent.LaunchOpts{
 		Prompt: req.Prompt, Model: req.StepRun.Model, PermissionMode: req.StepRun.PermissionMode,
 		AdvisorModel: req.StepRun.AdvisorModel, AppendSystemPrompt: req.StepRun.SystemPrompt,
+		Telemetry: req.Telemetry,
 	}
 	build := agent.HeadlessCmd
 	if req.Resume {

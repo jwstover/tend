@@ -1129,3 +1129,7 @@ func TestWorkflowRunIDMustBePositive(t *testing.T) {
 		}
 	}
 }
+
+func (f *fakeWorkflowStore) AddStepRunEvents(context.Context, int64, []workflow.StepEvent) error {
+	return nil
+}

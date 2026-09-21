@@ -38,6 +38,12 @@
 //     wrong (workflow.RetryPrompt) instead of being settled from the log
 //     it already failed on, and the step run picks up the model and
 //     permission mode its step has now.
+//  8. With Runner.Telemetry, once the run is claimed the runner hosts a
+//     localhost OTLP/HTTP-JSON receiver (internal/telemetry) until Run
+//     returns, and every agent step's claude exports to it with the step
+//     run id in the URL (tend task #31). Enrichment only: events land in
+//     workflow_step_run_events, any failure is logged and never fails a
+//     step, and the result-event usage stays the source of truth.
 //
 // Everything that shells out goes through Exec, so the transition logic
 // is tested against a fake without claude on the machine.
@@ -50,10 +56,12 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jwstover/tend/internal/agent"
 	"github.com/jwstover/tend/internal/task"
+	"github.com/jwstover/tend/internal/telemetry"
 	"github.com/jwstover/tend/internal/usage"
 	"github.com/jwstover/tend/internal/workflow"
 )
@@ -84,6 +92,7 @@ type Store interface {
 	SetStepRunSession(ctx context.Context, id int64, externalID string) error
 	SetStepRunSettings(ctx context.Context, id int64, model, permissionMode, advisorModel string) error
 	AddStepRunUsage(ctx context.Context, id int64, t usage.Tokens) error
+	AddStepRunEvents(ctx context.Context, stepRunID int64, evs []workflow.StepEvent) error
 
 	CreateStepRunSession(ctx context.Context, stepRunID, taskID int64, externalID, cwd, label, tmuxSession string) (task.Session, error)
 	SetSessionStatus(ctx context.Context, externalID string, status task.SessionStatus) error
@@ -100,6 +109,9 @@ type StepExec struct {
 	TaskID  int64
 	Prompt  string
 	Resume  bool
+	// Telemetry is where the step's claude exports OpenTelemetry; zero
+	// when the runner has no receiver.
+	Telemetry agent.TelemetryEndpoints
 }
 
 // Exec is the seam between the transition logic and the claude process.
@@ -122,6 +134,13 @@ type Runner struct {
 	Exec  Exec
 	Poll  time.Duration
 	Log   io.Writer
+	// Telemetry starts an OTLP receiver for the life of the run and points
+	// every agent step's claude at it (tend task #31). Off in tests unless
+	// one opts in; the CLI's `run` command turns it on.
+	Telemetry bool
+
+	rcv   *telemetry.Receiver
+	logMu sync.Mutex
 }
 
 // DefaultPoll is how often the runner checks for a pause, cancel or gate
@@ -165,6 +184,22 @@ func (r *Runner) Run(ctx context.Context, runID int64, takeover bool) error {
 	run, retryReason, err := r.claim(ctx, runID, takeover)
 	if err != nil {
 		return err
+	}
+	if r.Telemetry {
+		if rcv, err := telemetry.Listen(r.sink(run.ID)); err != nil {
+			r.logf("run %d: telemetry off: %v", run.ID, err)
+		} else {
+			r.rcv = rcv
+			defer func() {
+				// Not ctx: it may already be cancelled when the runner is
+				// killed, and an export in flight should finish storing.
+				sctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				defer cancel()
+				_ = rcv.Close(sctx)
+				r.rcv = nil
+			}()
+			r.logf("run %d: receiving step telemetry on %s", run.ID, rcv.Addr())
+		}
 	}
 	wf, err := r.Store.GetWorkflow(ctx, run.WorkflowID)
 	if err != nil {
@@ -592,7 +627,11 @@ func (r *Runner) execStep(ctx context.Context, run workflow.Run, tk task.Task, s
 	// effort, like the 'ended' written after the process for the same
 	// reason: a hook (Stop, SessionEnd) landing later overwrites it.
 	_ = r.Store.SetSessionStatus(ctx, sr.SessionExternalID, task.SessionWorking)
-	res, runErr := r.Exec.Run(stepCtx, StepExec{Run: run, StepRun: sr, TaskID: tk.ID, Prompt: prompt, Resume: resume})
+	req := StepExec{Run: run, StepRun: sr, TaskID: tk.ID, Prompt: prompt, Resume: resume}
+	if r.rcv != nil {
+		req.Telemetry = agent.TelemetryEndpoints{Logs: r.rcv.LogsEndpoint(sr.ID), Metrics: r.rcv.MetricsEndpoint(sr.ID)}
+	}
+	res, runErr := r.Exec.Run(stepCtx, req)
 	cancel()
 	// Best effort: the SessionEnd hook normally did this already, but a
 	// killed step may not have got that far.
@@ -829,6 +868,8 @@ func (r *Runner) logf(format string, args ...any) {
 	if r.Log == nil {
 		return
 	}
+	r.logMu.Lock()
+	defer r.logMu.Unlock()
 	fmt.Fprintf(r.Log, time.Now().Format("15:04:05")+" "+format+"\n", args...)
 }
 

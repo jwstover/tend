@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jwstover/tend/internal/task"
+	"github.com/jwstover/tend/internal/usage"
 	"github.com/jwstover/tend/internal/workflow"
 )
 
@@ -289,5 +290,58 @@ func TestRunToolsRegisteredForEverySession(t *testing.T) {
 		if !names[want] {
 			t.Errorf("ordinary session lacks run tool %q", want)
 		}
+	}
+}
+
+func TestSummarizeEvents(t *testing.T) {
+	if summarizeEvents(nil) != nil {
+		t.Error("no events: want nil")
+	}
+	tok := func(in, out int64) usage.Tokens { return usage.Tokens{Input: in, Output: out} }
+	got := summarizeEvents([]workflow.StepEvent{
+		{Name: "api_request", QuerySource: "main", Model: "m", Tokens: tok(1, 2), CostUSD: 0.1},
+		{Name: "api_request", QuerySource: "subagent", AgentName: "rev", Model: "m", Tokens: tok(10, 20), CostUSD: 0.2},
+		{Name: "api_request", Model: "m2", Tokens: tok(100, 200)},
+		{Name: "api_error", StatusCode: 429},
+		{Name: "api_error", StatusCode: 429},
+		{Name: "tool_result"},
+		{Name: "session.count", Attributes: map[string]string{"start_type": "resume", "value": "1"}},
+		{Name: "session.count", Attributes: map[string]string{"start_type": "fresh", "value": "2"}},
+	})
+	if got.Events != 8 || got.APIRequests != 3 {
+		t.Errorf("events/api_requests = %d/%d, want 8/3", got.Events, got.APIRequests)
+	}
+	if m := got.ByQuerySource["main"]; m.Requests != 1 || m.InputTokens != 1 {
+		t.Errorf("by_query_source[main] = %+v", m)
+	}
+	if u := got.ByQuerySource["unknown"]; u.Requests != 1 || u.OutputTokens != 200 {
+		t.Errorf("by_query_source[unknown] = %+v", u)
+	}
+	if a := got.ByAgent["rev"]; a.Requests != 1 || a.CostUSD != 0.2 || len(got.ByAgent) != 1 {
+		t.Errorf("by_agent = %+v", got.ByAgent)
+	}
+	if m := got.ByModel["m"]; m.Requests != 2 || m.InputTokens != 11 {
+		t.Errorf("by_model[m] = %+v", m)
+	}
+	if got.APIErrors["429"] != 2 || got.SessionStarts["resume"] != 1 || got.SessionStarts["fresh"] != 2 {
+		t.Errorf("errors/starts = %v / %v", got.APIErrors, got.SessionStarts)
+	}
+}
+
+func TestGetStepRunUsageIncludesTelemetry(t *testing.T) {
+	store := newFakeStore(task.Task{ID: 1, Title: "bound"})
+	seedRun(t, store)
+	sr := store.stepRuns[100]
+	sr.LogPath = writeUsageLog(t)
+	store.stepRuns[100] = sr
+	cs := dial(t, store, 1)
+
+	if got := callTool[usageOut](t, cs, "get_step_run_usage", map[string]any{"step_run_id": 100}); got.Telemetry != nil {
+		t.Errorf("telemetry = %+v, want nil without events", got.Telemetry)
+	}
+	store.events = map[int64][]workflow.StepEvent{100: {{Name: "api_request", QuerySource: "main", Model: "m"}}}
+	got := callTool[usageOut](t, cs, "get_step_run_usage", map[string]any{"step_run_id": 100})
+	if got.Telemetry == nil || got.Telemetry.APIRequests != 1 || got.Telemetry.Note == "" {
+		t.Errorf("telemetry = %+v, want one api_request", got.Telemetry)
 	}
 }

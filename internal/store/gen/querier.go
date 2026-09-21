@@ -13,6 +13,7 @@ type Querier interface {
 	// OR IGNORE so recording a dependency that already exists is a no-op
 	// rather than a constraint error: SetDependencies re-adds the survivors.
 	AddDependency(ctx context.Context, arg AddDependencyParams) error
+	AddStepRunEvent(ctx context.Context, arg AddStepRunEventParams) error
 	// Token counts accumulate rather than replace: a result event reports one
 	// claude process's usage, and a step run that was resumed, nudged or
 	// retried ran several against the same row. Adding is what keeps the row
@@ -166,6 +167,7 @@ type Querier interface {
 	// were launched under tmux at all, and not ones already known to have
 	// ended (a session that already reported ended has nothing to poll).
 	ListSessionsWithTmux(ctx context.Context) ([]AgentSession, error)
+	ListStepRunEvents(ctx context.Context, stepRunID int64) ([]WorkflowStepRunEvent, error)
 	ListStepRunsForRun(ctx context.Context, runID int64) ([]WorkflowStepRun, error)
 	ListSteps(ctx context.Context, workflowID int64) ([]WorkflowStep, error)
 	ListTags(ctx context.Context) ([]Tag, error)

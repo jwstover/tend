@@ -159,3 +159,25 @@ type WorkflowStepRun struct {
 	CacheCreationTokens int64
 	CacheReadTokens     int64
 }
+
+type WorkflowStepRunEvent struct {
+	ID                  int64
+	StepRunID           int64
+	Name                string
+	SessionID           string
+	Model               string
+	QuerySource         string
+	AgentName           string
+	SkillName           string
+	McpServerName       string
+	InputTokens         int64
+	OutputTokens        int64
+	CacheReadTokens     int64
+	CacheCreationTokens int64
+	CostUsd             float64
+	DurationMs          int64
+	StatusCode          int64
+	Attributes          string
+	OccurredAt          string
+	ReceivedAt          string
+}

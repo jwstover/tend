@@ -242,6 +242,27 @@ type StepRun struct {
 	EndedAt           *time.Time
 }
 
+// StepEvent is one OpenTelemetry event claude exported while running a
+// step run (tend task #31) -- enrichment beside StepRun.Usage, which
+// stays the source of truth. Forward-only and lossy: a step that exits
+// before its exporter flushes has fewer (or no) events.
+type StepEvent struct {
+	ID, StepRunID int64
+	// Name is "api_request", "api_error", "tool_result", "session.count", ...
+	Name      string
+	SessionID string
+	Model     string
+	// QuerySource is main / subagent / auxiliary.
+	QuerySource                         string
+	AgentName, SkillName, MCPServerName string
+	Tokens                              usage.Tokens // Input/Output/CacheRead/CacheCreation only
+	CostUSD                             float64
+	DurationMS                          int64
+	StatusCode                          int64             // api_error; 0 when absent
+	Attributes                          map[string]string // every attribute, for what is not promoted
+	OccurredAt, ReceivedAt              time.Time
+}
+
 // Finished reports whether the step run has handed off an outcome.
 func (r StepRun) Finished() bool { return r.EndedAt != nil }
 
