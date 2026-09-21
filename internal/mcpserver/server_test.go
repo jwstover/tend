@@ -34,6 +34,7 @@ type fakeStore struct {
 	stepRuns  map[int64]workflow.StepRun
 	runs      map[int64]workflow.Run
 	schedules map[int64]workflow.Schedule
+	events    map[int64][]workflow.StepEvent
 
 	notifyActivate string
 
@@ -277,6 +278,10 @@ func (s *fakeStore) SetDue(_ context.Context, id int64, due *string) error {
 	t.Due = due
 	s.tasks[id] = t
 	return nil
+}
+
+func (s *fakeStore) ListStepRunEvents(_ context.Context, id int64) ([]workflow.StepEvent, error) {
+	return s.events[id], nil
 }
 
 func (s *fakeStore) GetStepRun(_ context.Context, id int64) (workflow.StepRun, error) {
