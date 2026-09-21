@@ -760,7 +760,7 @@ func newWorkflowRunCmd(open openWorkflowStore) *cobra.Command {
 			log, closeLog := runnerLog(runID, cmd.OutOrStdout())
 			defer closeLog()
 			dbPath, _ := cmd.Flags().GetString("db")
-			r := &runner.Runner{Store: s, Exec: runner.ClaudeExec{DBPath: dbPath}, Log: log}
+			r := &runner.Runner{Store: s, Exec: runner.ClaudeExec{DBPath: dbPath}, Log: log, Telemetry: true}
 			return r.Run(ctx, runID, takeover)
 		},
 	}
