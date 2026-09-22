@@ -12,11 +12,16 @@ import (
 
 // taskOut is a task rendered for a tool response: the fields an agent
 // needs to see, JSON-tagged for the MCP wire format rather than reusing
-// task.Task's Go-facing shape directly.
+// task.Task's Go-facing shape directly. BodyMD is populated only by the
+// read tools (get_task, get_current_task, list_subtasks with
+// include_bodies); every mutation tool omits it and reports BodyLen
+// instead, so a mutation on a task with a large body does not echo the
+// whole thing back into the calling session's context.
 type taskOut struct {
 	ID        int64    `json:"id"`
 	Title     string   `json:"title"`
-	BodyMD    string   `json:"body_md"`
+	BodyMD    *string  `json:"body_md,omitempty"`
+	BodyLen   int      `json:"body_len"`
 	State     string   `json:"state"`
 	ParentID  *int64   `json:"parent_id,omitempty"`
 	ProjectID int64    `json:"project_id"`
@@ -40,11 +45,11 @@ type depOut struct {
 	State string `json:"state"`
 }
 
-func toTaskOut(t task.Task, tags []string, blockers, blocking []task.Task) taskOut {
-	return taskOut{
+func toTaskOut(t task.Task, tags []string, blockers, blocking []task.Task, withBody bool) taskOut {
+	out := taskOut{
 		ID:        t.ID,
 		Title:     t.Title,
-		BodyMD:    t.BodyMD,
+		BodyLen:   len(t.BodyMD),
 		State:     string(t.State),
 		ParentID:  t.ParentID,
 		ProjectID: t.ProjectID,
@@ -55,6 +60,10 @@ func toTaskOut(t task.Task, tags []string, blockers, blocking []task.Task) taskO
 		Blocks:    toDepOuts(blocking),
 		IsBlocked: len(task.OpenBlockers(blockers)) > 0,
 	}
+	if withBody {
+		out.BodyMD = &t.BodyMD
+	}
+	return out
 }
 
 func toDepOuts(ts []task.Task) []depOut {
@@ -105,7 +114,7 @@ func registerTools(srv *mcp.Server, store Store, boundTaskID int64) {
 		Name:        "get_current_task",
 		Description: "Get the task this session is bound to.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, taskOut, error) {
-		return fetchTask(ctx, store, boundTaskID)
+		return fetchTask(ctx, store, boundTaskID, true)
 	})
 
 	mcp.AddTool(srv, &mcp.Tool{
@@ -114,14 +123,16 @@ func registerTools(srv *mcp.Server, store Store, boundTaskID int64) {
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in struct {
 		TaskID int64 `json:"task_id" jsonschema:"the task id to look up"`
 	}) (*mcp.CallToolResult, taskOut, error) {
-		return fetchTask(ctx, store, in.TaskID)
+		return fetchTask(ctx, store, in.TaskID, true)
 	})
 
 	mcp.AddTool(srv, &mcp.Tool{
-		Name:        "list_subtasks",
-		Description: "List the sub-tasks of a task; defaults to the bound task.",
+		Name: "list_subtasks",
+		Description: "List the sub-tasks of a task; defaults to the bound task. Bodies are left " +
+			"out unless include_bodies is set; call get_task for a single sub-task's body.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in struct {
-		TaskID *int64 `json:"task_id,omitempty" jsonschema:"parent task id; defaults to the session's bound task"`
+		TaskID        *int64 `json:"task_id,omitempty" jsonschema:"parent task id; defaults to the session's bound task"`
+		IncludeBodies bool   `json:"include_bodies,omitempty" jsonschema:"include each sub-task's body_md; off by default, since get_task returns one body on demand"`
 	}) (*mcp.CallToolResult, subtasksOut, error) {
 		children, err := store.ListChildren(ctx, resolveID(in.TaskID, boundTaskID))
 		if err != nil {
@@ -132,7 +143,7 @@ func registerTools(srv *mcp.Server, store Store, boundTaskID int64) {
 			// Per-child rather than one batch map: a task's sub-tasks
 			// number in the handful, and this is not a hot path the way
 			// the TUI list is.
-			_, o, err := fetchTask(ctx, store, c.ID)
+			_, o, err := fetchTask(ctx, store, c.ID, in.IncludeBodies)
 			if err != nil {
 				return nil, subtasksOut{}, err
 			}
@@ -144,7 +155,7 @@ func registerTools(srv *mcp.Server, store Store, boundTaskID int64) {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name: "create_task",
 		Description: "Create a new top-level task — NOT scoped to the bound task. Use for a " +
-			"genuinely separate work item; use create_subtask for phases of the current task.",
+			"genuinely separate work item; use create_subtask for phases of the current task." + slimNote,
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in struct {
 		Title     string  `json:"title" jsonschema:"the task title"`
 		BodyMD    string  `json:"body_md,omitempty" jsonschema:"optional markdown body"`
@@ -157,13 +168,13 @@ func registerTools(srv *mcp.Server, store Store, boundTaskID int64) {
 		if err := setInitialDependencies(ctx, store, t.ID, in.DependsOn); err != nil {
 			return nil, taskOut{}, err
 		}
-		return fetchTask(ctx, store, t.ID)
+		return fetchTask(ctx, store, t.ID, false)
 	})
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name: "create_subtask",
 		Description: "Create a sub-task; parent defaults to the bound task — the way to split " +
-			"the current task's work into phases.",
+			"the current task's work into phases." + slimNote,
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in struct {
 		Title     string  `json:"title" jsonschema:"the sub-task title"`
 		ParentID  *int64  `json:"parent_id,omitempty" jsonschema:"parent task id; defaults to the session's bound task"`
@@ -176,7 +187,7 @@ func registerTools(srv *mcp.Server, store Store, boundTaskID int64) {
 		if err := setInitialDependencies(ctx, store, t.ID, in.DependsOn); err != nil {
 			return nil, taskOut{}, err
 		}
-		return fetchTask(ctx, store, t.ID)
+		return fetchTask(ctx, store, t.ID, false)
 	})
 
 	// A rename is not a state change: the store trims and refuses a blank
@@ -185,7 +196,7 @@ func registerTools(srv *mcp.Server, store Store, boundTaskID int64) {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name: "set_task_title",
 		Description: "Rename a task. The title is trimmed; an empty or whitespace-only title " +
-			"is refused. Defaults to the bound task.",
+			"is refused. Defaults to the bound task." + slimNote,
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in struct {
 		Title  string `json:"title" jsonschema:"the new title; leading and trailing whitespace is trimmed"`
 		TaskID *int64 `json:"task_id,omitempty" jsonschema:"task id to rename; defaults to the session's bound task"`
@@ -194,7 +205,7 @@ func registerTools(srv *mcp.Server, store Store, boundTaskID int64) {
 		if err := store.SetTitle(ctx, id, in.Title); err != nil {
 			return nil, taskOut{}, err
 		}
-		return fetchTask(ctx, store, id)
+		return fetchTask(ctx, store, id, false)
 	})
 
 	// The only free-form writes an agent gets. There is deliberately no
@@ -205,7 +216,7 @@ func registerTools(srv *mcp.Server, store Store, boundTaskID int64) {
 		Description: "Replace a task's markdown body; defaults to the bound task. This is the " +
 			"place to record progress, links, or a summary of the work — log entries are " +
 			"reserved for the user. To add to the body without rewriting it, use " +
-			"append_task_body instead.",
+			"append_task_body instead." + slimNote,
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in struct {
 		BodyMD string `json:"body_md" jsonschema:"the new markdown body, replacing the existing one"`
 		TaskID *int64 `json:"task_id,omitempty" jsonschema:"task id to update; defaults to the session's bound task"`
@@ -214,7 +225,7 @@ func registerTools(srv *mcp.Server, store Store, boundTaskID int64) {
 		if err := store.SetBody(ctx, id, in.BodyMD); err != nil {
 			return nil, taskOut{}, err
 		}
-		return fetchTask(ctx, store, id)
+		return fetchTask(ctx, store, id, false)
 	})
 
 	// The incremental sibling of update_task_body: most agent updates are
@@ -224,7 +235,7 @@ func registerTools(srv *mcp.Server, store Store, boundTaskID int64) {
 		Name: "append_task_body",
 		Description: "Append markdown to the end of a task's body as a new paragraph, keeping " +
 			"what is already there; defaults to the bound task. Prefer this over " +
-			"update_task_body for adding a link, a progress note, or a summary.",
+			"update_task_body for adding a link, a progress note, or a summary." + slimNote,
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in struct {
 		Text   string `json:"text" jsonschema:"markdown to append; a blank line is inserted before it when the body is non-empty"`
 		TaskID *int64 `json:"task_id,omitempty" jsonschema:"task id to update; defaults to the session's bound task"`
@@ -233,14 +244,14 @@ func registerTools(srv *mcp.Server, store Store, boundTaskID int64) {
 		if err := store.AppendBody(ctx, id, in.Text); err != nil {
 			return nil, taskOut{}, err
 		}
-		return fetchTask(ctx, store, id)
+		return fetchTask(ctx, store, id, false)
 	})
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name: "set_task_state",
 		Description: "Move a task to a new workflow state: todo, doing, review, blocked, done, or " +
 			"someday. Use review once the work is handed off and waiting on someone else " +
-			"(a PR out for review). Defaults to the bound task.",
+			"(a PR out for review). Defaults to the bound task." + slimNote,
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in struct {
 		State  string `json:"state" jsonschema:"one of: todo, doing, review, blocked, done, someday"`
 		TaskID *int64 `json:"task_id,omitempty" jsonschema:"task id to update; defaults to the session's bound task"`
@@ -249,7 +260,7 @@ func registerTools(srv *mcp.Server, store Store, boundTaskID int64) {
 		if err := store.SetState(ctx, id, task.State(in.State)); err != nil {
 			return nil, taskOut{}, err
 		}
-		return fetchTask(ctx, store, id)
+		return fetchTask(ctx, store, id, false)
 	})
 
 	// The old set_task_project lives on here rather than as a project
@@ -294,7 +305,7 @@ func registerTools(srv *mcp.Server, store Store, boundTaskID int64) {
 		Name: "set_task_project",
 		Description: "Move a task, and its whole sub-tree, into a project named by " +
 			"`project`. The project must already exist -- list_projects shows the " +
-			"names. Defaults to the bound task.",
+			"names. Defaults to the bound task." + slimNote,
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in struct {
 		Project string `json:"project" jsonschema:"name of an existing project"`
 		TaskID  *int64 `json:"task_id,omitempty" jsonschema:"task id to move; defaults to the session's bound task"`
@@ -309,7 +320,7 @@ func registerTools(srv *mcp.Server, store Store, boundTaskID int64) {
 		if err := store.SetProject(ctx, id, p.ID); err != nil {
 			return nil, taskOut{}, err
 		}
-		return fetchTask(ctx, store, id)
+		return fetchTask(ctx, store, id, false)
 	})
 
 	// parent_id is a plain int64 with 0 meaning "top level", not a *int64:
@@ -322,7 +333,7 @@ func registerTools(srv *mcp.Server, store Store, boundTaskID int64) {
 			"or to the top level by sending parent_id 0. A task cannot be moved under " +
 			"itself or under one of its own sub-tasks. If the new parent is in a " +
 			"different project, the sub-tree moves into that project too. Defaults to " +
-			"the bound task.",
+			"the bound task." + slimNote,
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in struct {
 		ParentID int64  `json:"parent_id" jsonschema:"id of the task to become the parent; 0 moves the task to the top level"`
 		TaskID   *int64 `json:"task_id,omitempty" jsonschema:"task id to move; defaults to the session's bound task"`
@@ -335,13 +346,13 @@ func registerTools(srv *mcp.Server, store Store, boundTaskID int64) {
 		if err := store.SetParent(ctx, id, parent); err != nil {
 			return nil, taskOut{}, err
 		}
-		return fetchTask(ctx, store, id)
+		return fetchTask(ctx, store, id, false)
 	})
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name: "set_task_tags",
 		Description: "Replace a task's tags with the given list; send an empty list to clear " +
-			"them all. Defaults to the bound task.",
+			"them all. Defaults to the bound task." + slimNote,
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in struct {
 		Tags   []string `json:"tags" jsonschema:"the complete tag list for the task; empty clears every tag"`
 		TaskID *int64   `json:"task_id,omitempty" jsonschema:"task id to update; defaults to the session's bound task"`
@@ -350,13 +361,13 @@ func registerTools(srv *mcp.Server, store Store, boundTaskID int64) {
 		if err := store.SetTags(ctx, id, task.ParseTags(strings.Join(in.Tags, " "))); err != nil {
 			return nil, taskOut{}, err
 		}
-		return fetchTask(ctx, store, id)
+		return fetchTask(ctx, store, id, false)
 	})
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name: "set_task_priority",
 		Description: "Set a task's priority, 1 (highest) through 4 (lowest); omit to clear. " +
-			"Defaults to the bound task.",
+			"Defaults to the bound task." + slimNote,
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in struct {
 		Priority *int64 `json:"priority,omitempty" jsonschema:"1 (highest) through 4 (lowest); omit to clear"`
 		TaskID   *int64 `json:"task_id,omitempty" jsonschema:"task id to update; defaults to the session's bound task"`
@@ -365,12 +376,12 @@ func registerTools(srv *mcp.Server, store Store, boundTaskID int64) {
 		if err := store.SetPriority(ctx, id, in.Priority); err != nil {
 			return nil, taskOut{}, err
 		}
-		return fetchTask(ctx, store, id)
+		return fetchTask(ctx, store, id, false)
 	})
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "set_task_due",
-		Description: "Set a task's due date (YYYY-MM-DD); omit or send empty to clear. Defaults to the bound task.",
+		Description: "Set a task's due date (YYYY-MM-DD); omit or send empty to clear. Defaults to the bound task." + slimNote,
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in struct {
 		Due    string `json:"due,omitempty" jsonschema:"ISO 8601 date YYYY-MM-DD; omit or empty to clear"`
 		TaskID *int64 `json:"task_id,omitempty" jsonschema:"task id to update; defaults to the session's bound task"`
@@ -383,7 +394,7 @@ func registerTools(srv *mcp.Server, store Store, boundTaskID int64) {
 		if err := store.SetDue(ctx, id, d); err != nil {
 			return nil, taskOut{}, err
 		}
-		return fetchTask(ctx, store, id)
+		return fetchTask(ctx, store, id, false)
 	})
 
 	// Dependencies: "this task waits on that one". The wholesale form
@@ -397,7 +408,7 @@ func registerTools(srv *mcp.Server, store Store, boundTaskID int64) {
 			"before the task can be worked on. Send an empty list to clear every dependency. " +
 			"A task cannot depend on itself or on a task that already waits on it, directly or " +
 			"indirectly. Defaults to the bound task. Dependencies do not change the task's " +
-			"state; is_blocked on the returned task says whether any blocker is still open.",
+			"state; is_blocked on the returned task says whether any blocker is still open." + slimNote,
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in struct {
 		DependsOn []int64 `json:"depends_on" jsonschema:"the complete list of task ids this task waits on; empty clears every dependency"`
 		TaskID    *int64  `json:"task_id,omitempty" jsonschema:"task id to update; defaults to the session's bound task"`
@@ -406,7 +417,7 @@ func registerTools(srv *mcp.Server, store Store, boundTaskID int64) {
 		if err := store.SetDependencies(ctx, id, in.DependsOn); err != nil {
 			return nil, taskOut{}, err
 		}
-		return fetchTask(ctx, store, id)
+		return fetchTask(ctx, store, id, false)
 	})
 
 	mcp.AddTool(srv, &mcp.Tool{
@@ -414,7 +425,7 @@ func registerTools(srv *mcp.Server, store Store, boundTaskID int64) {
 		Description: "Record that a task waits on one more task (depends_on must be done before " +
 			"it can be worked on), keeping its other dependencies. Prefer this over " +
 			"set_task_dependencies for adding a single blocker. Refused for a self-dependency " +
-			"or one that would form a cycle. Defaults to the bound task.",
+			"or one that would form a cycle. Defaults to the bound task." + slimNote,
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in struct {
 		DependsOn int64  `json:"depends_on" jsonschema:"id of the task that must be done first"`
 		TaskID    *int64 `json:"task_id,omitempty" jsonschema:"task id to update; defaults to the session's bound task"`
@@ -423,13 +434,13 @@ func registerTools(srv *mcp.Server, store Store, boundTaskID int64) {
 		if err := store.AddDependency(ctx, id, in.DependsOn); err != nil {
 			return nil, taskOut{}, err
 		}
-		return fetchTask(ctx, store, id)
+		return fetchTask(ctx, store, id, false)
 	})
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name: "remove_task_dependency",
 		Description: "Forget that a task waits on depends_on, keeping its other dependencies. " +
-			"Removing a dependency that is not there is not an error. Defaults to the bound task.",
+			"Removing a dependency that is not there is not an error. Defaults to the bound task." + slimNote,
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in struct {
 		DependsOn int64  `json:"depends_on" jsonschema:"id of the task it no longer waits on"`
 		TaskID    *int64 `json:"task_id,omitempty" jsonschema:"task id to update; defaults to the session's bound task"`
@@ -438,7 +449,7 @@ func registerTools(srv *mcp.Server, store Store, boundTaskID int64) {
 		if err := store.RemoveDependency(ctx, id, in.DependsOn); err != nil {
 			return nil, taskOut{}, err
 		}
-		return fetchTask(ctx, store, id)
+		return fetchTask(ctx, store, id, false)
 	})
 }
 
@@ -467,8 +478,11 @@ func resolveID(override *int64, def int64) int64 {
 }
 
 // fetchTask loads and renders a task, the common tail of every tool
-// that reports a task's post-mutation state.
-func fetchTask(ctx context.Context, store Store, id int64) (*mcp.CallToolResult, taskOut, error) {
+// that reports a task's state. withBody controls whether the full
+// body_md rides along: true for the read tools (get_task,
+// get_current_task, list_subtasks with include_bodies), false for
+// every mutation tool, which reports body_len instead.
+func fetchTask(ctx context.Context, store Store, id int64, withBody bool) (*mcp.CallToolResult, taskOut, error) {
 	t, err := store.GetTask(ctx, id)
 	if err != nil {
 		return nil, taskOut{}, err
@@ -485,5 +499,11 @@ func fetchTask(ctx context.Context, store Store, id int64) (*mcp.CallToolResult,
 	if err != nil {
 		return nil, taskOut{}, err
 	}
-	return nil, toTaskOut(t, tags, blockers, blocking), nil
+	return nil, toTaskOut(t, tags, blockers, blocking, withBody), nil
 }
+
+// slimNote is appended, verbatim, to every mutation tool's description
+// that returns a taskOut: the body is left out of the result on
+// purpose, so every such tool says the same thing about it rather than
+// letting the wording drift tool to tool.
+const slimNote = " Returns the updated task without its body (body_len gives its length); call get_task for the body."

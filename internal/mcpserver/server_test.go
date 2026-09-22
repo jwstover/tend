@@ -835,8 +835,14 @@ func TestAppendTaskBodyKeepsExistingBody(t *testing.T) {
 
 	got := callTool[taskOut](t, cs, "append_task_body", map[string]any{"text": "PR: https://example.com/pr/1"})
 	want := "## Context\nsee the spec\n\nPR: https://example.com/pr/1"
-	if got.BodyMD != want {
-		t.Errorf("append_task_body body = %q, want %q", got.BodyMD, want)
+	if store.tasks[1].BodyMD != want {
+		t.Errorf("stored body = %q, want %q", store.tasks[1].BodyMD, want)
+	}
+	if got.BodyMD != nil {
+		t.Errorf("append_task_body result carried body_md = %v, want it omitted", *got.BodyMD)
+	}
+	if got.BodyLen != len(want) {
+		t.Errorf("append_task_body body_len = %d, want %d", got.BodyLen, len(want))
 	}
 }
 
@@ -845,8 +851,14 @@ func TestAppendTaskBodyOnEmptyBodyHasNoLeadingSeparator(t *testing.T) {
 	cs := dial(t, store, 1)
 
 	got := callTool[taskOut](t, cs, "append_task_body", map[string]any{"text": "first note"})
-	if got.BodyMD != "first note" {
-		t.Errorf("append_task_body on empty body = %q, want %q", got.BodyMD, "first note")
+	if store.tasks[1].BodyMD != "first note" {
+		t.Errorf("stored body on empty body = %q, want %q", store.tasks[1].BodyMD, "first note")
+	}
+	if got.BodyMD != nil {
+		t.Errorf("append_task_body result carried body_md = %v, want it omitted", *got.BodyMD)
+	}
+	if got.BodyLen != len("first note") {
+		t.Errorf("append_task_body body_len = %d, want %d", got.BodyLen, len("first note"))
 	}
 }
 
@@ -858,8 +870,15 @@ func TestAppendTaskBodyAcceptsExplicitTaskOverride(t *testing.T) {
 	cs := dial(t, store, 1)
 
 	got := callTool[taskOut](t, cs, "append_task_body", map[string]any{"text": "b", "task_id": 2})
-	if got.ID != 2 || got.BodyMD != "a\n\nb" {
-		t.Errorf("append_task_body(task_id=2) = %+v, want id=2 body %q", got, "a\n\nb")
+	want := "a\n\nb"
+	if got.ID != 2 || got.BodyLen != len(want) {
+		t.Errorf("append_task_body(task_id=2) = %+v, want id=2 body_len %d", got, len(want))
+	}
+	if got.BodyMD != nil {
+		t.Errorf("append_task_body result carried body_md = %v, want it omitted", *got.BodyMD)
+	}
+	if store.tasks[2].BodyMD != want {
+		t.Errorf("stored body = %q, want %q", store.tasks[2].BodyMD, want)
 	}
 	if store.tasks[1].BodyMD != "untouched" {
 		t.Errorf("bound task body mutated to %q", store.tasks[1].BodyMD)
@@ -945,6 +964,124 @@ func TestListSubtasksDefaultsToBoundTask(t *testing.T) {
 	got := callTool[subtasksOut](t, cs, "list_subtasks", nil)
 	if len(got.Tasks) != 1 || got.Tasks[0].ID != 2 {
 		t.Errorf("list_subtasks = %+v, want one child (id=2)", got.Tasks)
+	}
+}
+
+// TestListSubtasksOmitsBodiesUnlessRequested pins list_subtasks' own
+// slimming: no body_md on a child by default, but include_bodies:true
+// brings it back.
+func TestListSubtasksOmitsBodiesUnlessRequested(t *testing.T) {
+	parent := int64(1)
+	body := "## child body\nsome detail"
+	store := newFakeStore(
+		task.Task{ID: 1, Title: "bound"},
+		task.Task{ID: 2, Title: "child", ParentID: &parent, BodyMD: body},
+	)
+	cs := dial(t, store, 1)
+
+	def := callTool[map[string]any](t, cs, "list_subtasks", nil)
+	children, _ := def["tasks"].([]any)
+	if len(children) != 1 {
+		t.Fatalf("list_subtasks = %+v, want one child", def)
+	}
+	child := children[0].(map[string]any)
+	if _, ok := child["body_md"]; ok {
+		t.Errorf("list_subtasks child carried body_md by default: %+v", child)
+	}
+	if bodyLen, ok := child["body_len"].(float64); !ok || int(bodyLen) != len(body) {
+		t.Errorf("list_subtasks child body_len = %v, want %d", child["body_len"], len(body))
+	}
+
+	withBodies := callTool[map[string]any](t, cs, "list_subtasks", map[string]any{"include_bodies": true})
+	children, _ = withBodies["tasks"].([]any)
+	if len(children) != 1 {
+		t.Fatalf("list_subtasks(include_bodies) = %+v, want one child", withBodies)
+	}
+	child = children[0].(map[string]any)
+	if child["body_md"] != body {
+		t.Errorf("list_subtasks(include_bodies) child body_md = %v, want %q", child["body_md"], body)
+	}
+}
+
+// TestMutationToolsOmitBodyMD covers a representative set of mutation
+// tools: every one of them must slim its taskOut result the same way,
+// so the body a large task carries never rides back into the calling
+// session's context on every edit.
+func TestMutationToolsOmitBodyMD(t *testing.T) {
+	body := "## a substantial body\nwith enough content to matter"
+
+	cases := []struct {
+		name string
+		args map[string]any
+	}{
+		{"set_task_state", map[string]any{"state": "doing"}},
+		{"set_task_title", map[string]any{"title": "renamed"}},
+		{"update_task_body", map[string]any{"body_md": body}},
+		{"set_task_tags", map[string]any{"tags": []string{"a"}}},
+		{"add_task_dependency", map[string]any{"depends_on": int64(2)}},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			store := newFakeStore(
+				task.Task{ID: 1, Title: "bound", BodyMD: body},
+				task.Task{ID: 2, Title: "other"},
+			)
+			cs := dial(t, store, 1)
+
+			got := callTool[map[string]any](t, cs, c.name, c.args)
+			if _, ok := got["body_md"]; ok {
+				t.Errorf("%s result carried body_md: %+v", c.name, got)
+			}
+			if bodyLen, ok := got["body_len"].(float64); !ok || int(bodyLen) != len(body) {
+				t.Errorf("%s body_len = %v, want %d", c.name, got["body_len"], len(body))
+			}
+		})
+	}
+
+	// create_task and create_subtask are mutations too: the caller
+	// already knows the body it sent, so the result is slimmed as well.
+	t.Run("create_subtask", func(t *testing.T) {
+		store := newFakeStore(task.Task{ID: 1, Title: "bound"})
+		cs := dial(t, store, 1)
+
+		got := callTool[map[string]any](t, cs, "create_subtask", map[string]any{"title": "phase one"})
+		if _, ok := got["body_md"]; ok {
+			t.Errorf("create_subtask result carried body_md: %+v", got)
+		}
+		if bodyLen, ok := got["body_len"].(float64); !ok || int(bodyLen) != 0 {
+			t.Errorf("create_subtask body_len = %v, want 0", got["body_len"])
+		}
+	})
+}
+
+// TestReadToolsIncludeBodyMD pins the other side of the split: get_task
+// and get_current_task always carry body_md, even an empty one.
+func TestReadToolsIncludeBodyMD(t *testing.T) {
+	body := "## full body\nhere it is"
+	store := newFakeStore(
+		task.Task{ID: 1, Title: "bound", BodyMD: body},
+		task.Task{ID: 2, Title: "other"},
+	)
+	cs := dial(t, store, 1)
+
+	got := callTool[map[string]any](t, cs, "get_current_task", nil)
+	if got["body_md"] != body {
+		t.Errorf("get_current_task body_md = %v, want %q", got["body_md"], body)
+	}
+
+	got = callTool[map[string]any](t, cs, "get_task", map[string]any{"task_id": int64(1)})
+	if got["body_md"] != body {
+		t.Errorf("get_task body_md = %v, want %q", got["body_md"], body)
+	}
+
+	got = callTool[map[string]any](t, cs, "get_task", map[string]any{"task_id": int64(2)})
+	bodyMD, ok := got["body_md"]
+	if !ok {
+		t.Errorf("get_task on an empty-body task has no body_md key: %+v", got)
+	}
+	if bodyMD != "" {
+		t.Errorf("get_task on an empty-body task body_md = %v, want \"\"", bodyMD)
 	}
 }
 
