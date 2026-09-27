@@ -9,3 +9,8 @@ erl_crash.dump
 
 # escript.build output (the `tend` binary)
 /tend
+
+# Scratch space for ExUnit's `@tag :tmp_dir`. The store tests open real
+# SQLite files rather than mocking one, so this fills up and stays behind --
+# ExUnit clears a test's directory on the next run, not at the end of this one.
+/tmp/

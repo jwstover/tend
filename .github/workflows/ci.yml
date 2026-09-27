@@ -56,6 +56,15 @@ jobs:
           version-file: elixir/.tool-versions
           version-type: strict
 
+      # The store tests build and run the real Go binary against
+      # Elixir-created databases -- both binaries have to open the same file
+      # during the transition, and that is not a fact worth asserting by eye.
+      # Without a toolchain here `Tend.Store.GoParityTest` skips itself, which
+      # is honest but leaves three acceptance criteria unguarded on CI.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
       # deps/ and _build/ are cached together: the store's SQLite driver is a
       # NIF and would otherwise be compiled from C on every run. The key is
       # the lock file, so a dependency change starts from a clean slate.
