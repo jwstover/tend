@@ -56,11 +56,14 @@ jobs:
           version-file: elixir/.tool-versions
           version-type: strict
 
-      # The store tests build and run the real Go binary against
-      # Elixir-created databases -- both binaries have to open the same file
-      # during the transition, and that is not a fact worth asserting by eye.
-      # Without a toolchain here `Tend.Store.GoParityTest` skips itself, which
-      # is honest but leaves three acceptance criteria unguarded on CI.
+      # Go, on the Elixir job, for two reasons. The store tests build and run
+      # the real Go binary against Elixir-created databases -- both binaries
+      # have to open the same file during the transition. Tend.Template's
+      # parity corpus renders every prompt through Go's own text/template and
+      # compares the bytes. Without a toolchain those cases skip or are
+      # excluded, the suite still goes green, and the port's central claims
+      # stop being tested -- so the version is pinned to the one the shipped
+      # binary builds with rather than left to whatever the runner carries.
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod

@@ -17,8 +17,15 @@ defmodule Tend.Template do
 
   Its claim to be Go's language is pinned rather than asserted: every `want`
   in `test/tend/template/` was captured from Go's own `text/template` and is
-  asserted byte for byte. A corpus run over every `prompt_md` in the repo and
-  in a real user's `tend.db` is its own sub-task and is not here yet.
+  asserted byte for byte. On top of that, `Tend.Template.Parity` renders every
+  `prompt_md` in the repo's Go tests -- and, on demand, every row in a real
+  user's `tend.db` -- through both engines and diffs the bytes:
+
+      cd elixir && MIX_ENV=test mix tend.parity --db ~/.local/share/tend/tend.db
+
+  `mix test` runs the same corpus against a recording of Go's output, and
+  prints at the end of every suite which halves of it actually ran. What that
+  corpus can and cannot reach is in `Tend.Template.Parity.Data`.
 
   ## What is supported
 
