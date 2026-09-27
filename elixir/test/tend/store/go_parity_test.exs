@@ -14,36 +14,23 @@ defmodule Tend.Store.GoParityTest do
   alias Exqlite.Sqlite3
   alias Tend.Store
   alias Tend.Store.Migrator
+  alias Tend.Test.Go
   alias Tend.Test.SQL
 
   @moduletag :tmp_dir
   @moduletag :go_parity
 
-  if is_nil(System.find_executable("go")) do
+  if not Go.available?() do
     @moduletag skip: "the Go toolchain is not installed; `go build ./cmd/tend` cannot run"
   end
 
   setup_all do
-    root = Path.expand("..", File.cwd!())
-    binary = Path.join(System.tmp_dir!(), "tend-go-parity-#{System.pid()}")
-
-    {output, status} =
-      System.cmd("go", ["build", "-o", binary, "./cmd/tend"], cd: root, stderr_to_stdout: true)
-
-    assert status == 0, "go build failed:\n#{output}"
-    on_exit(fn -> File.rm(binary) end)
-
-    {:ok, tend: binary}
+    {:ok, tend: Go.build!("go-parity")}
   end
 
-  # Runs the Go binary against `path` and returns its combined output.
-  defp go!(binary, path, args) do
-    {output, status} =
-      System.cmd(binary, ["--db", path | args], stderr_to_stdout: true)
-
-    assert status == 0, "tend #{Enum.join(args, " ")} failed:\n#{output}"
-    output
-  end
+  # Local spelling of Tend.Test.Go.run!/3, kept because every test below reads
+  # as `go! tend, path, [...]`.
+  defp go!(binary, path, args), do: Go.run!(binary, path, args)
 
   # A read-only handle, so inspecting a database cannot be what changed it.
   defp inspect!(path, fun) do
