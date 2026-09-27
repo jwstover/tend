@@ -14,6 +14,7 @@ defmodule Tend.Store.GoParityTest do
   alias Exqlite.Sqlite3
   alias Tend.Store
   alias Tend.Store.Migrator
+  alias Tend.Store.Row
   alias Tend.Test.Go
   alias Tend.Test.SQL
 
@@ -151,6 +152,79 @@ defmodule Tend.Store.GoParityTest do
 
     # ...and the Go binary still has it afterwards.
     assert go!(tend, path, ["ls"]) =~ "written by go"
+  end
+
+  # `tend agent-hook <event>` is the Go side of the session-status contract:
+  # one short-lived process per Claude Code hook firing, finding the row by
+  # the session id its payload carries and writing what the event implies.
+  defp hook!(binary, path, event, session_id) do
+    payload = ~s({"session_id":"#{session_id}","hook_event_name":"#{event}"})
+    Go.run!(binary, path, ["agent-hook", event], input: payload)
+  end
+
+  test "the two binaries interoperate on session status against one file", context do
+    %{tmp_dir: dir, tend: tend} = context
+    path = Path.join(dir, "tend.db")
+
+    {:ok, store} = Store.open(path)
+    on_exit(fn -> Store.close(store) end)
+
+    {:ok, task} = Store.add_task(store, "fix the bug")
+
+    {:ok, _session} =
+      Store.create_session(store, task.id, "ext-1", "/tmp/work", task.title, "tend-ext-1")
+
+    :ok = Store.set_session_status(store, "ext-1", :blocked)
+    {:ok, [by_elixir]} = Store.list_sessions_for_task(store, task.id)
+    elixir_stamp = status_time!(path, "ext-1")
+
+    # The Go binary, in its own OS process, finds the Elixir-written row by
+    # external id and moves it on.
+    hook!(tend, path, "Stop", "ext-1")
+
+    {:ok, [by_go]} = Store.list_sessions_for_task(store, task.id)
+    assert by_go.status == :idle
+    go_stamp = status_time!(path, "ext-1")
+
+    # Both wrote the same column through the same strftime, so the stored text
+    # is the same shape either way -- and Elixir's parse/format round trip
+    # returns each of them byte for byte, which is the whole CAS contract.
+    layout = ~r/\A\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}\z/
+    assert elixir_stamp =~ layout
+    assert go_stamp =~ layout
+    assert go_stamp != elixir_stamp
+
+    for stamp <- [elixir_stamp, go_stamp] do
+      assert {:ok, parsed} = Row.parse_status_time(stamp)
+      assert Row.format_status_time(parsed) == stamp
+    end
+
+    # So a CAS token minted from what Go wrote wins, and one minted from the
+    # pre-hook value Elixir wrote loses -- the poller-versus-hook race,
+    # decided across two implementations of the store.
+    assert {:ok, false} =
+             Store.set_session_working_if_unchanged(store, "ext-1", by_elixir.status_updated_at)
+
+    assert {:ok, true} =
+             Store.set_session_working_if_unchanged(store, "ext-1", by_go.status_updated_at)
+
+    # ...and the Go binary writes over the Elixir CAS's own stamp afterwards,
+    # which it can only do having read the row Elixir left.
+    hook!(tend, path, "SessionEnd", "ext-1")
+    {:ok, [final]} = Store.list_sessions_for_task(store, task.id)
+    assert final.status == :ended
+    assert status_time!(path, "ext-1") =~ layout
+  end
+
+  # The raw column text, read on a handle of its own so the assertion cannot
+  # be reading a cached parse.
+  defp status_time!(path, external_id) do
+    inspect!(path, fn conn ->
+      SQL.scalar!(
+        conn,
+        "SELECT status_updated_at FROM agent_sessions WHERE external_id = '#{external_id}'"
+      )
+    end)
   end
 
   defp inspect_state(conn) do

@@ -3,8 +3,9 @@ defmodule Tend.Store.Row do
   Turns a SQLite result row into a domain value.
 
   A port of the mappers and null helpers at the bottom of
-  `internal/store/store.go` (`toDomain`, `toDomainSlice`, `parseTime`,
-  `parseStatusTime`), plus `workflowToDomain` from the bottom of
+  `internal/store/store.go` (`toDomain`, `toDomainSlice`, `sessionToDomain`,
+  `parseTime`, `parseStatusTime`, and the formatting half of
+  `statusUpdatedAtParam`), plus `workflowToDomain` from the bottom of
   `internal/store/workflows.go`. Every part of the store port reads rows
   through here, so the timestamp rules live in exactly one place.
 
@@ -59,8 +60,9 @@ defmodule Tend.Store.Row do
 
   The fractional second is kept, not discarded. It is what makes
   `parse_status_time/1` worth having: the poller's CAS reformats the value it
-  read and compares the text, so a parser that rounded to the second would
-  make every CAS spuriously succeed.
+  read -- with `format_status_time/1`, the exact inverse -- and compares the
+  text, so a parser that rounded to the second would make every CAS
+  spuriously succeed.
 
   The result is a `DateTime` in UTC. Go's `time.Parse` with a zone-less layout
   yields a `time.Time` in UTC too, so the two agree without either side
@@ -76,7 +78,10 @@ defmodule Tend.Store.Row do
   """
 
   alias Tend.Task
+  alias Tend.Task.Session
+  alias Tend.Task.SessionStatus
   alias Tend.Task.State
+  alias Tend.Task.TaskSession
   alias Tend.Workflow
 
   # Anchored, and deliberately not built on NaiveDateTime.from_iso8601/1: that
@@ -118,9 +123,9 @@ defmodule Tend.Store.Row do
         completed_at,
         project_id
       ]) do
-    with {:ok, created} <- stamp(created_at, id, "created_at"),
-         {:ok, updated} <- stamp(updated_at, id, "updated_at"),
-         {:ok, completed} <- optional_stamp(completed_at, id, "completed_at"),
+    with {:ok, created} <- stamp(created_at, "task #{id} created_at"),
+         {:ok, updated} <- stamp(updated_at, "task #{id} updated_at"),
+         {:ok, completed} <- optional_stamp(completed_at, "task #{id} completed_at"),
          {:ok, parsed_state} <- state(state) do
       {:ok,
        %Task{
@@ -192,8 +197,8 @@ defmodule Tend.Store.Row do
     end)
   end
 
-  # The shared body of to_tasks/1 and to_workflows/1: map every row, stop at
-  # the first that will not map, keep the query's order.
+  # The shared body of to_tasks/1, to_workflows/1 and to_sessions/1: map every
+  # row, stop at the first that will not map, keep the query's order.
   defp all(rows, mapper) do
     rows
     |> Enum.reduce_while({:ok, []}, fn row, {:ok, acc} ->
@@ -207,6 +212,91 @@ defmodule Tend.Store.Row do
       {:error, reason} -> {:error, reason}
     end
   end
+
+  @doc """
+  Maps one `agent_sessions` row -- the twelve columns the session queries
+  select, in order -- into a `Tend.Task.Session`.
+
+  The counterpart of Go's `sessionToDomain`, including its split treatment of
+  the three timestamps. `started_at` and `last_active_at` are `NOT NULL`, and
+  an unreadable one fails the whole read; `status_updated_at` is nullable and
+  degrades to `nil` instead, for the reason Go's comment gives -- it is a
+  display timestamp on a cached observation, not worth refusing a session
+  over.
+
+  `status` goes through `Tend.Task.SessionStatus.parse/1`, which is total, so
+  a value tend does not recognize reads as `:unknown` rather than erroring --
+  the same latitude Go's `task.SessionStatus(row.Status)` takes.
+  """
+  @spec to_session(list()) :: {:ok, Session.t()} | {:error, error()}
+  def to_session([
+        id,
+        task_id,
+        external_id,
+        cwd,
+        label,
+        started_at,
+        last_active_at,
+        tmux_session,
+        needs_recap,
+        status,
+        status_updated_at,
+        workflow_step_run_id
+      ]) do
+    with {:ok, started} <- stamp(started_at, "session #{id} started_at"),
+         {:ok, last_active} <- stamp(last_active_at, "session #{id} last_active_at") do
+      {:ok,
+       %Session{
+         id: id,
+         task_id: task_id,
+         external_id: external_id,
+         cwd: cwd,
+         label: label,
+         tmux_session: tmux_session,
+         needs_recap: needs_recap != 0,
+         status: SessionStatus.parse(status),
+         status_updated_at: lenient_status_time(status_updated_at),
+         started_at: started,
+         last_active_at: last_active,
+         step_run_id: workflow_step_run_id
+       }}
+    end
+  end
+
+  @doc """
+  Maps every row of a session query, stopping at the first that will not map.
+
+  Go writes the loop out at each of its four call sites; the port keeps one,
+  with the same all-or-nothing behaviour `to_tasks/1` has.
+  """
+  @spec to_sessions([list()]) :: {:ok, [Session.t()]} | {:error, error()}
+  def to_sessions(rows) when is_list(rows), do: all(rows, &to_session/1)
+
+  @doc """
+  Maps one `ListSessionsForProject` row -- a session's twelve columns followed
+  by the owning task's title and state -- into a `Tend.Task.TaskSession`.
+
+  Go reads the state as `task.State(row.TaskState)` and lets an unrecognized
+  name ride along; `state/1` here is closed for the same reason `to_task/1`'s
+  is, so such a row is `{:error, {:unknown_state, name}}`. Only a write that
+  went around the `states` foreign key can produce one.
+  """
+  @spec to_task_session(list()) :: {:ok, TaskSession.t()} | {:error, error()}
+  def to_task_session(row) when is_list(row) and length(row) == 14 do
+    {session_columns, [task_title, task_state]} = Enum.split(row, 12)
+
+    with {:ok, session} <- to_session(session_columns),
+         {:ok, parsed_state} <- state(task_state) do
+      {:ok, %TaskSession{session: session, task_title: task_title, task_state: parsed_state}}
+    end
+  end
+
+  @doc """
+  Maps every row of `ListSessionsForProject`, stopping at the first that will
+  not map.
+  """
+  @spec to_task_sessions([list()]) :: {:ok, [TaskSession.t()]} | {:error, error()}
+  def to_task_sessions(rows) when is_list(rows), do: all(rows, &to_task_session/1)
 
   @doc """
   Parses a timestamp written by `datetime('now')`.
@@ -223,14 +313,50 @@ defmodule Tend.Store.Row do
   Parses `agent_sessions.status_updated_at`, written by
   `strftime('%Y-%m-%d %H:%M:%f', 'now')` at millisecond precision.
 
-  The counterpart of Go's `parseStatusTime`. Nothing in the task surface reads
-  that column -- the session functions arrive in a later part of the store
-  port -- so it has no caller here yet; it lives with its sibling because the
-  two layouts are one decision, and it is tested directly.
+  The counterpart of Go's `parseStatusTime`, and the read half of the poller's
+  compare-and-swap token: `to_session/1` parses the column with this, and
+  `format_status_time/1` renders the value back out for the CAS to compare
+  against.
   """
   @spec parse_status_time(term()) :: {:ok, DateTime.t()} | :error
   def parse_status_time(value) when is_binary(value), do: parse(@status_time, value)
   def parse_status_time(_value), do: :error
+
+  @doc """
+  Renders a `DateTime` back into the exact text
+  `strftime('%Y-%m-%d %H:%M:%f', 'now')` would have written for that instant.
+
+  The formatting half of Go's `statusUpdatedAtParam`
+  (`t.UTC().Format(statusTimeLayout)`), and the reason it has to be exact
+  rather than merely correct: the CAS compares this string against the column
+  with SQL `IS`, so a fourth digit, a missing zero pad or a rounded
+  millisecond does not read as a *different* time, it reads as *no match at
+  all*. Two racing writers would then both lose instead of one winning, and
+  the poller could never write again.
+
+  Sub-millisecond precision is truncated rather than rounded, which is what
+  Go's `.000` layout chunk does. `Calendar.strftime/2`'s own `%f` is
+  deliberately avoided: its width follows the `DateTime`'s precision rather
+  than the layout's, so a whole-second `DateTime` would render the wrong
+  number of digits.
+  """
+  @spec format_status_time(DateTime.t()) :: String.t()
+  def format_status_time(%DateTime{} = at) do
+    utc = DateTime.shift_zone!(at, "Etc/UTC")
+    {microsecond, _precision} = utc.microsecond
+    millis = microsecond |> div(1000) |> Integer.to_string() |> String.pad_leading(3, "0")
+
+    Calendar.strftime(utc, "%Y-%m-%d %H:%M:%S") <> "." <> millis
+  end
+
+  # Go's sessionToDomain discards parseStatusTime's error and keeps the zero
+  # time; nil is this port's zero time.
+  defp lenient_status_time(value) do
+    case parse_status_time(value) do
+      {:ok, at} -> at
+      :error -> nil
+    end
+  end
 
   defp parse(pattern, value) do
     case Regex.run(pattern, value, capture: :all_but_first) do
@@ -268,9 +394,10 @@ defmodule Tend.Store.Row do
     {value, precision}
   end
 
-  # `context` is the "task 7 created_at" / "workflow 3 updated_at" label Go's
-  # toDomain and workflowToDomain each build with fmt.Errorf before wrapping
-  # parseTime's error.
+  # `context` is the "task 7 created_at" / "workflow 3 updated_at" /
+  # "session 4 started_at" label Go's toDomain, workflowToDomain and
+  # sessionToDomain each build with fmt.Errorf before wrapping parseTime's
+  # error.
   defp stamp(value, context) do
     case parse_time(value) do
       {:ok, at} -> {:ok, at}
@@ -278,10 +405,8 @@ defmodule Tend.Store.Row do
     end
   end
 
-  defp stamp(value, id, column), do: stamp(value, "task #{id} #{column}")
-
-  defp optional_stamp(nil, _id, _column), do: {:ok, nil}
-  defp optional_stamp(value, id, column), do: stamp(value, id, column)
+  defp optional_stamp(nil, _context), do: {:ok, nil}
+  defp optional_stamp(value, context), do: stamp(value, context)
 
   # Go writes task.State(row.State) and lets an unrecognised name ride along
   # as an invalid State. The atom set here is closed on purpose (see

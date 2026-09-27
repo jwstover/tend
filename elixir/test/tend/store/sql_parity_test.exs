@@ -48,7 +48,21 @@ defmodule Tend.Store.SQLParityTest do
     "list_steps" => "listSteps",
     "create_step_full" => "createStepFull",
     "list_edges_for_workflow" => "listEdgesForWorkflow",
-    "upsert_edge" => "upsertEdge"
+    "upsert_edge" => "upsertEdge",
+    "create_session" => "createSession",
+    "delete_session" => "deleteSession",
+    "list_sessions_for_task" => "listSessionsForTask",
+    "list_sessions_for_project" => "listSessionsForProject",
+    "touch_session" => "touchSession",
+    "update_session_label" => "updateSessionLabel",
+    "set_session_needs_recap" => "setSessionNeedsRecap",
+    "set_session_status" => "setSessionStatus",
+    "list_sessions_needing_recap" => "listSessionsNeedingRecap",
+    "list_sessions_with_tmux" => "listSessionsWithTmux",
+    "claim_session_recap" => "claimSessionRecap",
+    "set_session_working_if_unchanged" => "setSessionWorkingIfUnchanged",
+    "set_session_idle_if_unchanged" => "setSessionIdleIfUnchanged",
+    "set_session_ended_if_unchanged" => "setSessionEndedIfUnchanged"
   }
 
   # The one statement that is not a byte-for-byte copy. sqlc folded the

@@ -4,8 +4,9 @@ defmodule Tend.Store do
 
   A port of `internal/store`, built up in parts: opening the file and getting
   the schema onto it, the flat task surface on top of that, then the workflow
-  definition rows. Nothing calls any of it yet -- the CLI commands, MCP tools
-  and TUI views that would are later phases.
+  definition rows and the agent-session and tmux-session surface. Nothing calls
+  any of it yet -- the CLI commands, MCP tools and TUI views that would are
+  later phases.
 
   Built on the raw `Exqlite.Sqlite3` API rather than Ecto. The Go store is
   hand-written SQL against a schema that two binaries have to agree on
@@ -51,8 +52,10 @@ defmodule Tend.Store do
   alias Tend.Task.ChildCount
   alias Tend.Task.Priority
   alias Tend.Task.Project
+  alias Tend.Task.Session
   alias Tend.Task.SessionStatus
   alias Tend.Task.State
+  alias Tend.Task.TaskSession
   alias Tend.Workflow
   alias Tend.Workflow.RunState
 
@@ -373,6 +376,94 @@ defmodule Tend.Store do
   SET to_step_id     = excluded.to_step_id,
       max_iterations = excluded.max_iterations
   RETURNING id, from_step_id, outcome, to_step_id, max_iterations
+  """
+
+  @create_session """
+  INSERT INTO agent_sessions (task_id, external_id, cwd, label, tmux_session, workflow_step_run_id, status, status_updated_at)
+  VALUES (?, ?, ?, ?, ?, ?, 'starting', strftime('%Y-%m-%d %H:%M:%f', 'now'))
+  RETURNING id, task_id, external_id, cwd, label, started_at, last_active_at, tmux_session, needs_recap, status, status_updated_at, workflow_step_run_id
+  """
+
+  @delete_session """
+  DELETE FROM agent_sessions
+  WHERE id = ?
+  """
+
+  @list_sessions_for_task """
+  SELECT id, task_id, external_id, cwd, label, started_at, last_active_at, tmux_session, needs_recap, status, status_updated_at, workflow_step_run_id
+  FROM agent_sessions
+  WHERE task_id = ?
+  ORDER BY last_active_at DESC, id DESC
+  """
+
+  @list_sessions_for_project """
+  SELECT s.id, s.task_id, s.external_id, s.cwd, s.label, s.started_at, s.last_active_at, s.tmux_session, s.needs_recap, s.status, s.status_updated_at, s.workflow_step_run_id, t.title AS task_title, t.state AS task_state
+  FROM agent_sessions s
+  JOIN tasks t ON t.id = s.task_id
+  WHERE (?1 IS NULL OR t.project_id = ?1)
+  ORDER BY s.last_active_at DESC, s.id DESC
+  """
+
+  @touch_session """
+  UPDATE agent_sessions
+  SET last_active_at = datetime('now')
+  WHERE id = ?
+  """
+
+  @update_session_label """
+  UPDATE agent_sessions
+  SET label = ?
+  WHERE external_id = ?
+  """
+
+  @set_session_needs_recap """
+  UPDATE agent_sessions
+  SET needs_recap = ?
+  WHERE external_id = ?
+  """
+
+  @set_session_status """
+  UPDATE agent_sessions
+  SET status = ?, status_updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now'), last_active_at = datetime('now')
+  WHERE external_id = ?
+  """
+
+  @list_sessions_needing_recap """
+  SELECT id, task_id, external_id, cwd, label, started_at, last_active_at, tmux_session, needs_recap, status, status_updated_at, workflow_step_run_id
+  FROM agent_sessions
+  WHERE needs_recap = 1
+  ORDER BY last_active_at DESC, id DESC
+  """
+
+  @claim_session_recap """
+  UPDATE agent_sessions
+  SET needs_recap = 0
+  WHERE external_id = ? AND needs_recap = 1
+  """
+
+  @list_sessions_with_tmux """
+  SELECT id, task_id, external_id, cwd, label, started_at, last_active_at, tmux_session, needs_recap, status, status_updated_at, workflow_step_run_id
+  FROM agent_sessions
+  WHERE tmux_session != '' AND status != 'ended'
+  ORDER BY last_active_at DESC, id DESC
+  """
+
+  @set_session_working_if_unchanged """
+  UPDATE agent_sessions
+  SET status = 'working', status_updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now')
+  WHERE external_id = ? AND status_updated_at IS ?
+  """
+
+  @set_session_idle_if_unchanged """
+  UPDATE agent_sessions
+  SET status = 'idle', status_updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now')
+  WHERE external_id = ? AND status_updated_at IS ?
+  """
+
+  @set_session_ended_if_unchanged """
+  UPDATE agent_sessions
+  SET status = 'ended', status_updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now')
+  WHERE external_id = ? AND status_updated_at IS ?
   """
 
   # -- capture ---------------------------------------------------------------
@@ -823,6 +914,311 @@ defmodule Tend.Store do
     end
   end
 
+  # -- agent sessions --------------------------------------------------------
+  #
+  # Nothing calls any of this yet. The `agent-hook` command that drives
+  # `set_session_status/3` is Phase 2 and the sessions view that drives the
+  # rest is Phase 4; this is an internal API with no caller, tested directly.
+
+  @doc """
+  Records a Claude Code session about to be launched against a task: the
+  pinned external session id, the directory it will run in, and the task's
+  title snapshotted as the label. `tmux_session` is the wrapping tmux
+  session's name, or `""` when the session isn't launched under tmux.
+
+  It is called right before the terminal handoff, not after it returns, so the
+  row exists for the session's own hooks to find from its very first turn. The
+  row starts with status `:starting` and a stamped `status_updated_at`; a
+  launch that then fails is expected to take the row back with
+  `delete_session/2`.
+
+  `workflow_step_run_id` is always NULL here. The session that belongs to a
+  workflow step is written by `CreateStepRunSession`, a later part of the
+  store port.
+  """
+  @spec create_session(t(), integer(), String.t(), String.t(), String.t(), String.t()) ::
+          {:ok, Session.t()} | {:error, Tend.Error.t()}
+  def create_session(store, task_id, external_id, cwd, label, tmux_session)
+      when is_integer(task_id) and is_binary(external_id) and is_binary(cwd) and
+             is_binary(label) and is_binary(tmux_session) do
+    context = "inserting session for task #{task_id}"
+
+    case query(
+           store,
+           @create_session,
+           [task_id, external_id, cwd, label, tmux_session, nil],
+           context
+         ) do
+      {:ok, [row]} -> Row.to_session(row)
+      {:ok, rows} -> {:error, {:query_failed, context, {:rows_returned, length(rows)}}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc """
+  Removes a session row, for the one case a row should not outlive the moment
+  it was written: a launch whose handoff failed (a non-zero exit, a tmux that
+  would not start) never became a session, and the row `create_session/6`
+  wrote ahead of it would otherwise read as one.
+
+  Deleting an id that is already gone is not an error.
+  """
+  @spec delete_session(t(), integer()) :: :ok | {:error, Tend.Error.t()}
+  def delete_session(store, id) when is_integer(id) do
+    execute(store, @delete_session, [id], "deleting session #{id}")
+  end
+
+  @doc """
+  A task's sessions, most recently active first -- the resume picker's source
+  list.
+  """
+  @spec list_sessions_for_task(t(), integer()) :: {:ok, [Session.t()]} | {:error, Tend.Error.t()}
+  def list_sessions_for_task(store, task_id) when is_integer(task_id) do
+    with {:ok, rows} <-
+           query(
+             store,
+             @list_sessions_for_task,
+             [task_id],
+             "listing sessions for task #{task_id}"
+           ) do
+      Row.to_sessions(rows)
+    end
+  end
+
+  @doc """
+  Every session on every task in a project, most recently active first, each
+  with its task's title and state -- the agents view's list.
+
+  `nil` for `project_id` means all projects (the projects column's All row),
+  the same convention `list_live/2` uses.
+  """
+  @spec list_sessions_for_project(t(), integer() | nil) ::
+          {:ok, [TaskSession.t()]} | {:error, Tend.Error.t()}
+  def list_sessions_for_project(store, project_id) do
+    with {:ok, rows} <-
+           query(
+             store,
+             @list_sessions_for_project,
+             [project_filter(project_id)],
+             "listing sessions for project"
+           ) do
+      Row.to_task_sessions(rows)
+    end
+  end
+
+  @doc """
+  Bumps a session's last-active timestamp after a resume.
+  """
+  @spec touch_session(t(), integer()) :: :ok | {:error, Tend.Error.t()}
+  def touch_session(store, id) when is_integer(id) do
+    execute(store, @touch_session, [id], "touching session #{id}")
+  end
+
+  @doc """
+  Replaces a session's label with a short description of what it actually did,
+  derived from the post-session recap call -- the auto-naming fix for the
+  static task-title snapshot not distinguishing sessions on the same task.
+
+  Keyed by `external_id` rather than the row id: it is the identifier the
+  recap path has in hand for a freshly launched session and a resumed one
+  alike.
+  """
+  @spec update_session_label(t(), String.t(), String.t()) :: :ok | {:error, Tend.Error.t()}
+  def update_session_label(store, external_id, label)
+      when is_binary(external_id) and is_binary(label) do
+    execute(
+      store,
+      @update_session_label,
+      [label, external_id],
+      "updating session label for #{external_id}"
+    )
+  end
+
+  @doc """
+  Flags a session as still owing a recap, set when a session is backgrounded
+  rather than exited so the recap call is deliberately skipped while it is
+  live. The SessionEnd hook drains the flag once the session is really over.
+  """
+  @spec set_session_needs_recap(t(), String.t(), boolean()) :: :ok | {:error, Tend.Error.t()}
+  def set_session_needs_recap(store, external_id, needs)
+      when is_binary(external_id) and is_boolean(needs) do
+    # Go's generated parameter is an int64 and the column is INTEGER, so the
+    # boolean is widened here rather than relying on the driver's own idea of
+    # what a boolean binds as.
+    value = if needs, do: 1, else: 0
+
+    execute(
+      store,
+      @set_session_needs_recap,
+      [value, external_id],
+      "setting needs_recap for #{external_id}"
+    )
+  end
+
+  @doc """
+  Records what a session's Claude Code hooks last reported about it, keyed by
+  `external_id` -- the id the hook payload carries as `session_id`, which is
+  what makes the correlation a lookup rather than a join.
+
+  A session id with no row is not an error. Rows are written at launch, so a
+  running session's hooks normally do match one, but a hook can still fire for
+  a session tend has no row for -- a launch that failed and had its row
+  deleted, or a `claude` started outside tend with tend's settings on hand.
+  The UPDATE affects zero rows and that is the whole story.
+
+  `last_active_at` is bumped alongside the status because a hook event is
+  genuine activity -- it keeps the resume picker's newest-first ordering
+  honest for a session that has been running in the background.
+
+  Unlike `set_state/3`, a status outside the set raises rather than returning
+  an error. A state name reaches `set_state/3` from a user typing it; a status
+  reaches here only from the hook command's fixed event table
+  (`agent.StatusForEvent`), so anything else is a bug in this tree rather than
+  something a caller can hand back to a user.
+  """
+  @spec set_session_status(t(), String.t(), SessionStatus.t()) :: :ok | {:error, Tend.Error.t()}
+  def set_session_status(store, external_id, status) when is_binary(external_id) do
+    execute(
+      store,
+      @set_session_status,
+      [SessionStatus.format(status), external_id],
+      "setting status for session #{external_id}"
+    )
+  end
+
+  @doc """
+  Every session still owing a recap: one that was backgrounded rather than
+  exited, so the recap call was deliberately skipped while it was live.
+
+  Deliberately not filtered to `status = 'ended'`. A host that dies takes its
+  tmux server and its chance to fire SessionEnd with it, and such a session
+  would be stranded forever by a status filter. The caller decides liveness
+  with `tmux has-session`, which is authoritative in every case -- including
+  `/clear`, which fires SessionEnd while the process keeps running.
+  """
+  @spec list_sessions_needing_recap(t()) :: {:ok, [Session.t()]} | {:error, Tend.Error.t()}
+  def list_sessions_needing_recap(store) do
+    with {:ok, rows} <-
+           query(store, @list_sessions_needing_recap, [], "listing sessions needing recap") do
+      Row.to_sessions(rows)
+    end
+  end
+
+  @doc """
+  Every session tend could plausibly still poll for pane-based status:
+  launched under tmux at all, and not already known to have ended -- a session
+  already reporting `:ended` has nothing left to poll.
+  """
+  @spec sessions_with_tmux(t()) :: {:ok, [Session.t()]} | {:error, Tend.Error.t()}
+  def sessions_with_tmux(store) do
+    with {:ok, rows} <- query(store, @list_sessions_with_tmux, [], "listing sessions with tmux") do
+      Row.to_sessions(rows)
+    end
+  end
+
+  @doc """
+  Atomically takes ownership of a session's owed recap, reporting whether this
+  caller is the one that got it.
+
+  The UPDATE clears `needs_recap` only if it was still set, so of two tend
+  instances draining the same debt concurrently exactly one sees `true` and
+  fires the (expensive, and side-effecting) recap call.
+
+  Claiming before running the recap rather than after means a recap that then
+  fails loses the debt. That is the intended trade: it bounds the work to one
+  attempt instead of retrying forever, consistent with the existing convention
+  that a lost automatic recap is not something the user can act on.
+  """
+  @spec claim_session_recap(t(), String.t()) :: {:ok, boolean()} | {:error, Tend.Error.t()}
+  def claim_session_recap(store, external_id) when is_binary(external_id) do
+    affected(
+      store,
+      @claim_session_recap,
+      [external_id],
+      "claiming recap for session #{external_id}"
+    )
+  end
+
+  @doc """
+  Writes `:working` for the capture-pane poller, but only if no hook has
+  updated the session's status since `prev_status_updated_at` -- the value the
+  caller read from the row right before it captured the pane.
+
+  A hook (Stop/Notification/SessionEnd) landing in between moves
+  `status_updated_at` first, so the underlying CAS UPDATE affects zero rows
+  and the hook's authoritative status is left standing; the poller's guess
+  never overwrites it.
+
+  A `nil` `prev_status_updated_at` means the caller observed the column as
+  NULL -- a session no hook has ever touched -- matched against SQL NULL via
+  `IS` rather than a sentinel string. It is Go's zero `time.Time`.
+
+  Reports whether the write took effect. `false` is not an error: it means the
+  race was correctly lost to fresher, authoritative data, which is the whole
+  point of the compare-and-swap.
+  """
+  @spec set_session_working_if_unchanged(t(), String.t(), DateTime.t() | nil) ::
+          {:ok, boolean()} | {:error, Tend.Error.t()}
+  def set_session_working_if_unchanged(store, external_id, prev_status_updated_at)
+      when is_binary(external_id) do
+    affected(
+      store,
+      @set_session_working_if_unchanged,
+      [external_id, status_updated_at_param(prev_status_updated_at)],
+      "setting working status for session #{external_id}"
+    )
+  end
+
+  @doc """
+  Takes a session back from `:working` to `:idle`, the other half of the
+  poller's CAS pair alongside `set_session_working_if_unchanged/3`.
+
+  Without this, a `:working` status the poller wrote -- whether from a genuine
+  race against a Stop hook's own write, or one trailing frame of stale chrome
+  -- has no way back down until the *next* hook fires, which can be an
+  arbitrarily long wait. The caller only invokes this once it has already read
+  `status = 'working'` itself, so this closes that gap by re-checking on every
+  tick that still sees no working chrome.
+
+  Same compare-and-swap contract as `set_session_working_if_unchanged/3`: a
+  hook landing between the caller's read and this write moves
+  `status_updated_at` first, so the UPDATE affects zero rows and the hook's
+  own status -- idle, blocked, ended, whatever it set -- is left standing.
+  """
+  @spec set_session_idle_if_unchanged(t(), String.t(), DateTime.t() | nil) ::
+          {:ok, boolean()} | {:error, Tend.Error.t()}
+  def set_session_idle_if_unchanged(store, external_id, prev_status_updated_at)
+      when is_binary(external_id) do
+    affected(
+      store,
+      @set_session_idle_if_unchanged,
+      [external_id, status_updated_at_param(prev_status_updated_at)],
+      "setting idle status for session #{external_id}"
+    )
+  end
+
+  @doc """
+  Writes `:ended` for a session the poller has found gone via
+  `tmux has-session` -- the SessionEnd hook's replacement when the host died
+  before it could fire one.
+
+  Same compare-and-swap contract as `set_session_working_if_unchanged/3`: a
+  hook landing between the caller's liveness check and this write moves
+  `status_updated_at` first, so the UPDATE affects zero rows and the hook's
+  own status is left standing.
+  """
+  @spec set_session_ended_if_unchanged(t(), String.t(), DateTime.t() | nil) ::
+          {:ok, boolean()} | {:error, Tend.Error.t()}
+  def set_session_ended_if_unchanged(store, external_id, prev_status_updated_at)
+      when is_binary(external_id) do
+    affected(
+      store,
+      @set_session_ended_if_unchanged,
+      [external_id, status_updated_at_param(prev_status_updated_at)],
+      "setting ended status for session #{external_id}"
+    )
+  end
+
   # -- transactions ----------------------------------------------------------
 
   @doc """
@@ -1058,11 +1454,35 @@ defmodule Tend.Store do
     end
   end
 
+  # The port of Go's statusUpdatedAtParam: a session's status_updated_at back
+  # in the form the CAS queries compare against. nil is Go's zero time -- the
+  # caller observed the column as NULL, a session no hook has ever touched --
+  # and binds as SQL NULL, matched by the queries' `IS` rather than by a
+  # sentinel string. Everything else is rendered at exactly the three
+  # fractional digits SQLite wrote (see Tend.Store.Row.format_status_time/1).
+  defp status_updated_at_param(nil), do: nil
+  defp status_updated_at_param(%DateTime{} = at), do: Row.format_status_time(at)
+
   # Runs a statement for effect. Go's generated :exec methods discard the
   # sql.Result, and so does this: not one caller in the task surface looks at
   # the row count.
   defp execute(store, sql, params, context) do
     with {:ok, _rows} <- query(store, sql, params, context), do: :ok
+  end
+
+  # The port of sqlc's `:execrows` methods, which return RowsAffected: the
+  # compare-and-swaps report whether they won, so the row count is the answer
+  # rather than something to discard. sqlite3_changes counts the rows the most
+  # recent statement on *this connection* changed, which is why the read has
+  # to sit directly after the statement -- and why it is only sound for a
+  # table with no triggers on it, as agent_sessions has none.
+  defp affected(%__MODULE__{conn: conn} = store, sql, params, context) do
+    with {:ok, _rows} <- query(store, sql, params, context) do
+      case Sqlite3.changes(conn) do
+        {:ok, count} -> {:ok, count > 0}
+        {:error, reason} -> {:error, {:query_failed, context, reason}}
+      end
+    end
   end
 
   # Prepare, bind, run, release. The statement is released on both paths --

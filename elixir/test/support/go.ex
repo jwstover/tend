@@ -48,12 +48,40 @@ defmodule Tend.Test.Go do
   @doc """
   Runs the binary against the database at `path` and returns its combined
   output, raising if it exits non-zero.
+
+  `opts` takes `:input`, a string fed to the command's stdin -- what
+  `tend agent-hook` needs, since a hook's payload arrives that way and there
+  is nothing to read otherwise. It is delivered through a temp file and a
+  shell redirect because `System.cmd/3` offers no stdin at all, and a Port
+  cannot close the write end for the child to see EOF.
   """
-  @spec run!(String.t(), String.t(), [String.t()]) :: String.t()
-  def run!(binary, path, args) do
-    {output, status} = System.cmd(binary, ["--db", path | args], stderr_to_stdout: true)
+  @spec run!(String.t(), String.t(), [String.t()], keyword()) :: String.t()
+  def run!(binary, path, args, opts \\ []) do
+    argv = ["--db", path | args]
+
+    {output, status} =
+      case Keyword.get(opts, :input) do
+        nil -> System.cmd(binary, argv, stderr_to_stdout: true)
+        input -> run_with_stdin(binary, argv, input)
+      end
+
     if status != 0, do: raise("tend #{Enum.join(args, " ")} failed:\n#{output}")
 
     output
   end
+
+  defp run_with_stdin(binary, argv, input) do
+    stdin = Path.join(System.tmp_dir!(), "tend-stdin-#{System.unique_integer([:positive])}")
+    File.write!(stdin, input)
+
+    try do
+      command = Enum.map_join([binary | argv], " ", &shell_quote/1)
+      System.cmd("sh", ["-c", command <> " < " <> shell_quote(stdin)], stderr_to_stdout: true)
+    after
+      File.rm(stdin)
+    end
+  end
+
+  # Single quotes, with an embedded one spelled the only way sh allows.
+  defp shell_quote(word), do: "'" <> String.replace(word, "'", "'\\''") <> "'"
 end
