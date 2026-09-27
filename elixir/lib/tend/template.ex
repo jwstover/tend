@@ -9,13 +9,16 @@ defmodule Tend.Template do
   the Elixir port speaks Go's template language rather than migrating anyone
   to EEx.
 
-  This module is parts one and two of three: the lexer and parser, and the
-  renderer. `render/2` has no caller in the tree yet -- the workflow step
-  prompts that will call it land with their own sub-task -- so this is still
-  a pure internal API with its own tests and no runtime side effects. The
-  built-in functions are part three and slot into `Tend.Template.Renderer`
-  without touching the node set in `Tend.Template.AST`, which is closed and
-  documented for exactly that reason.
+  The subset is complete: the lexer and parser, the renderer, and the
+  built-in functions the prompts call. `render/2` has no caller in the tree
+  yet -- the workflow step prompts that will call it land with their own
+  sub-task -- so this is still a pure internal API with its own tests and no
+  runtime side effects.
+
+  Its claim to be Go's language is pinned rather than asserted: every `want`
+  in `test/tend/template/` was captured from Go's own `text/template` and is
+  asserted byte for byte. A corpus run over every `prompt_md` in the repo and
+  in a real user's `tend.db` is its own sub-task and is not here yet.
 
   ## What is supported
 
@@ -34,15 +37,20 @@ defmodule Tend.Template do
       {{- .Input -}}                             trim markers
       1  -1.5  0x1f  'a'  "s"  `raw`  true  nil  literals
 
-  Three things in that table parse but do not yet *render*: function calls,
-  `|` pipelines and the variables a `:=` binds are the built-ins sub-task's,
-  and `render/2` refuses them with `Tend.Template.RenderError` rather than
-  guessing. Parentheses are not one of them -- a parenthesised
-  sub-expression is a pipeline like any other, so `{{(.Cwd)}}` renders, and
-  renders what Go renders; only parentheses wrapped around one of the three
-  above are refused. `$` needs no declaration and does resolve. Everything
-  else -- field chains, the cursor, `{{if}}`, `{{range}}`, trim markers and
-  the literals -- renders today.
+  Everything in that table renders, and renders Go's bytes -- with one
+  exception, which is a float literal large or small enough that Go's `%v`
+  switches to an exponent. That happens at a million, not at some absurd
+  magnitude: `{{1e6}}` is `1e+06` in Go and `1000000` here.
+  `Tend.Template.Value`'s `format_float/1` has the table and the reason it is
+  not worth porting `strconv` for; no field of the prompt data is a float, so
+  only a literal written into a prompt can reach it.
+
+  The built-ins are `and`, `or`, `not`, `eq`, `ne` and `len` --
+  `Tend.Template.Funcs` has them, and has the warning that Go's `and` and
+  `or` return the argument that decided rather than a boolean. Variables
+  follow Go's stack discipline, including an inner `{{$x := ...}}` shadowing
+  an outer one for the length of its block; `Tend.Template.Renderer`
+  describes it.
 
   ## What is not, and why
 
@@ -57,7 +65,7 @@ defmodule Tend.Template do
     * A field chain whose head is neither a field nor a variable -- Go's
       `ChainNode`. `{{.A.B}}` and `{{$x.A}}` are in; `{{len.A}}` (a chain off
       a function name) and `{{(.A).B}}` (a chain off a parenthesised
-      pipeline) are out. These are the only constructs Go accepts and this
+      pipeline) are out. These are the only *syntax* Go accepts and this
       refuses; a repo-wide sweep found zero of either, and supporting them
       would add a node type to the closed set in `Tend.Template.AST` for the
       renderer and the built-ins to carry.
@@ -66,8 +74,23 @@ defmodule Tend.Template do
   Each of these is a parse error that names the construct, so a prompt using
   one is refused loudly rather than rendered wrongly.
 
+  One more thing is out, and it fails at render rather than at parse: Go's
+  other built-in functions -- the four comparisons `lt`, `le`, `gt` and `ge`,
+  plus `index`, `slice`, `printf`, `print`, `println`, `html`, `js`,
+  `urlquery` and `call`. No template in the Go tree calls one -- a sweep of
+  every `{{...}}` under `internal/` finds `and`, `ne`, `not` and `len` and
+  nothing else -- and the sub-task that added the built-ins said to implement
+  only what the prompts use. A template that calls one gets
+  `function "printf" not defined`, which is Go's wording for a name *it* does
+  not have; adding one is a clause in `Tend.Template.Funcs`.
+
+  The comparisons are the ones to watch, because they are the plausible
+  ones: `{{if gt .Iteration 1}}` is a `prompt_md` somebody may already have
+  stored, and it is refused here. `eq` and `ne` are implemented; their four
+  ordering siblings are not.
+
   Everything else is *more* permissive than Go, never less, so no prompt Go
-  accepts is refused here. `{{99999999999999999999}}` is an arbitrary-precision
+  parses is refused here. `{{99999999999999999999}}` is an arbitrary-precision
   integer where Go reports `integer overflow`; `{{1_}}` and `{{-.}}` parse
   where Go reports `illegal number syntax`; a non-ASCII byte counts as a
   letter in an identifier, where Go asks `unicode.IsLetter`.
@@ -159,11 +182,41 @@ defmodule Tend.Template do
   end
 
   @doc """
+  Renders an already-parsed `nodes`, which came from `source`, against `data`.
+
+  `internal/workflow`'s `ValidatePrompt` parses a prompt once and executes it
+  *twice* -- against a zero `PromptData` and a full one, so that a field
+  missing from either branch is caught. This is the entry point that lets the
+  Elixir port do the same without parsing twice or reaching past this module
+  into `Tend.Template.Renderer`. `source` is only used to position an error.
+
+      iex> {:ok, nodes} = Tend.Template.parse("{{.Cwd}}")
+      iex> Tend.Template.render("{{.Cwd}}", nodes, %{cwd: "/tmp"})
+      {:ok, "/tmp"}
+  """
+  @spec render(binary(), [AST.tree_node()], term()) ::
+          {:ok, binary()} | {:error, RenderError.t()}
+  def render(source, nodes, data) when is_binary(source) and is_list(nodes) do
+    {:ok, render!(source, nodes, data)}
+  rescue
+    error in RenderError -> {:error, error}
+  end
+
+  @doc """
   Same as `render/2`, but raises `Tend.Template.ParseError` or
   `Tend.Template.RenderError` instead of returning it.
   """
   @spec render!(binary(), term()) :: binary()
   def render!(source, data) when is_binary(source) do
-    Renderer.render(source, parse!(source), data)
+    render!(source, parse!(source), data)
+  end
+
+  @doc """
+  Same as `render/3`, but raises `Tend.Template.RenderError` instead of
+  returning it.
+  """
+  @spec render!(binary(), [AST.tree_node()], term()) :: binary()
+  def render!(source, nodes, data) when is_binary(source) and is_list(nodes) do
+    Renderer.render(source, nodes, data)
   end
 end

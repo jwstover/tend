@@ -171,9 +171,10 @@ defmodule Tend.Template.AST.Identifier do
   A bare word: the name of a function, such as `and`, `ne`, `not` or `len`.
 
   The parser does not check that the function exists -- it has no function
-  table, and the built-ins land with the builtins sub-task. Go resolves names
-  at parse time and says `function "bogus" not defined`; here an unknown name
-  parses into an `Identifier` and is rejected later.
+  table. Go resolves names at parse time and says `function "bogus" not
+  defined`; here an unknown name parses into an `Identifier` and
+  `Tend.Template.Renderer` rejects it, with the same wording, when it
+  evaluates the command.
   """
 
   @type t :: %__MODULE__{name: String.t(), offset: non_neg_integer()}
