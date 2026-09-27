@@ -325,4 +325,57 @@ defmodule Tend.Template.AST do
 
   @typedoc "Any node in the closed set. `Pipeline` arrives via `operand/0`."
   @type t :: tree_node() | operand() | Tend.Template.AST.Command.t()
+
+  @doc """
+  Spells a node back out as template source, the way Go's `Node.String()`
+  does.
+
+  Both error paths need it and neither can keep the raw slice: the parser
+  quotes the offending term in `unexpected . after term "..."`, and the
+  renderer fills Go's `executing "prompt" at <.Task.Body>` context with it.
+
+  Only operands and the two structural nodes are spellable -- those are the
+  only nodes an error ever points at. One deliberate difference from Go:
+  Go's `PipeNode.String` always writes `:=`, even for a `=` rebind, and this
+  writes the operator the source used.
+
+      iex> Tend.Template.AST.to_source(%Tend.Template.AST.Field{path: ["Task", "Body"], offset: 0})
+      ".Task.Body"
+  """
+  @spec to_source(operand() | Tend.Template.AST.Command.t()) :: String.t()
+  def to_source(%Tend.Template.AST.String{text: text}), do: text
+  def to_source(%Tend.Template.AST.Number{text: text}), do: text
+  def to_source(%Tend.Template.AST.Bool{value: value}), do: to_string(value)
+  def to_source(%Tend.Template.AST.Dot{}), do: "."
+  def to_source(%Tend.Template.AST.Nil{}), do: "nil"
+  def to_source(%Tend.Template.AST.Identifier{name: name}), do: name
+
+  def to_source(%Tend.Template.AST.Field{path: path}), do: "." <> Enum.join(path, ".")
+
+  def to_source(%Tend.Template.AST.Variable{name: name, path: []}), do: name
+
+  def to_source(%Tend.Template.AST.Variable{name: name, path: path}),
+    do: name <> "." <> Enum.join(path, ".")
+
+  def to_source(%Tend.Template.AST.Command{args: args}),
+    do: Enum.map_join(args, " ", &argument_source/1)
+
+  def to_source(%Tend.Template.AST.Pipeline{} = pipeline) do
+    commands = Enum.map_join(pipeline.commands, " | ", &to_source/1)
+
+    case pipeline.decls do
+      [] ->
+        commands
+
+      decls ->
+        operator = if pipeline.assign?, do: " = ", else: " := "
+        Enum.map_join(decls, ", ", &to_source/1) <> operator <> commands
+    end
+  end
+
+  # A parenthesised sub-expression keeps its parentheses inside a command.
+  defp argument_source(%Tend.Template.AST.Pipeline{} = pipeline),
+    do: "(" <> to_source(pipeline) <> ")"
+
+  defp argument_source(node), do: to_source(node)
 end
