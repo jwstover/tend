@@ -21,8 +21,9 @@ end
 
 defmodule Tend.Template.GoParityTest do
   # Written by the review of sub-task #301 and kept as a regression test: the
-  # four cases below are the ones where the port's claims about Go were wrong
-  # rather than its code. Every `want` was captured from Go 1.26.4's
+  # cases below are the ones where the port's claims about Go were wrong
+  # rather than its code, plus the divergences that survived the checking and
+  # are therefore deliberate. Every `want` was captured from Go 1.26.4's
   # text/template with Option("missingkey=error"), against the same data as
   # internal/workflow/prompt_test.go's fullData.
   use ExUnit.Case, async: true
@@ -92,11 +93,52 @@ defmodule Tend.Template.GoParityTest do
     end
   end
 
+  describe "{{range}} over a nil" do
+    test "Go takes the {{else}} arm for a nil, and it is not close" do
+      # The port used to raise here and justify it as "exactly as Go treats an
+      # untyped nil". Go does no such thing: walkRange's `case reflect.Invalid:
+      # break` carries the comment "an invalid value is likely a nil map, etc.
+      # and acts like an empty map", and a nil slice and a nil map reach the
+      # Slice and Map cases with length zero, so all three fall through to the
+      # {{else}} arm.
+      #
+      # Go 1.26.4, `{{range .Outcomes}}x{{else}}none{{end}}`, one program per
+      # spelling of the field:
+      #
+      #   Outcomes []string = nil  => "none"
+      #   Outcomes any      = nil  => "none"
+      #   Outcomes []string = {}   => "none"
+      #   M map[string]int  = nil  => "none"
+      #
+      # and with no {{else}} arm, `[{{range .Outcomes}}x{{end}}]` => "[]" for
+      # the nil slice and the nil `any` both.
+      nil_outcomes = %{@full | outcomes: nil}
+
+      assert Template.render("{{range .Outcomes}}x{{else}}none{{end}}", nil_outcomes) ==
+               {:ok, "none"}
+
+      assert Template.render("[{{range .Outcomes}}x{{end}}]", nil_outcomes) == {:ok, "[]"}
+    end
+
+    test "printing a nil is still <no value>, which is the nil interface's %v" do
+      # This is the divergence that stays, and it is the one the port chose
+      # deliberately everywhere else: an Elixir nil models Go's *nil
+      # interface*, not a nil slice. Go 1.26.4, `{{.Outcomes}}`:
+      #
+      #   Outcomes []string = nil  => "[]"
+      #   Outcomes any      = nil  => "<no value>"
+      #
+      # So `[]` remains the faithful spelling of an empty list field; nil is
+      # merely no longer *unsafe* to range over.
+      assert Template.render("{{.Outcomes}}", %{@full | outcomes: nil}) == {:ok, "<no value>"}
+    end
+  end
+
   describe "{{range}} over a string" do
     test "Go refuses it, exactly as this does" do
       # Go's text/template does not range over a string; it errors, which is
-      # what this does too. Only the map and integer cases were ever real
-      # divergences, and only the map one is left.
+      # what this does too. The integer and nil cases were real divergences
+      # and are fixed; only the map one is left.
       #
       # Go 1.26.4: range can't iterate over /home/me/proj
       assert {:error, error} = Template.render("{{range .Cwd}}x{{end}}", @full)
