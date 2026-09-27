@@ -9,13 +9,24 @@ defmodule Tend.ErrorTest do
   describe "sentinels/0" do
     test "lists the sentinels of the ported files, sorted" do
       assert Error.sentinels() == [
+               :cross_workflow_edge,
                :dependency_cycle,
+               :empty_name,
                :empty_note,
+               :empty_outcome,
                :empty_project_name,
                :empty_title,
+               :in_use,
                :project_not_found,
                :protected_project,
-               :self_dependency
+               :run_ended,
+               :run_not_failed,
+               :run_not_found,
+               :self_dependency,
+               :step_not_found,
+               :step_run_finished,
+               :step_run_not_found,
+               :workflow_not_found
              ]
     end
 
@@ -50,6 +61,17 @@ defmodule Tend.ErrorTest do
                ~s|invalid date "06/09/2026" (want YYYY-MM-DD)|
 
       assert Error.message({:invalid_date, ""}) == ~s|invalid date "" (want YYYY-MM-DD)|
+    end
+
+    test "renders the wrapping in-use error the way Go's InUseError does" do
+      # The literal output of workflow.InUseError("workflow 3", 7), the case
+      # TestInUseErrorMatchesSentinel in internal/workflow/workflow_test.go
+      # pins.
+      assert Error.message({:in_use, "workflow 3", 7}) ==
+               "workflow 3 is referenced by an active run 7"
+
+      # The wrapped sentinel still renders on its own, as errors.Is sees it.
+      assert Error.message(:in_use) == "referenced by an active run"
     end
 
     test "refuses a reason nobody registered, and says how to fix it" do

@@ -35,8 +35,9 @@ defmodule Tend.Error do
   this module's own rules; the cross-language guard is the parity test.)
 
   Only the errors of `internal/task/task.go`, `internal/task/project.go`,
-  `internal/task/session.go` and `internal/task/log.go` are listed today; the
-  store and template ports add theirs.
+  `internal/task/session.go`, `internal/task/log.go` and
+  `internal/workflow/workflow.go` are listed today; the store and template
+  ports add theirs.
   """
 
   # Sentinel atom => the Go error's message, verbatim. Keep this sorted by
@@ -53,7 +54,20 @@ defmodule Tend.Error do
     project_not_found: "project not found",
 
     # internal/task/log.go
-    empty_note: "log entry is empty"
+    empty_note: "log entry is empty",
+
+    # internal/workflow/workflow.go
+    empty_name: "name is empty",
+    empty_outcome: "outcome is empty",
+    workflow_not_found: "workflow not found",
+    step_not_found: "step not found",
+    run_not_found: "run not found",
+    step_run_not_found: "step run not found",
+    in_use: "referenced by an active run",
+    cross_workflow_edge: "edge joins steps of different workflows",
+    run_ended: "run has already ended",
+    run_not_failed: "run has not failed",
+    step_run_finished: "step run already finished"
   }
 
   @typedoc """
@@ -67,12 +81,26 @@ defmodule Tend.Error do
           | :protected_project
           | :project_not_found
           | :empty_note
+          | :empty_name
+          | :empty_outcome
+          | :workflow_not_found
+          | :step_not_found
+          | :run_not_found
+          | :step_run_not_found
+          | :in_use
+          | :cross_workflow_edge
+          | :run_ended
+          | :run_not_failed
+          | :step_run_finished
 
   @typedoc """
   Any reason a `{:error, reason}` in this port can carry: a sentinel, or a
   tagged tuple standing in for one of Go's `fmt.Errorf` errors.
   """
-  @type t :: sentinel() | {:invalid_date, String.t()}
+  @type t ::
+          sentinel()
+          | {:invalid_date, String.t()}
+          | {:in_use, String.t(), integer()}
 
   @doc """
   Every sentinel atom, sorted.
@@ -111,6 +139,14 @@ defmodule Tend.Error do
   # internal/task/task.go.
   def message({:invalid_date, value}) when is_binary(value) do
     "invalid date #{quote_go(value)} (want YYYY-MM-DD)"
+  end
+
+  # fmt.Errorf("%s is %w %d", what, ErrInUse, runID) in
+  # internal/workflow/workflow.go, built by Tend.Workflow.in_use_error/2. Go
+  # wraps :in_use rather than restating it, so the sentinel's own message is
+  # spliced in here rather than duplicated.
+  def message({:in_use, what, run_id}) when is_binary(what) and is_integer(run_id) do
+    "#{what} is #{Map.fetch!(@sentinels, :in_use)} #{run_id}"
   end
 
   def message(reason) do
