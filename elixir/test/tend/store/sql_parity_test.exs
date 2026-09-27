@@ -69,7 +69,17 @@ defmodule Tend.Store.SQLParityTest do
     "set_task_parent" => "setTaskParent",
     "set_tasks_project" => "setTasksProject",
     "create_task_event" => "createTaskEvent",
-    "get_project" => "getProject"
+    "get_project" => "getProject",
+    "create_project" => "createProject",
+    "get_project_by_name" => "getProjectByName",
+    "list_projects" => "listProjects",
+    "rename_project" => "renameProject",
+    "set_project_cwd" => "setProjectCwd",
+    "set_project_archived" => "setProjectArchived",
+    "delete_project" => "deleteProject",
+    "reassign_project_tasks" => "reassignProjectTasks",
+    "get_setting" => "getSetting",
+    "set_setting" => "setSetting"
   }
 
   # The one statement that is not a byte-for-byte copy. sqlc folded the
@@ -79,7 +89,7 @@ defmodule Tend.Store.SQLParityTest do
   # See the comment above @set_task_state.
   @go_preamble %{"set_task_state" => ";\n\n"}
 
-  @gen_files ~w(tasks sessions workflows events projects)
+  @gen_files ~w(tasks sessions workflows events projects settings)
 
   defp store_source do
     Corpus.repo_root() |> Path.join("elixir/lib/tend/store.ex") |> File.read!()

@@ -15,10 +15,10 @@ defmodule Tend.Store.HierarchyTest do
   sub-task, not about what the store holds; its one claim on this layer is that
   a sub-task is a whole task, which `list_children/2` above asserts directly.
 
-  Two fixtures are raw SQL rather than store calls, the way `Tend.Store.TasksTest`
-  writes its sessions and runs: `CreateProject` and `RenameProject` are the
-  projects part of the store port, and `ListEvents` is the events part. Waiting
-  for either would mean not testing this one.
+  `project!/2` and `rename_project!/3` go through `Store.create_project/2` and
+  `Store.rename_project/3` now that the projects part of the port exists; the
+  event fixture is still raw SQL, the way `Tend.Store.TasksTest` writes its
+  sessions and runs, because `ListEvents` is a later part of the port.
   """
 
   use ExUnit.Case, async: true
@@ -57,14 +57,13 @@ defmodule Tend.Store.HierarchyTest do
     task
   end
 
-  # CreateProject and RenameProject are the projects part of the store port.
   defp project!(store, name) do
-    SQL.exec!(store.conn, "INSERT INTO projects (name) VALUES ('#{name}')")
-    SQL.scalar!(store.conn, "SELECT id FROM projects WHERE name = '#{name}'")
+    {:ok, project} = Store.create_project(store, name)
+    project.id
   end
 
   defp rename_project!(store, id, name) do
-    SQL.exec!(store.conn, "UPDATE projects SET name = '#{name}' WHERE id = #{id}")
+    :ok = Store.rename_project(store, id, name)
   end
 
   # ListEvents is the events part of the store port; the rows are read

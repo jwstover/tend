@@ -90,6 +90,18 @@ defmodule Tend.ErrorTest do
       # Go's sql.ErrNoRows, wrapped by GetTask's "loading task %d: %w".
       assert Error.message({:task_not_found, 42}) == "loading task 42: no rows in result set"
 
+      # task.ErrProjectNotFound, wrapped by GetProject's "project %d: %w" and
+      # ProjectByName's "project %q: %w". Unlike :task_not_found, Go has a
+      # sentinel here, so its own message is spliced in rather than restated,
+      # the same move {:in_use, ...} makes.
+      assert Error.message({:project_not_found, 5}) == "project 5: project not found"
+
+      assert Error.message({:project_not_found, "work"}) ==
+               ~s|project "work": project not found|
+
+      # The bare sentinel still renders on its own, as errors.Is sees it.
+      assert Error.message(:project_not_found) == "project not found"
+
       # toDomain's "task %d created_at: %w" around parseTime's "parsing %q".
       assert Error.message({:invalid_timestamp, "task 7 created_at", "yesterday"}) ==
                ~s|task 7 created_at: parsing "yesterday"|
@@ -166,6 +178,7 @@ defmodule Tend.ErrorTest do
   @task_surface_reasons [
     :priority_out_of_range,
     :task_not_found,
+    :project_not_found,
     :unknown_state,
     :own_parent,
     :own_subtask
