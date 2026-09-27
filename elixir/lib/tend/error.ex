@@ -34,9 +34,9 @@ defmodule Tend.Error do
   a test failure rather than a surprise at runtime. (`Tend.ErrorTest` covers
   this module's own rules; the cross-language guard is the parity test.)
 
-  Only the errors of `internal/task/task.go`, `internal/task/project.go` and
-  `internal/task/session.go` are listed today; the store and template ports
-  add theirs.
+  Only the errors of `internal/task/task.go`, `internal/task/project.go`,
+  `internal/task/session.go` and `internal/task/log.go` are listed today; the
+  store and template ports add theirs.
   """
 
   # Sentinel atom => the Go error's message, verbatim. Keep this sorted by
@@ -50,7 +50,10 @@ defmodule Tend.Error do
     # internal/task/project.go
     empty_project_name: "project name is empty",
     protected_project: "the default project cannot be deleted",
-    project_not_found: "project not found"
+    project_not_found: "project not found",
+
+    # internal/task/log.go
+    empty_note: "log entry is empty"
   }
 
   @typedoc """
@@ -63,6 +66,7 @@ defmodule Tend.Error do
           | :empty_project_name
           | :protected_project
           | :project_not_found
+          | :empty_note
 
   @typedoc """
   Any reason a `{:error, reason}` in this port can carry: a sentinel, or a
