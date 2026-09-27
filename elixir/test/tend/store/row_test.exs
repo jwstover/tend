@@ -125,6 +125,83 @@ defmodule Tend.Store.RowTest do
     end
   end
 
+  # The five columns every workflow query selects, in the order to_workflow/2
+  # reads them. The sixth, ListWorkflows' joined count, is appended by the
+  # to_workflows/1 cases below.
+  defp workflow_row(overrides \\ []) do
+    values =
+      Map.merge(
+        %{
+          id: 3,
+          name: "fix a bug",
+          description: "",
+          created_at: "2026-09-14 08:30:00",
+          updated_at: "2026-09-14 08:30:00"
+        },
+        Map.new(overrides)
+      )
+
+    Enum.map([:id, :name, :description, :created_at, :updated_at], &Map.fetch!(values, &1))
+  end
+
+  describe "to_workflow/2" do
+    test "maps every column into its field, with the count supplied apart" do
+      assert {:ok, workflow} =
+               Row.to_workflow(
+                 workflow_row(
+                   id: 42,
+                   name: "ship it",
+                   description: "the usual",
+                   created_at: "2026-09-14 08:30:00",
+                   updated_at: "2026-09-14 09:00:00"
+                 ),
+                 4
+               )
+
+      assert workflow.id == 42
+      assert workflow.name == "ship it"
+      assert workflow.description == "the usual"
+      assert workflow.step_count == 4
+      assert workflow.created_at == ~U[2026-09-14 08:30:00Z]
+      assert workflow.updated_at == ~U[2026-09-14 09:00:00Z]
+    end
+
+    test "a zero count is what every caller but the listing passes" do
+      assert {:ok, workflow} = Row.to_workflow(workflow_row(), 0)
+      assert workflow.step_count == 0
+    end
+
+    test "an unparseable timestamp names the column it came from" do
+      assert {:error, {:invalid_timestamp, "workflow 3 created_at", "yesterday"}} =
+               Row.to_workflow(workflow_row(created_at: "yesterday"), 0)
+
+      assert {:error, {:invalid_timestamp, "workflow 3 updated_at", ""}} =
+               Row.to_workflow(workflow_row(updated_at: ""), 0)
+    end
+  end
+
+  describe "to_workflows/1" do
+    test "splits the joined count off the row and keeps the query's order" do
+      rows = [
+        workflow_row(id: 1, name: "empty") ++ [0],
+        workflow_row(id: 2, name: "two steps") ++ [2]
+      ]
+
+      assert {:ok, [first, second]} = Row.to_workflows(rows)
+      assert {first.name, first.step_count} == {"empty", 0}
+      assert {second.name, second.step_count} == {"two steps", 2}
+    end
+
+    test "stops at the first row that will not map, and takes no rows in stride" do
+      rows = [workflow_row(id: 1) ++ [0], workflow_row(id: 2, updated_at: "nope") ++ [0]]
+
+      assert {:error, {:invalid_timestamp, "workflow 2 updated_at", "nope"}} =
+               Row.to_workflows(rows)
+
+      assert Row.to_workflows([]) == {:ok, []}
+    end
+  end
+
   describe "parse_time/1 (Go's sqliteTimeLayout)" do
     test "parses what datetime('now') writes, as UTC" do
       assert Row.parse_time("2026-09-14 08:30:00") == {:ok, ~U[2026-09-14 08:30:00Z]}
