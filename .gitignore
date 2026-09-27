@@ -1,2 +1,9 @@
 # GoReleaser build output
 /dist/
+
+# The Elixir suite's workflow parity driver. Go only lets an `internal/`
+# package be imported from an import path under this module, so
+# `Tend.Workflow.GoDriver` writes its one-file main package here rather than
+# into a temp directory, and removes it again. The leading dot keeps it out of
+# `go build ./...`; this keeps a crashed run's leftovers out of `git status`.
+/.tend-workflow-driver-*/

@@ -34,11 +34,26 @@ defmodule Tend.Error do
   a test failure rather than a surprise at runtime. (`Tend.ErrorTest` covers
   this module's own rules; the cross-language guard is the parity test.)
 
-  The sentinels of `internal/task/task.go`, `internal/task/project.go`,
-  `internal/task/session.go`, `internal/task/log.go` and
-  `internal/workflow/workflow.go` are listed today, plus the interpolating
-  errors the task surface of the store port raises; the rest of the store and
-  the template port add theirs.
+  The sentinels listed today are those of `internal/task/task.go`,
+  `internal/task/project.go`, `internal/task/session.go`,
+  `internal/task/log.go`, `internal/workflow/workflow.go` and
+  `internal/workflow/prompt.go`.
+
+  The store and the template engine have no Go sentinel to name -- Go builds
+  those failures with `fmt.Errorf` wrappings -- so they fold in as `message/1`
+  clauses and `t/0` members rather than as atoms:
+
+    * the interpolating errors the task surface of the store port raises
+      (`:unknown_state`, `:priority_out_of_range`, `:task_not_found`,
+      `:invalid_timestamp`);
+    * the store's descriptive tuples, raised by `Tend.Store.open/1`,
+      `Tend.Store.Migrator` and `Tend.Store.Watcher` (`:db_directory_failed`,
+      `:db_open_failed`, `:pragma_failed`, `:migration_failed`,
+      `:query_failed`, `:data_version_failed`);
+    * the template engine's `Tend.Template.ParseError` and
+      `Tend.Template.RenderError`, which `{:invalid_prompt, cause}` carries
+      exactly as Go's `prompt.go` wraps `text/template`'s error in
+      `ErrInvalidPrompt`.
   """
 
   alias Tend.Task.Priority
@@ -70,7 +85,10 @@ defmodule Tend.Error do
     cross_workflow_edge: "edge joins steps of different workflows",
     run_ended: "run has already ended",
     run_not_failed: "run has not failed",
-    step_run_finished: "step run already finished"
+    step_run_finished: "step run already finished",
+
+    # internal/workflow/prompt.go
+    invalid_prompt: "invalid prompt template"
   }
 
   @typedoc """
@@ -95,10 +113,16 @@ defmodule Tend.Error do
           | :run_ended
           | :run_not_failed
           | :step_run_finished
+          | :invalid_prompt
 
   @typedoc """
   Any reason a `{:error, reason}` in this port can carry: a sentinel, or a
   tagged tuple standing in for one of Go's `fmt.Errorf` errors.
+
+  The last two groups are the folded-in ones. `{:invalid_prompt, cause}` is
+  `Tend.Workflow.Prompt`'s, carrying the template engine's own exception; the
+  five store tuples are `Tend.Store`'s and `Tend.Store.Migrator`'s, and carry
+  whatever term SQLite or the file system handed back.
   """
   @type t ::
           sentinel()
@@ -108,7 +132,13 @@ defmodule Tend.Error do
           | {:priority_out_of_range, term()}
           | {:task_not_found, integer()}
           | {:invalid_timestamp, String.t(), String.t()}
+          | {:invalid_prompt, Exception.t()}
+          | {:db_directory_failed, String.t(), term()}
+          | {:db_open_failed, String.t(), term()}
+          | {:pragma_failed, String.t(), term()}
+          | {:migration_failed, :up | :down, non_neg_integer(), String.t(), term()}
           | {:query_failed, String.t(), term()}
+          | {:data_version_failed, term()}
 
   @doc """
   Every sentinel atom, sorted.
@@ -192,8 +222,65 @@ defmodule Tend.Error do
   # The generic wrap every store call site puts around a driver failure:
   # fmt.Errorf("inserting task: %w", err) and its ~forty siblings. `context`
   # is that call site's label, verbatim.
+  #
+  # Tend.Store.Migrator raises the same tuple with the offending SQL in
+  # `context` rather than a label, so a migration failure reads as the
+  # statement followed by the driver's complaint. The two shapes were ported
+  # independently and share one clause here; unifying them is a reviewer's
+  # call, not the join's.
   def message({:query_failed, context, reason}) do
     "#{context}: #{render(reason)}"
+  end
+
+  # fmt.Errorf("%w: %w", ErrInvalidPrompt, err) in internal/workflow/prompt.go,
+  # built by Tend.Workflow.Prompt. `cause` is the template engine's own
+  # exception -- Tend.Template.ParseError or Tend.Template.RenderError -- and
+  # its message is spliced in verbatim, because that is the part naming the
+  # offending variable and its position, and the TUI's validate action shows
+  # the whole string as-is. Both exceptions say so in their own "Folded into
+  # Tend.Error" sections; this clause is what they were waiting for.
+  def message({:invalid_prompt, cause}) when is_exception(cause) do
+    "#{Map.fetch!(@sentinels, :invalid_prompt)}: #{Exception.message(cause)}"
+  end
+
+  # The store's remaining reasons, from Tend.Store.open/1 and
+  # Tend.Store.Migrator. Go builds this path's errors with fmt.Errorf
+  # wrappings rather than sentinels -- internal/store/store.go's Open says
+  # "creating db directory: %w" and "opening db %s: %w" -- so these keep Go's
+  # wording where the arguments line up. Two deliberate departures:
+  #
+  #   * the directory is named, where Go's "creating db directory: %w" leaves
+  #     it out. Same call as Tend.Template.ParseError's richer position: a
+  #     message a user reads should locate the thing it is about.
+  #   * a pragma and a single migration have no Go message at all to copy. Go
+  #     sets its pragmas in the DSN, where a failure is the driver's own error,
+  #     and runs its migrations through goose, which words its own failures and
+  #     is wrapped only as "applying migrations: %w". Those two are this port's
+  #     wording, in Go's shape: what was being done, then the cause.
+  def message({:db_directory_failed, dir, cause}) when is_binary(dir) do
+    "creating db directory #{dir}: #{cause_text(cause)}"
+  end
+
+  def message({:db_open_failed, path, cause}) when is_binary(path) do
+    "opening db #{path}: #{cause_text(cause)}"
+  end
+
+  def message({:pragma_failed, sql, cause}) when is_binary(sql) do
+    "applying #{sql}: #{cause_text(cause)}"
+  end
+
+  def message({:migration_failed, direction, version, name, cause})
+      when direction in [:up, :down] and is_integer(version) and is_binary(name) do
+    "migrating #{direction} #{version}_#{name}: #{cause_text(cause)}"
+  end
+
+  # Tend.Store.Watcher's own reason, folded in with the rest so the store tree
+  # is total: every `{:error, reason}` it can return has a message here. The
+  # sub-task naming the store reasons predates the watcher, which is why it is
+  # not on that list; `Tend.ErrorTest` scans the store modules and fails if
+  # another appears.
+  def message({:data_version_failed, cause}) do
+    "reading PRAGMA data_version: #{cause_text(cause)}"
   end
 
   def message(reason) do
@@ -208,6 +295,14 @@ defmodule Tend.Error do
   # prints exactly that; anything else is inspected rather than mangled.
   defp render(reason) when is_binary(reason), do: reason
   defp render(reason), do: inspect(reason)
+
+  # What the layer underneath handed back, as text. Exqlite reports a string,
+  # `File` a POSIX atom, and anything else is a term nobody promised a shape
+  # for -- so it is inspected rather than guessed at.
+  defp cause_text(cause) when is_binary(cause), do: cause
+  defp cause_text(cause) when is_atom(cause), do: Atom.to_string(cause)
+  defp cause_text(cause) when is_exception(cause), do: Exception.message(cause)
+  defp cause_text(cause), do: inspect(cause)
 
   @doc """
   A port of Go's `strconv.Quote`, which is what fmt's `%q` verb applies to a

@@ -7,6 +7,12 @@ defmodule Tend.Template.Parity.Data do
   comparison is meaningless, which is why they sit next to each other and why
   a drift shows up as a parity failure on the very first case.
 
+  The values are `Tend.Workflow.PromptData` structs -- the shipped ones, not a
+  test-only mirror of them -- so this corpus settles what the port's own type
+  renders to. That is the reason the sets can only be built once
+  `internal/workflow/prompt.go` is ported; before that they were a copy living
+  here.
+
     * `zero` and `sample` are the pair `ValidatePrompt` runs in
       `internal/workflow/prompt.go`, so a prompt that validates in the Go tree
       is exercised here against exactly the same two values
@@ -45,9 +51,10 @@ defmodule Tend.Template.Parity.Data do
   user actually has renders to the bytes Go gives it.
   """
 
-  alias Tend.Template.Parity.PromptData
-  alias Tend.Template.Parity.PromptSubtask
-  alias Tend.Template.Parity.PromptTask
+  alias Tend.Workflow.Prompt
+  alias Tend.Workflow.PromptData
+  alias Tend.Workflow.PromptSubtask
+  alias Tend.Workflow.PromptTask
 
   @doc "Every data set, by the name a parity case refers to it by."
   @spec sets() :: %{optional(binary()) => PromptData.t()}
@@ -69,27 +76,10 @@ defmodule Tend.Template.Parity.Data do
   @spec names() :: [binary()]
   def names, do: ["zero", "sample", "full", "one", "three"]
 
-  # internal/workflow/prompt.go's samplePromptData.
-  defp sample do
-    %PromptData{
-      task: %PromptTask{id: 1, title: "sample task", body: "sample body"},
-      cwd: "/tmp/sample",
-      input: "sample input",
-      feedback: "sample feedback",
-      iteration: 1,
-      outcomes: ["done"],
-      subtasks: [
-        %PromptSubtask{id: 2, title: "sample sub-task", state: "todo"},
-        %PromptSubtask{
-          id: 3,
-          title: "sample blocked sub-task",
-          state: "todo",
-          is_blocked: true,
-          depends_on: [2]
-        }
-      ]
-    }
-  end
+  # internal/workflow/prompt.go's samplePromptData, which the port already
+  # holds: Tend.Workflow.Prompt.sample_data/0 is it, and the workflow parity
+  # test is what checks it against the Go literal.
+  defp sample, do: Prompt.sample_data()
 
   # internal/workflow/prompt_test.go's fullData.
   defp full do
