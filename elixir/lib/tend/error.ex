@@ -94,10 +94,10 @@ defmodule Tend.Error do
   The message `reason` would print, character for character as the Go error
   prints it.
 
-  A reason that interpolates a value quotes it the way Go's `%q` does, by
-  the port of `strconv.Quote` below -- not by `inspect/1`, which disagrees
-  with it on interpolation markers, on escape spellings and on any binary it
-  cannot read as text.
+  A reason that interpolates a value quotes it the way Go's `%q` does, with
+  `quote_go/1` below -- not with `inspect/1`, which disagrees with it on
+  interpolation markers, on escape spellings and on any binary it cannot read
+  as text.
 
   Raises `ArgumentError` for anything not listed above -- a reason with no
   message is a reason that was invented instead of being added here.
@@ -119,20 +119,29 @@ defmodule Tend.Error do
             "with the message text its Go counterpart prints"
   end
 
-  # A port of Go's strconv.Quote, which is what fmt's %q verb applies to a
-  # string. Elixir's inspect/1 is NOT a stand-in for it: it escapes `#{}`,
-  # spells escape `\e` where Go spells it `\x1b`, and abandons the quoted
-  # form entirely for a binary it cannot read as text ("<<0>>" rather than
-  # "\x00"), which turns the message into something that is no longer a
-  # quoted string at all.
-  #
-  # The rules, from strconv.appendEscapedRune: `"` and `\` are always
-  # backslashed; a printable rune is emitted as itself; the seven characters
-  # Go names get their name (\a \b \f \n \r \t \v); anything else below
-  # U+0020, plus U+007F, is \xNN; anything else below U+10000 is \uNNNN; the
-  # rest is \UNNNNNNNN. A byte that is not part of a valid UTF-8 sequence is
-  # \xNN on its own, one byte at a time, exactly as Go's decoder yields it.
-  defp quote_go(s), do: IO.iodata_to_binary([?", escape(s), ?"])
+  @doc """
+  A port of Go's `strconv.Quote`, which is what fmt's `%q` verb applies to a
+  string.
+
+  Public because a message built with `%q` is not always an error's:
+  `Tend.Workflow.Graph`'s problems quote an outcome with this verb too, and
+  their text is rendered verbatim by the TUI just as an error's is.
+
+  Elixir's `inspect/1` is NOT a stand-in for it: it escapes `\#{}`, spells
+  escape `\\e` where Go spells it `\\x1b`, and abandons the quoted form
+  entirely for a binary it cannot read as text (`"<<0>>"` rather than
+  `"\\x00"`), which turns the message into something that is no longer a
+  quoted string at all.
+
+  The rules, from `strconv.appendEscapedRune`: `"` and `\\` are always
+  backslashed; a printable rune is emitted as itself; the seven characters Go
+  names get their name (`\\a \\b \\f \\n \\r \\t \\v`); anything else below
+  U+0020, plus U+007F, is `\\xNN`; anything else below U+10000 is `\\uNNNN`;
+  the rest is `\\UNNNNNNNN`. A byte that is not part of a valid UTF-8 sequence
+  is `\\xNN` on its own, one byte at a time, exactly as Go's decoder yields it.
+  """
+  @spec quote_go(String.t()) :: String.t()
+  def quote_go(s) when is_binary(s), do: IO.iodata_to_binary([?", escape(s), ?"])
 
   defp escape(<<>>), do: []
   defp escape(<<?", rest::binary>>), do: [~S(\") | escape(rest)]

@@ -12,6 +12,7 @@ defmodule Tend.GoParityTest do
 
   use ExUnit.Case, async: true
 
+  alias Tend.Task.Brief
   alias Tend.Task.DayNotes
   alias Tend.Task.Event
   alias Tend.Task.LogEntry
@@ -22,10 +23,9 @@ defmodule Tend.GoParityTest do
   alias Tend.Task.Summary
   alias Tend.Task.SummaryItem
 
-  # The Go package this part of the port covers. Its one remaining sibling
-  # (brief.go) belongs to a later part and is deliberately not read.
+  # The Go package this part of the port covers.
   @go_dir Path.expand("../../../internal/task", __DIR__)
-  @go_files ["task.go", "project.go", "session.go", "event.go", "log.go"]
+  @go_files ["task.go", "project.go", "session.go", "event.go", "log.go", "brief.go"]
 
   defp go_source(file) do
     path = Path.join(@go_dir, file)
@@ -127,6 +127,20 @@ defmodule Tend.GoParityTest do
       assert elixir_fields(%LogEntry{}) == expected_fields("log.go", "LogEntry")
       assert elixir_fields(%NoteGroup{}) == expected_fields("log.go", "NoteGroup")
       assert elixir_fields(%DayNotes{}) == expected_fields("log.go", "DayNotes")
+    end
+
+    test "Tend.Task.Brief has the fields of Go's task.SessionBrief" do
+      assert elixir_fields(%Brief{}) == expected_fields("brief.go", "SessionBrief")
+    end
+  end
+
+  describe "constants" do
+    test "the brief's log cap is Go's briefLogLimit" do
+      [_whole, limit] =
+        Regex.run(~r/\nconst briefLogLimit = (\d+)\n/, go_source("brief.go")) ||
+          flunk("no `const briefLogLimit` in brief.go")
+
+      assert Brief.log_limit() == String.to_integer(limit)
     end
   end
 

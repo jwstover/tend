@@ -108,6 +108,16 @@ defmodule Tend.ErrorTest do
     end
   end
 
+  # The same verb, reached directly: Tend.Workflow.Graph quotes an outcome into
+  # a problem message with it, and a problem is not an error.
+  describe "quote_go/1" do
+    test "is the verb message/1 applies, callable on its own" do
+      for value <- ["approve", ~S(a"b\c), <<0x1B>>, "café", <<0xFF>>] do
+        assert Error.quote_go(value) == quoted(value)
+      end
+    end
+  end
+
   describe "the convention" do
     test "the modules ported so far return sentinels, not strings or exceptions" do
       assert Tend.Task.normalize_title("") == {:error, :empty_title}
