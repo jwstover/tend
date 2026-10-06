@@ -66,7 +66,7 @@ type keyMap struct {
 	ExpandToggle key.Binding // ⏎/Tab flips a branch (⏎ falls back to detail on leaves)
 	ExpandOpen   key.Binding
 	ExpandClose  key.Binding
-	ToggleDone   key.Binding // x/space on the selected node
+	ToggleDone   key.Binding // x on the selected node
 
 	// Pane scrolling (standup view).
 	ScrollUp   key.Binding
@@ -174,7 +174,7 @@ func defaultKeyMap() keyMap {
 		ExpandToggle: key.NewBinding(key.WithKeys("enter", "tab"), key.WithHelp("⏎", "expand")),
 		ExpandOpen:   key.NewBinding(key.WithKeys("l", "right"), key.WithHelp("l", "expand")),
 		ExpandClose:  key.NewBinding(key.WithKeys("h", "left"), key.WithHelp("h", "collapse")),
-		ToggleDone:   key.NewBinding(key.WithKeys("x", "space"), key.WithHelp("x", "done")),
+		ToggleDone:   key.NewBinding(key.WithKeys("x"), key.WithHelp("x", "done")),
 
 		ScrollUp:   key.NewBinding(key.WithKeys("up", "k"), key.WithHelp("k", "scroll up")),
 		ScrollDown: key.NewBinding(key.WithKeys("down", "j"), key.WithHelp("j", "scroll down")),
