@@ -78,6 +78,26 @@ type agentRow struct {
 // headless reports whether the row's session ran under the runner.
 func (r agentRow) headless() bool { return r.sess.Headless() }
 
+// status is what the row shows. A headless session has no pane for the
+// poller to classify, and its own hooks report starting (SessionStart)
+// and idle (Stop) around the work, never working; so while its step is
+// unfinished and its run is live, the run's state stands in, exactly as
+// Store.SessionStatuses does for the task list. An ended session keeps
+// ended: a paused run's step session that was killed is not live.
+func (r agentRow) status() task.SessionStatus {
+	st := r.sess.Status
+	if !r.headless() || st == task.SessionEnded || r.run == nil || r.stepRun == nil || r.stepRun.Finished() {
+		return st
+	}
+	if r.run.CurrentStepRunID == nil || *r.run.CurrentStepRunID != r.stepRun.ID {
+		return st
+	}
+	if mapped, ok := r.run.State.SessionStatus(); ok {
+		return mapped
+	}
+	return st
+}
+
 // agentDetail is the selected interactive session's task, loaded for the
 // pane the way loadChildren loads it for the list view's detail pane.
 // sessionID says which session it was loaded for, so a load that lands
@@ -187,7 +207,7 @@ func (a app) loadAgentSessions() tea.Cmd {
 			rows = append(rows, row)
 		}
 		slices.SortStableFunc(rows, func(x, y agentRow) int {
-			return agentStatusRank(x.sess.Status) - agentStatusRank(y.sess.Status)
+			return agentStatusRank(x.status()) - agentStatusRank(y.status())
 		})
 		return agentsLoadedMsg{rows: rows}
 	}
@@ -661,7 +681,7 @@ func (a app) agentListLines(width int) []string {
 		if selected {
 			gutter, gutterStyle = g.SelBar+" ", s.SelBar
 		}
-		mark, markStyle := sessionStatusCell(s, r.sess.Status)
+		mark, markStyle := sessionStatusCell(s, r.status())
 		right := relTime(r.sess.LastActiveAt, now)
 		if r.headless() {
 			right = "headless · " + right
@@ -697,8 +717,8 @@ func (a app) agentPaneHeading(width int) []string {
 	}
 	sess := row.sess
 	now := time.Now()
-	mark, markStyle := sessionStatusCell(s, sess.Status)
-	status := markStyle.Render(mark) + " " + markStyle.Bold(true).Render(string(sess.Status))
+	mark, markStyle := sessionStatusCell(s, row.status())
+	status := markStyle.Render(mark) + " " + markStyle.Bold(true).Render(string(row.status()))
 	if row.headless() {
 		status += s.Muted.Render(" · headless")
 	} else if sess.TmuxSession != "" {
