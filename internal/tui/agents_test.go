@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -367,5 +368,64 @@ func TestAgentsViewInteractivePaneShowsTask(t *testing.T) {
 		if !strings.Contains(content, want) {
 			t.Errorf("pane missing %q:\n%s", want, content)
 		}
+	}
+}
+
+// A headless session's row reads its live run's state while its step is
+// the run's current, unfinished one: the session's own hooks say starting
+// and idle around the work and no pane exists to say working (tend task
+// #465). Anything else falls back to what the session row says.
+func TestAgentRowStatusFollowsLiveRun(t *testing.T) {
+	stepRunID := int64(7)
+	other := int64(8)
+	ended := time.Now()
+	headless := func(st task.SessionStatus) task.TaskSession {
+		return task.TaskSession{Session: task.Session{Status: st, StepRunID: &stepRunID}}
+	}
+	cases := []struct {
+		name string
+		row  agentRow
+		want task.SessionStatus
+	}{
+		{"running step reads working over a Stop hook's idle", agentRow{
+			sess:    headless(task.SessionIdle),
+			stepRun: &workflow.StepRun{ID: stepRunID},
+			run:     &workflow.Run{State: workflow.RunRunning, CurrentStepRunID: &stepRunID},
+		}, task.SessionWorking},
+		{"running step reads working over SessionStart's starting", agentRow{
+			sess:    headless(task.SessionStarting),
+			stepRun: &workflow.StepRun{ID: stepRunID},
+			run:     &workflow.Run{State: workflow.RunRunning, CurrentStepRunID: &stepRunID},
+		}, task.SessionWorking},
+		{"an earlier step's session keeps its own status", agentRow{
+			sess:    headless(task.SessionIdle),
+			stepRun: &workflow.StepRun{ID: stepRunID},
+			run:     &workflow.Run{State: workflow.RunRunning, CurrentStepRunID: &other},
+		}, task.SessionIdle},
+		{"a finished step keeps its own status", agentRow{
+			sess:    headless(task.SessionIdle),
+			stepRun: &workflow.StepRun{ID: stepRunID, EndedAt: &ended},
+			run:     &workflow.Run{State: workflow.RunRunning, CurrentStepRunID: &stepRunID},
+		}, task.SessionIdle},
+		{"an ended session stays ended", agentRow{
+			sess:    headless(task.SessionEnded),
+			stepRun: &workflow.StepRun{ID: stepRunID},
+			run:     &workflow.Run{State: workflow.RunPaused, CurrentStepRunID: &stepRunID},
+		}, task.SessionEnded},
+		{"a terminal run says nothing", agentRow{
+			sess:    headless(task.SessionIdle),
+			stepRun: &workflow.StepRun{ID: stepRunID},
+			run:     &workflow.Run{State: workflow.RunFailed, CurrentStepRunID: &stepRunID},
+		}, task.SessionIdle},
+		{"an interactive session is the poller's", agentRow{
+			sess: task.TaskSession{Session: task.Session{Status: task.SessionIdle, TmuxSession: "tend-x"}},
+		}, task.SessionIdle},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := c.row.status(); got != c.want {
+				t.Errorf("status() = %q, want %q", got, c.want)
+			}
+		})
 	}
 }
