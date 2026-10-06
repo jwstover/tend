@@ -40,7 +40,7 @@ func helpGroups() []helpGroup {
 		}},
 		{"PROCESS", []helpEntry{
 			{"i", "triage the inbox"},
-			{"x / space", "mark done"},
+			{"x", "mark done"},
 			{"c", "change state (chord)"},
 			{"p", "set priority (chord)"},
 			{"dd", "delete task (asks first)"},
