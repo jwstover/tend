@@ -66,6 +66,38 @@ const paneBlockedQuestion = `  1. Rewrite AGENTS.md as current-state truth (Reco
 
 Enter to select · Tab/Arrow keys to navigate · Esc to cancel`
 
+// Claude Code 2.1.291 mid-turn, captured from a live tend session: the
+// status bar no longer says "esc to interrupt", so the spinner line above
+// the input box is the only working signal on screen.
+const paneWorking291 = `  ⎿  $ go test ./internal/agent/
+
+✶ Cerebrating… (1m 7s · ↓ 3.2k tokens)
+
+──────────────────────────────────────────────────────────────── Clearer agent working icon ─
+❯
+────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents`
+
+// The same build mid-turn after a thinking pause, which adds a clause.
+const paneWorking291Thought = `✳ Cerebrating… (49s · ↓ 3.2k tokens · thought for 7s)
+
+──────────────────────────────────────────────────────────────── Clearer agent working icon ─
+❯
+────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents`
+
+// The same build back at the prompt: past tense, no ellipsis. The
+// transcript above it quotes a spinner line mid-sentence, which must not
+// count because it does not start the line.
+const paneIdle291 = `⏺ The pane read "✢ Cerebrating… (19s · ↓ 738 tokens)" while it worked.
+
+✻ Churned for 1m 20s · done 11:26 AM
+※ recap: We're deleting the old PDP quote sync. (disable recaps in /config)
+──────────────────────────────────────────────── Cleanup MR: delete the PDP quote sync path ─
+❯
+────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents`
+
 func TestClassifyPane(t *testing.T) {
 	cases := []struct {
 		name string
@@ -74,6 +106,9 @@ func TestClassifyPane(t *testing.T) {
 	}{
 		{"spinner mid-turn", paneWorkingSpinner, task.SessionWorking},
 		{"running a tool", paneWorkingRunningTool, task.SessionWorking},
+		{"2.1.291 spinner mid-turn", paneWorking291, task.SessionWorking},
+		{"2.1.291 spinner after thinking", paneWorking291Thought, task.SessionWorking},
+		{"2.1.291 idle at prompt", paneIdle291, task.SessionUnknown},
 		{"idle at prompt after a turn", paneIdleAtPrompt, task.SessionUnknown},
 		{"welcome screen, nothing sent yet", paneWelcome, task.SessionUnknown},
 		{"AskUserQuestion prompt open", paneBlockedQuestion, task.SessionBlocked},
