@@ -392,6 +392,7 @@ func (r *Runner) startStep(ctx context.Context, run workflow.Run, wf workflow.Wo
 		Iteration: int64(len(prior)) + 1,
 		Outcomes:  outcomesOf(edges),
 		Subtasks:  subtasks,
+		Schedule:  r.promptSchedule(ctx, run.ID),
 	}
 	// A gate's prompt is optional reviewer text; an agent's is the whole
 	// step, so it renders even when empty (an empty prompt is claude's

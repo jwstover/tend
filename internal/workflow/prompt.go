@@ -6,6 +6,7 @@ import (
 	"io"
 	"strings"
 	"text/template"
+	"time"
 )
 
 // ErrInvalidPrompt is returned when a step's prompt_md does not parse or
@@ -54,6 +55,12 @@ type PromptSubtask struct {
 //	{{.Subtasks}}   the task's direct sub-tasks, oldest first, each with
 //	                ID, Title, State, IsBlocked and DependsOn; empty when
 //	                the task has none, so {{range .Subtasks}} renders nothing
+//	{{.Schedule.Name}}  the schedule that started this run, "" for an
+//	                unscheduled run (so {{if .Schedule.Name}} tests "am I scheduled")
+//	{{.Schedule.LastRunAt}}  the previous run of that schedule: its start
+//	                time (RFC 3339, local), final state and last finished
+//	                deliverable ({{.Schedule.LastRunState}},
+//	                {{.Schedule.LastDeliverable}}); all "" on the first run
 type PromptData struct {
 	Task      PromptTask
 	Cwd       string
@@ -62,6 +69,29 @@ type PromptData struct {
 	Iteration int64
 	Outcomes  []string
 	Subtasks  []PromptSubtask
+	Schedule  PromptSchedule
+}
+
+// PromptSchedule is what a scheduled run's prompt knows about its schedule
+// and the run before it. Strings only, so an unscheduled run (or a first
+// run) renders the zero value and {{if .Schedule.LastRunAt}} just works; a
+// nil pointer would render "<no value>" instead.
+type PromptSchedule struct {
+	Name            string
+	LastRunAt       string
+	LastRunState    string
+	LastDeliverable string
+}
+
+// NewPromptSchedule maps a run's schedule context into template data.
+func NewPromptSchedule(c ScheduleRunContext) PromptSchedule {
+	ps := PromptSchedule{Name: c.Schedule.Name}
+	if c.Previous != nil {
+		ps.LastRunAt = c.Previous.StartedAt.In(time.Local).Format(time.RFC3339)
+		ps.LastRunState = string(c.Previous.State)
+		ps.LastDeliverable = c.PreviousDeliverable
+	}
+	return ps
 }
 
 // RenderPrompt renders a step's prompt_md against data. Unknown variables
@@ -112,6 +142,12 @@ var samplePromptData = PromptData{
 	Subtasks: []PromptSubtask{
 		{ID: 2, Title: "sample sub-task", State: "todo"},
 		{ID: 3, Title: "sample blocked sub-task", State: "todo", IsBlocked: true, DependsOn: []int64{2}},
+	},
+	Schedule: PromptSchedule{
+		Name:            "sample schedule",
+		LastRunAt:       "2026-01-01T03:00:00Z",
+		LastRunState:    "done",
+		LastDeliverable: "sample last deliverable",
 	},
 }
 
