@@ -32,7 +32,7 @@ func (q *Queries) ClaimRun(ctx context.Context, id int64) (int64, error) {
 const createRun = `-- name: CreateRun :one
 INSERT INTO workflow_runs (workflow_id, task_id, cwd)
 VALUES (?, ?, ?)
-RETURNING id, workflow_id, task_id, cwd, state, current_step_run_id, tmux_session, started_at, ended_at, error
+RETURNING id, workflow_id, task_id, cwd, state, current_step_run_id, tmux_session, started_at, ended_at, error, schedule_id
 `
 
 type CreateRunParams struct {
@@ -55,6 +55,7 @@ func (q *Queries) CreateRun(ctx context.Context, arg CreateRunParams) (WorkflowR
 		&i.StartedAt,
 		&i.EndedAt,
 		&i.Error,
+		&i.ScheduleID,
 	)
 	return i, err
 }
@@ -318,7 +319,7 @@ func (q *Queries) FinishStepRun(ctx context.Context, arg FinishStepRunParams) (i
 }
 
 const getRun = `-- name: GetRun :one
-SELECT id, workflow_id, task_id, cwd, state, current_step_run_id, tmux_session, started_at, ended_at, error
+SELECT id, workflow_id, task_id, cwd, state, current_step_run_id, tmux_session, started_at, ended_at, error, schedule_id
 FROM workflow_runs
 WHERE id = ?
 `
@@ -337,6 +338,7 @@ func (q *Queries) GetRun(ctx context.Context, id int64) (WorkflowRun, error) {
 		&i.StartedAt,
 		&i.EndedAt,
 		&i.Error,
+		&i.ScheduleID,
 	)
 	return i, err
 }
@@ -503,7 +505,7 @@ func (q *Queries) ListActiveRunIDsForWorkflow(ctx context.Context, workflowID in
 }
 
 const listActiveRuns = `-- name: ListActiveRuns :many
-SELECT id, workflow_id, task_id, cwd, state, current_step_run_id, tmux_session, started_at, ended_at, error
+SELECT id, workflow_id, task_id, cwd, state, current_step_run_id, tmux_session, started_at, ended_at, error, schedule_id
 FROM workflow_runs
 WHERE state NOT IN ('done', 'failed', 'cancelled')
 ORDER BY started_at DESC, id DESC
@@ -529,6 +531,7 @@ func (q *Queries) ListActiveRuns(ctx context.Context) ([]WorkflowRun, error) {
 			&i.StartedAt,
 			&i.EndedAt,
 			&i.Error,
+			&i.ScheduleID,
 		); err != nil {
 			return nil, err
 		}
@@ -617,7 +620,7 @@ func (q *Queries) ListEdgesFromStep(ctx context.Context, fromStepID int64) ([]Wo
 }
 
 const listRunsForTask = `-- name: ListRunsForTask :many
-SELECT id, workflow_id, task_id, cwd, state, current_step_run_id, tmux_session, started_at, ended_at, error
+SELECT id, workflow_id, task_id, cwd, state, current_step_run_id, tmux_session, started_at, ended_at, error, schedule_id
 FROM workflow_runs
 WHERE task_id = ?
 ORDER BY started_at DESC, id DESC
@@ -643,6 +646,7 @@ func (q *Queries) ListRunsForTask(ctx context.Context, taskID int64) ([]Workflow
 			&i.StartedAt,
 			&i.EndedAt,
 			&i.Error,
+			&i.ScheduleID,
 		); err != nil {
 			return nil, err
 		}

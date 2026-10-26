@@ -40,6 +40,21 @@ type Project struct {
 	Cwd        string
 }
 
+type Schedule struct {
+	ID            int64
+	Name          string
+	WorkflowID    int64
+	TaskID        int64
+	Cwd           string
+	CronExpr      string
+	Enabled       int64
+	OverlapPolicy string
+	LastRunID     sql.NullInt64
+	NextRunAt     string
+	CreatedAt     string
+	UpdatedAt     string
+}
+
 type Setting struct {
 	Key   string
 	Value string
@@ -120,6 +135,7 @@ type WorkflowRun struct {
 	StartedAt        string
 	EndedAt          sql.NullString
 	Error            string
+	ScheduleID       sql.NullInt64
 }
 
 type WorkflowStep struct {
