@@ -48,11 +48,11 @@ type StoreFactory func(ctx context.Context, dbPath string) (Store, error)
 type TUIRunner func(ctx context.Context, dbPath string) error
 
 // Execute builds the command tree and runs it.
-func Execute(open StoreFactory, runTUI TUIRunner, openMCP MCPStoreFactory, openWorkflow WorkflowStoreFactory) error {
-	return newRootCmd(open, runTUI, openMCP, openWorkflow).Execute()
+func Execute(open StoreFactory, runTUI TUIRunner, openMCP MCPStoreFactory, openWorkflow WorkflowStoreFactory, openSchedule ScheduleStoreFactory) error {
+	return newRootCmd(open, runTUI, openMCP, openWorkflow, openSchedule).Execute()
 }
 
-func newRootCmd(open StoreFactory, runTUI TUIRunner, openMCP MCPStoreFactory, openWorkflow WorkflowStoreFactory) *cobra.Command {
+func newRootCmd(open StoreFactory, runTUI TUIRunner, openMCP MCPStoreFactory, openWorkflow WorkflowStoreFactory, openSchedule ScheduleStoreFactory) *cobra.Command {
 	var dbPath string
 
 	root := &cobra.Command{
@@ -78,6 +78,9 @@ func newRootCmd(open StoreFactory, runTUI TUIRunner, openMCP MCPStoreFactory, op
 	openWorkflowHere := func(ctx context.Context) (WorkflowStore, error) {
 		return openWorkflow(ctx, resolveDBPath(dbPath))
 	}
+	openScheduleHere := func(ctx context.Context) (ScheduleStore, error) {
+		return openSchedule(ctx, resolveDBPath(dbPath))
+	}
 	root.AddCommand(newAddCmd(openHere))
 	root.AddCommand(newAuthCmd())
 	root.AddCommand(newLsCmd(openHere))
@@ -87,6 +90,7 @@ func newRootCmd(open StoreFactory, runTUI TUIRunner, openMCP MCPStoreFactory, op
 	root.AddCommand(newMcpCmd(openMCPHere))
 	root.AddCommand(newAgentHookCmd(openHere))
 	root.AddCommand(newWorkflowCmd(openWorkflowHere, func() string { return resolveDBPath(dbPath) }))
+	root.AddCommand(newScheduleCmd(openScheduleHere, func() string { return resolveDBPath(dbPath) }))
 	root.AddCommand(&cobra.Command{
 		Use:   "version",
 		Short: "Print the tend version",
