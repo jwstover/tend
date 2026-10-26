@@ -23,6 +23,9 @@ func main() {
 	openWorkflow := func(ctx context.Context, dbPath string) (cli.WorkflowStore, error) {
 		return store.Open(ctx, dbPath)
 	}
+	openSchedule := func(ctx context.Context, dbPath string) (cli.ScheduleStore, error) {
+		return store.Open(ctx, dbPath)
+	}
 	runTUI := func(ctx context.Context, dbPath string) error {
 		s, err := store.Open(ctx, dbPath)
 		if err != nil {
@@ -39,7 +42,7 @@ func main() {
 		}
 		return tui.Run(ctx, s, watcher, dbPath)
 	}
-	if err := cli.Execute(open, runTUI, openMCP, openWorkflow); err != nil {
+	if err := cli.Execute(open, runTUI, openMCP, openWorkflow, openSchedule); err != nil {
 		fmt.Fprintln(os.Stderr, "tend:", err)
 		os.Exit(1)
 	}
