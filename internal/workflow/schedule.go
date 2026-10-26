@@ -47,3 +47,24 @@ func ScheduleWarnings(steps []Step) []string {
 	}
 	return out
 }
+
+// ErrScheduleBusy is returned when a schedule is asked to start a run while
+// its last run is still live.
+var ErrScheduleBusy = errors.New("schedule's last run is still live")
+
+// ScheduleClaim is the outcome of claiming a due schedule. The zero value
+// means nothing was claimed (not due, disabled, or another tick won).
+// Skipped, when set, says why a claimed tick started no run.
+type ScheduleClaim struct {
+	Claimed bool
+	Run     *Run
+	Skipped string
+}
+
+// ScheduleRunContext is what a scheduled run knows about its schedule and
+// the run before it.
+type ScheduleRunContext struct {
+	Schedule            Schedule
+	Previous            *Run
+	PreviousDeliverable string
+}

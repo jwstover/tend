@@ -7,7 +7,28 @@ package gen
 
 import (
 	"context"
+	"database/sql"
 )
+
+const advanceSchedule = `-- name: AdvanceSchedule :execrows
+UPDATE schedules
+SET next_run_at = ?, updated_at = datetime('now')
+WHERE id = ? AND enabled = 1 AND next_run_at = ?
+`
+
+type AdvanceScheduleParams struct {
+	NextRunAt   string
+	ID          int64
+	NextRunAt_2 string
+}
+
+func (q *Queries) AdvanceSchedule(ctx context.Context, arg AdvanceScheduleParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, advanceSchedule, arg.NextRunAt, arg.ID, arg.NextRunAt_2)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
 
 const createSchedule = `-- name: CreateSchedule :one
 INSERT INTO schedules (name, workflow_id, task_id, cwd, cron_expr, next_run_at)
@@ -51,6 +72,43 @@ func (q *Queries) CreateSchedule(ctx context.Context, arg CreateScheduleParams) 
 	return i, err
 }
 
+const createScheduledRun = `-- name: CreateScheduledRun :one
+INSERT INTO workflow_runs (workflow_id, task_id, cwd, schedule_id)
+VALUES (?, ?, ?, ?)
+RETURNING id, workflow_id, task_id, cwd, state, current_step_run_id, tmux_session, started_at, ended_at, error, schedule_id
+`
+
+type CreateScheduledRunParams struct {
+	WorkflowID int64
+	TaskID     int64
+	Cwd        string
+	ScheduleID sql.NullInt64
+}
+
+func (q *Queries) CreateScheduledRun(ctx context.Context, arg CreateScheduledRunParams) (WorkflowRun, error) {
+	row := q.db.QueryRowContext(ctx, createScheduledRun,
+		arg.WorkflowID,
+		arg.TaskID,
+		arg.Cwd,
+		arg.ScheduleID,
+	)
+	var i WorkflowRun
+	err := row.Scan(
+		&i.ID,
+		&i.WorkflowID,
+		&i.TaskID,
+		&i.Cwd,
+		&i.State,
+		&i.CurrentStepRunID,
+		&i.TmuxSession,
+		&i.StartedAt,
+		&i.EndedAt,
+		&i.Error,
+		&i.ScheduleID,
+	)
+	return i, err
+}
+
 const deleteSchedule = `-- name: DeleteSchedule :execrows
 DELETE FROM schedules WHERE id = ?
 `
@@ -61,6 +119,104 @@ func (q *Queries) DeleteSchedule(ctx context.Context, id int64) (int64, error) {
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+const dueSchedules = `-- name: DueSchedules :many
+SELECT id, name, workflow_id, task_id, cwd, cron_expr, enabled, overlap_policy, last_run_id, next_run_at, created_at, updated_at FROM schedules
+WHERE enabled = 1 AND next_run_at <= ?
+ORDER BY next_run_at, id
+`
+
+func (q *Queries) DueSchedules(ctx context.Context, nextRunAt string) ([]Schedule, error) {
+	rows, err := q.db.QueryContext(ctx, dueSchedules, nextRunAt)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Schedule{}
+	for rows.Next() {
+		var i Schedule
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.WorkflowID,
+			&i.TaskID,
+			&i.Cwd,
+			&i.CronExpr,
+			&i.Enabled,
+			&i.OverlapPolicy,
+			&i.LastRunID,
+			&i.NextRunAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getLastFinishedStepDeliverable = `-- name: GetLastFinishedStepDeliverable :one
+SELECT deliverable FROM workflow_step_runs
+WHERE run_id = ? AND ended_at IS NOT NULL
+ORDER BY id DESC
+LIMIT 1
+`
+
+func (q *Queries) GetLastFinishedStepDeliverable(ctx context.Context, runID int64) (string, error) {
+	row := q.db.QueryRowContext(ctx, getLastFinishedStepDeliverable, runID)
+	var deliverable string
+	err := row.Scan(&deliverable)
+	return deliverable, err
+}
+
+const getPreviousScheduledRun = `-- name: GetPreviousScheduledRun :one
+SELECT id, workflow_id, task_id, cwd, state, current_step_run_id, tmux_session, started_at, ended_at, error, schedule_id FROM workflow_runs
+WHERE schedule_id = ? AND id < ?
+ORDER BY id DESC
+LIMIT 1
+`
+
+type GetPreviousScheduledRunParams struct {
+	ScheduleID sql.NullInt64
+	ID         int64
+}
+
+func (q *Queries) GetPreviousScheduledRun(ctx context.Context, arg GetPreviousScheduledRunParams) (WorkflowRun, error) {
+	row := q.db.QueryRowContext(ctx, getPreviousScheduledRun, arg.ScheduleID, arg.ID)
+	var i WorkflowRun
+	err := row.Scan(
+		&i.ID,
+		&i.WorkflowID,
+		&i.TaskID,
+		&i.Cwd,
+		&i.State,
+		&i.CurrentStepRunID,
+		&i.TmuxSession,
+		&i.StartedAt,
+		&i.EndedAt,
+		&i.Error,
+		&i.ScheduleID,
+	)
+	return i, err
+}
+
+const getRunScheduleID = `-- name: GetRunScheduleID :one
+SELECT schedule_id FROM workflow_runs WHERE id = ?
+`
+
+func (q *Queries) GetRunScheduleID(ctx context.Context, id int64) (sql.NullInt64, error) {
+	row := q.db.QueryRowContext(ctx, getRunScheduleID, id)
+	var schedule_id sql.NullInt64
+	err := row.Scan(&schedule_id)
+	return schedule_id, err
 }
 
 const getSchedule = `-- name: GetSchedule :one
@@ -107,6 +263,31 @@ func (q *Queries) GetScheduleByName(ctx context.Context, name string) (Schedule,
 		&i.NextRunAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getScheduleLastRunForTx = `-- name: GetScheduleLastRunForTx :one
+SELECT r.id, r.workflow_id, r.task_id, r.cwd, r.state, r.current_step_run_id, r.tmux_session, r.started_at, r.ended_at, r.error, r.schedule_id FROM schedules s
+JOIN workflow_runs r ON r.id = s.last_run_id
+WHERE s.id = ?
+`
+
+func (q *Queries) GetScheduleLastRunForTx(ctx context.Context, id int64) (WorkflowRun, error) {
+	row := q.db.QueryRowContext(ctx, getScheduleLastRunForTx, id)
+	var i WorkflowRun
+	err := row.Scan(
+		&i.ID,
+		&i.WorkflowID,
+		&i.TaskID,
+		&i.Cwd,
+		&i.State,
+		&i.CurrentStepRunID,
+		&i.TmuxSession,
+		&i.StartedAt,
+		&i.EndedAt,
+		&i.Error,
+		&i.ScheduleID,
 	)
 	return i, err
 }
@@ -169,6 +350,20 @@ func (q *Queries) SetScheduleEnabled(ctx context.Context, arg SetScheduleEnabled
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+const setScheduleLastRun = `-- name: SetScheduleLastRun :exec
+UPDATE schedules SET last_run_id = ?, updated_at = datetime('now') WHERE id = ?
+`
+
+type SetScheduleLastRunParams struct {
+	LastRunID sql.NullInt64
+	ID        int64
+}
+
+func (q *Queries) SetScheduleLastRun(ctx context.Context, arg SetScheduleLastRunParams) error {
+	_, err := q.db.ExecContext(ctx, setScheduleLastRun, arg.LastRunID, arg.ID)
+	return err
 }
 
 const updateSchedule = `-- name: UpdateSchedule :one
