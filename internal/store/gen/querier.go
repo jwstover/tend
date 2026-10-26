@@ -35,6 +35,7 @@ type Querier interface {
 	CreateLogEntry(ctx context.Context, arg CreateLogEntryParams) (LogEntry, error)
 	CreateProject(ctx context.Context, name string) (Project, error)
 	CreateRun(ctx context.Context, arg CreateRunParams) (WorkflowRun, error)
+	CreateSchedule(ctx context.Context, arg CreateScheduleParams) (Schedule, error)
 	// workflow_step_run_id is NULL for an ordinary session and set when the
 	// session runs a workflow step (Store.CreateStepRunSession).
 	//
@@ -68,6 +69,7 @@ type Querier interface {
 	// last reference drops the tag, so the tag list can't accumulate ghosts.
 	DeleteOrphanTags(ctx context.Context) error
 	DeleteProject(ctx context.Context, id int64) error
+	DeleteSchedule(ctx context.Context, id int64) (int64, error)
 	// For a launch that failed before it ever became a session: the row was
 	// written ahead of the handoff (CreateSession), and a broken launch must
 	// not leave it behind as a phantom.
@@ -85,6 +87,8 @@ type Querier interface {
 	GetProject(ctx context.Context, id int64) (Project, error)
 	GetProjectByName(ctx context.Context, name string) (Project, error)
 	GetRun(ctx context.Context, id int64) (WorkflowRun, error)
+	GetSchedule(ctx context.Context, id int64) (Schedule, error)
+	GetScheduleByName(ctx context.Context, name string) (Schedule, error)
 	GetSetting(ctx context.Context, key string) (string, error)
 	GetStep(ctx context.Context, id int64) (WorkflowStep, error)
 	GetStepRun(ctx context.Context, id int64) (WorkflowStepRun, error)
@@ -145,6 +149,7 @@ type Querier interface {
 	// produces, not a larger figure that counts sub-tasks the list hides.
 	ListProjects(ctx context.Context) ([]ListProjectsRow, error)
 	ListRunsForTask(ctx context.Context, taskID int64) ([]WorkflowRun, error)
+	ListSchedules(ctx context.Context) ([]Schedule, error)
 	// Ordered oldest-first so a caller building a per-task map ends up with
 	// the most-recently-active session's status per task (plan section 8.4).
 	ListSessionStatuses(ctx context.Context) ([]ListSessionStatusesRow, error)
@@ -193,6 +198,7 @@ type Querier interface {
 	// because sqlc v1.31.1 leaves a named arg inside a CASE unrewritten.
 	SetRunState(ctx context.Context, arg SetRunStateParams) (int64, error)
 	SetRunTmuxSession(ctx context.Context, arg SetRunTmuxSessionParams) error
+	SetScheduleEnabled(ctx context.Context, arg SetScheduleEnabledParams) (int64, error)
 	// Closes the SessionEnd gap: a host that dies takes its chance to fire
 	// the hook with it, so the poller is the only thing left that will ever
 	// learn the session is gone (via tmux has-session, checked by the
@@ -264,6 +270,7 @@ type Querier interface {
 	SetTasksProject(ctx context.Context, arg SetTasksProjectParams) error
 	SetWorkflowDescription(ctx context.Context, arg SetWorkflowDescriptionParams) error
 	TouchSession(ctx context.Context, id int64) error
+	UpdateSchedule(ctx context.Context, arg UpdateScheduleParams) (Schedule, error)
 	UpdateSessionLabel(ctx context.Context, arg UpdateSessionLabelParams) error
 	UpdateStep(ctx context.Context, arg UpdateStepParams) error
 	// One edge per (from_step, outcome): re-adding an outcome re-routes it.
