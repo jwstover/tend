@@ -11,6 +11,8 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/jwstover/tend/internal/agent"
+	"github.com/jwstover/tend/internal/runner"
 	"github.com/jwstover/tend/internal/workflow"
 )
 
@@ -19,6 +21,8 @@ import (
 // CRUD. Its own interface so WorkflowStore, and its fake, stay as they are.
 type ScheduleStore interface {
 	WorkflowStore
+	runner.ScheduleStore
+	StartScheduleNow(ctx context.Context, id int64) (workflow.Run, error)
 	CreateSchedule(ctx context.Context, sc workflow.Schedule, now time.Time) (workflow.Schedule, error)
 	GetSchedule(ctx context.Context, id int64) (workflow.Schedule, error)
 	ScheduleByName(ctx context.Context, name string) (workflow.Schedule, error)
@@ -40,7 +44,6 @@ const scheduleTimeLayout = "Mon Jan 2 15:04"
 // scheduled workflow runs (tend task #645). With no subcommand it lists
 // the schedules.
 func newScheduleCmd(open openScheduleStore, dbPath func() string) *cobra.Command {
-	_ = dbPath // reserved for subcommands that launch runners (run-now, tick)
 	root := &cobra.Command{
 		Use:     "schedule",
 		Aliases: []string{"schedules", "sched"},
@@ -61,6 +64,8 @@ func newScheduleCmd(open openScheduleStore, dbPath func() string) *cobra.Command
 		newScheduleRmCmd(open),
 		newScheduleEnableCmd(open, false),
 		newScheduleEnableCmd(open, true),
+		newScheduleRunNowCmd(open, dbPath),
+		newScheduleTickCmd(open, dbPath),
 	)
 	return root
 }
@@ -238,6 +243,79 @@ func newScheduleEnableCmd(open openScheduleStore, enable bool) *cobra.Command {
 				}
 				fmt.Fprintf(cmd.OutOrStdout(), "resumed schedule %d %q, next run %s\n",
 					sc.ID, sc.Name, got.NextRunAt.Local().Format(scheduleTimeLayout))
+				return nil
+			})
+		},
+	}
+}
+
+func newScheduleRunNowCmd(open openScheduleStore, dbPath func() string) *cobra.Command {
+	return &cobra.Command{
+		Use:   "run-now <schedule>",
+		Short: "Start a run of a schedule immediately, paused or not",
+		Long: "Start one run of the schedule's workflow on its task now, whether or " +
+			"not the schedule is paused or due. Refused while its last run is live.",
+		Args: cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return withScheduleStore(cmd, open, func(ctx context.Context, s ScheduleStore) error {
+				sc, err := resolveSchedule(ctx, s, joinArgs(args))
+				if err != nil {
+					return err
+				}
+				wf, err := s.GetWorkflow(ctx, sc.WorkflowID)
+				if err != nil {
+					return err
+				}
+				if err := checkRunnable(ctx, s, wf); err != nil {
+					return err
+				}
+				run, err := s.StartScheduleNow(ctx, sc.ID)
+				if err != nil {
+					if errors.Is(err, workflow.ErrScheduleBusy) {
+						return fmt.Errorf("schedule %q: %w", sc.Name, err)
+					}
+					return err
+				}
+				name, err := launchRunner(ctx, s, run.ID, dbPath())
+				if err != nil {
+					if ferr := s.FailRun(ctx, run.ID, err.Error()); ferr != nil {
+						return fmt.Errorf("%w (and failing run %d: %v)", err, run.ID, ferr)
+					}
+					return fmt.Errorf("run %d failed to start: %w", run.ID, err)
+				}
+				fmt.Fprintf(cmd.OutOrStdout(),
+					"started run %d: %s on #%d in %s\n  tend workflow status %d to follow it; tmux -L %s attach -t %s for the runner's pane\n",
+					run.ID, wf.Name, sc.TaskID, run.Cwd, run.ID, agent.SocketName, name)
+				return nil
+			})
+		},
+	}
+}
+
+func newScheduleTickCmd(open openScheduleStore, dbPath func() string) *cobra.Command {
+	return &cobra.Command{
+		Use:   "tick",
+		Short: "Fire every due schedule once (run every minute by launchd; see `tend schedule install`)",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return withScheduleStore(cmd, open, func(ctx context.Context, s ScheduleStore) error {
+				launch := func(ctx context.Context, id int64) (string, error) {
+					return launchRunner(ctx, s, id, dbPath())
+				}
+				res, err := runner.Tick(ctx, s, time.Now(), launch, runner.QuotaGuard)
+				if err != nil {
+					return err
+				}
+				out, errOut := cmd.OutOrStdout(), cmd.ErrOrStderr()
+				for _, st := range res.Started {
+					fmt.Fprintf(out, "started run %d for schedule %q\n", st.RunID, st.Schedule.Name)
+				}
+				for _, sk := range res.Skipped {
+					fmt.Fprintf(out, "skipped %q: %s\n", sk.Schedule.Name, sk.Reason)
+				}
+				for _, f := range res.Failed {
+					fmt.Fprintf(errOut, "failed %q: %v\n", f.Schedule.Name, f.Err)
+				}
 				return nil
 			})
 		},
