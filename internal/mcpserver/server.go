@@ -38,6 +38,7 @@ func (s *Server) Run(ctx context.Context) error {
 	registerTools(srv, s.store, s.taskID)
 	registerWorkflowTools(srv, s.store)
 	registerRunTools(srv, s.store, s.taskID)
+	registerScheduleTools(srv, s.store, s.taskID)
 	if s.stepRunID != 0 {
 		registerStepTools(srv, s.store, s.stepRunID)
 	}

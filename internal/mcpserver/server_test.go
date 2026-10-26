@@ -33,6 +33,7 @@ type fakeStore struct {
 	edges     []workflow.Edge
 	stepRuns  map[int64]workflow.StepRun
 	runs      map[int64]workflow.Run
+	schedules map[int64]workflow.Schedule
 
 	// onGetStep, when set, runs after GetStep has taken its copy and
 	// before it returns, so a test can stand in for another writer
@@ -49,6 +50,7 @@ func newFakeStore(seed ...task.Task) *fakeStore {
 		steps:     make(map[int64]workflow.Step),
 		stepRuns:  make(map[int64]workflow.StepRun),
 		runs:      make(map[int64]workflow.Run),
+		schedules: make(map[int64]workflow.Schedule),
 	}
 	for _, t := range seed {
 		s.tasks[t.ID] = t
@@ -685,6 +687,71 @@ func (s *fakeStore) DeleteEdge(_ context.Context, id int64) error {
 	return fmt.Errorf("deleting edge %d: no such edge", id)
 }
 
+func (s *fakeStore) ListSchedules(context.Context) ([]workflow.Schedule, error) {
+	var out []workflow.Schedule
+	for _, sc := range s.schedules {
+		out = append(out, sc)
+	}
+	sort.Slice(out, func(i, j int) bool { return strings.ToLower(out[i].Name) < strings.ToLower(out[j].Name) })
+	return out, nil
+}
+
+func (s *fakeStore) GetSchedule(_ context.Context, id int64) (workflow.Schedule, error) {
+	sc, ok := s.schedules[id]
+	if !ok {
+		return workflow.Schedule{}, workflow.ErrScheduleNotFound
+	}
+	return sc, nil
+}
+
+func (s *fakeStore) CreateSchedule(_ context.Context, sc workflow.Schedule, now time.Time) (workflow.Schedule, error) {
+	c, err := workflow.ParseCron(sc.CronExpr)
+	if err != nil {
+		return workflow.Schedule{}, err
+	}
+	next, err := c.Next(now)
+	if err != nil {
+		return workflow.Schedule{}, err
+	}
+	s.nextID++
+	sc.ID = s.nextID
+	sc.CronExpr = c.String()
+	sc.Enabled = true
+	sc.NextRunAt = next.UTC()
+	s.schedules[sc.ID] = sc
+	return sc, nil
+}
+
+func (s *fakeStore) UpdateSchedule(_ context.Context, sc workflow.Schedule, now time.Time) (workflow.Schedule, error) {
+	c, err := workflow.ParseCron(sc.CronExpr)
+	if err != nil {
+		return workflow.Schedule{}, err
+	}
+	old, ok := s.schedules[sc.ID]
+	if !ok {
+		return workflow.Schedule{}, workflow.ErrScheduleNotFound
+	}
+	sc.CronExpr = c.String()
+	sc.NextRunAt = old.NextRunAt
+	if sc.CronExpr != old.CronExpr || (sc.Enabled && !old.Enabled) {
+		next, err := c.Next(now)
+		if err != nil {
+			return workflow.Schedule{}, err
+		}
+		sc.NextRunAt = next.UTC()
+	}
+	s.schedules[sc.ID] = sc
+	return sc, nil
+}
+
+func (s *fakeStore) DeleteSchedule(_ context.Context, id int64) error {
+	if _, ok := s.schedules[id]; !ok {
+		return workflow.ErrScheduleNotFound
+	}
+	delete(s.schedules, id)
+	return nil
+}
+
 func (s *fakeStore) Close() error { return nil }
 
 // dial spins up a Server backed by store, bound to taskID and to no step
@@ -704,6 +771,7 @@ func dialStep(t *testing.T, store Store, taskID, stepRunID int64) *mcp.ClientSes
 	registerTools(srv, store, taskID)
 	registerWorkflowTools(srv, store)
 	registerRunTools(srv, store, taskID)
+	registerScheduleTools(srv, store, taskID)
 	if stepRunID != 0 {
 		registerStepTools(srv, store, stepRunID)
 	}
