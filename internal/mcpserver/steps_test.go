@@ -2,6 +2,7 @@ package mcpserver
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -70,19 +71,19 @@ func TestStepToolsOnlyRegisteredWhenBoundToAStepRun(t *testing.T) {
 	sr := seedStepRun(store)
 
 	plain := toolNames(t, dial(t, store, 1))
-	if plain["get_workflow_step"] || plain["finish_step"] {
+	if plain["get_workflow_step"] || plain["finish_step"] || plain["notify"] {
 		t.Errorf("session without a step run exposes step tools: %v", plain)
 	}
 
 	bound := toolNames(t, dialStep(t, store, 1, sr))
-	if !bound["get_workflow_step"] || !bound["finish_step"] {
+	if !bound["get_workflow_step"] || !bound["finish_step"] || !bound["notify"] {
 		t.Errorf("session bound to a step run lacks step tools: %v", bound)
 	}
 	if !bound["get_current_task"] {
 		t.Error("binding to a step run dropped the task tools")
 	}
-	if len(bound) != len(plain)+2 {
-		t.Errorf("bound session has %d tools, want the %d task tools plus 2", len(bound), len(plain))
+	if len(bound) != len(plain)+3 {
+		t.Errorf("bound session has %d tools, want the %d task tools plus 3", len(bound), len(plain))
 	}
 }
 
@@ -213,5 +214,78 @@ func TestStepToolsWithUnknownStepRunReportIt(t *testing.T) {
 	}
 	if msg := callToolErr(t, cs, "finish_step", map[string]any{"outcome": "done"}); !strings.Contains(msg, "not found") {
 		t.Errorf("finish_step error = %q, want not found", msg)
+	}
+}
+
+func fakeNotifier(t *testing.T, err error) *[][2]string {
+	t.Helper()
+	var sent [][2]string
+	old := notifier
+	t.Cleanup(func() { notifier = old })
+	SetNotifier(func(_ context.Context, title, body string) error {
+		sent = append(sent, [2]string{title, body})
+		return err
+	})
+	return &sent
+}
+
+func TestNotifyDeliversTrimmedTitleAndBody(t *testing.T) {
+	store := newFakeStore(task.Task{ID: 1, Title: "bound"})
+	cs := dialStep(t, store, 1, seedStepRun(store))
+	sent := fakeNotifier(t, nil)
+
+	got := callTool[notifyOut](t, cs, "notify", map[string]any{"title": "  Found it ", "body": " see PR\n"})
+	if !got.Delivered || got.Reason != "" {
+		t.Errorf("notify = %+v, want delivered", got)
+	}
+	if len(*sent) != 1 || (*sent)[0] != [2]string{"Found it", "see PR"} {
+		t.Errorf("sent = %q", *sent)
+	}
+
+	long := strings.Repeat("é", 3000)
+	callTool[notifyOut](t, cs, "notify", map[string]any{"title": long, "body": long})
+	last := (*sent)[len(*sent)-1]
+	if n := len([]rune(last[0])); n != 120 {
+		t.Errorf("title runes = %d, want 120", n)
+	}
+	if n := len([]rune(last[1])); n != 2000 {
+		t.Errorf("body runes = %d, want 2000", n)
+	}
+}
+
+func TestNotifyFailureIsAResultNotAnError(t *testing.T) {
+	store := newFakeStore(task.Task{ID: 1, Title: "bound"})
+	cs := dialStep(t, store, 1, seedStepRun(store))
+	fakeNotifier(t, errors.New("no binary"))
+
+	got := callTool[notifyOut](t, cs, "notify", map[string]any{"title": "x"})
+	if got.Delivered || got.Reason != "no binary" {
+		t.Errorf("notify = %+v, want undelivered with reason", got)
+	}
+}
+
+func TestNotifyWithoutNotifierDegrades(t *testing.T) {
+	store := newFakeStore(task.Task{ID: 1, Title: "bound"})
+	cs := dialStep(t, store, 1, seedStepRun(store))
+	old := notifier
+	t.Cleanup(func() { notifier = old })
+	SetNotifier(nil)
+
+	got := callTool[notifyOut](t, cs, "notify", map[string]any{"title": "x"})
+	if got.Delivered || got.Reason != "notifications are not available in this session" {
+		t.Errorf("notify = %+v", got)
+	}
+}
+
+func TestNotifyEmptyTitleIsAnError(t *testing.T) {
+	store := newFakeStore(task.Task{ID: 1, Title: "bound"})
+	cs := dialStep(t, store, 1, seedStepRun(store))
+	sent := fakeNotifier(t, nil)
+
+	if msg := callToolErr(t, cs, "notify", map[string]any{"title": "  "}); !strings.Contains(msg, "title is empty") {
+		t.Errorf("error = %q", msg)
+	}
+	if len(*sent) != 0 {
+		t.Errorf("sent despite empty title: %q", *sent)
 	}
 }

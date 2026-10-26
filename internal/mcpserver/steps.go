@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -78,6 +79,54 @@ func registerStepTools(srv *mcp.Server, store Store, stepRunID int64) {
 			return nil, stepOut{}, err
 		}
 		return fetchStep(ctx, store, stepRunID)
+	})
+
+	registerNotifyTool(srv)
+}
+
+// notifyOut reports whether a notification went out. A failed send is a
+// result, not a tool error: the notification is a convenience layered on
+// the step and must never fail it.
+type notifyOut struct {
+	Delivered bool   `json:"delivered"`
+	Reason    string `json:"reason,omitempty"`
+}
+
+const (
+	notifyTitleMax = 120
+	notifyBodyMax  = 2000
+)
+
+func truncateRunes(s string, n int) string {
+	if utf8.RuneCountInString(s) <= n {
+		return s
+	}
+	return string([]rune(s)[:n])
+}
+
+func registerNotifyTool(srv *mcp.Server) {
+	mcp.AddTool(srv, &mcp.Tool{
+		Name: "notify",
+		Description: "Post a desktop notification to the user. Use it only when there is something " +
+			"the user should look at now (a finding), not for routine \"nothing found\" runs. " +
+			"A failed delivery is reported in the result, never as an error.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in struct {
+		Title string `json:"title" jsonschema:"short headline for the notification"`
+		Body  string `json:"body,omitempty" jsonschema:"one or two lines of detail"`
+	}) (*mcp.CallToolResult, notifyOut, error) {
+		title := strings.TrimSpace(in.Title)
+		if title == "" {
+			return nil, notifyOut{}, errors.New("title is empty")
+		}
+		title = truncateRunes(title, notifyTitleMax)
+		body := truncateRunes(strings.TrimSpace(in.Body), notifyBodyMax)
+		if notifier == nil {
+			return nil, notifyOut{Reason: "notifications are not available in this session"}, nil
+		}
+		if err := notifier(ctx, title, body); err != nil {
+			return nil, notifyOut{Reason: err.Error()}, nil
+		}
+		return nil, notifyOut{Delivered: true}, nil
 	})
 }
 
