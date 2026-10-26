@@ -6,6 +6,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/jwstover/tend/internal/mcpserver"
+	"github.com/jwstover/tend/internal/notify"
 )
 
 // MCPStoreFactory opens the mcpserver.Store slice of the persistence
@@ -36,6 +37,7 @@ func newMcpCmd(open func(ctx context.Context) (mcpserver.Store, error)) *cobra.C
 				return err
 			}
 			defer s.Close()
+			mcpserver.SetNotifier(notify.Send)
 			return mcpserver.New(s, taskID, stepRunID).Run(cmd.Context())
 		},
 	}
