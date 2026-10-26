@@ -77,8 +77,8 @@ func (s *fakeStore) ListChildren(_ context.Context, parentID int64) ([]task.Task
 	return out, nil
 }
 
-func (s *fakeStore) AddTaskWithBody(_ context.Context, title, body string) (task.Task, error) {
-	t := task.Task{ID: s.nextID, Title: title, BodyMD: body, State: task.StateInbox}
+func (s *fakeStore) AddTaskWithBodyIn(_ context.Context, projectID int64, title, body string) (task.Task, error) {
+	t := task.Task{ID: s.nextID, Title: title, BodyMD: body, State: task.StateInbox, ProjectID: projectID}
 	s.tasks[t.ID] = t
 	s.nextID++
 	return t, nil
@@ -1296,5 +1296,15 @@ func TestSetTaskProjectUnknownNameIsAnError(t *testing.T) {
 	}
 	if len(store.projects) != 1 {
 		t.Errorf("a failed lookup created a project: %+v", store.projects)
+	}
+}
+
+func TestCreateTaskInheritsBoundTaskProject(t *testing.T) {
+	store := newFakeStore(task.Task{ID: 1, Title: "bound", ProjectID: 2})
+	cs := dial(t, store, 1)
+
+	got := callTool[taskOut](t, cs, "create_task", map[string]any{"title": "separate work"})
+	if got.ProjectID != 2 {
+		t.Errorf("create_task project_id = %d, want the bound task's project (2)", got.ProjectID)
 	}
 }

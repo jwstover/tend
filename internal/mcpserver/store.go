@@ -20,7 +20,7 @@ import (
 type Store interface {
 	GetTask(ctx context.Context, id int64) (task.Task, error)
 	ListChildren(ctx context.Context, parentID int64) ([]task.Task, error)
-	AddTaskWithBody(ctx context.Context, title, body string) (task.Task, error)
+	AddTaskWithBodyIn(ctx context.Context, projectID int64, title, body string) (task.Task, error)
 	AddChild(ctx context.Context, parentID int64, title string) (task.Task, error)
 	SetTitle(ctx context.Context, id int64, title string) error
 	SetBody(ctx context.Context, id int64, body string) error

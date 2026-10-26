@@ -154,14 +154,20 @@ func registerTools(srv *mcp.Server, store Store, boundTaskID int64) {
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name: "create_task",
-		Description: "Create a new top-level task — NOT scoped to the bound task. Use for a " +
-			"genuinely separate work item; use create_subtask for phases of the current task." + slimNote,
+		Description: "Create a new top-level task — NOT scoped to the bound task, but created in " +
+			"the bound task's project. Use for a genuinely separate work item; use create_subtask for phases of the current task." + slimNote,
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in struct {
 		Title     string  `json:"title" jsonschema:"the task title"`
 		BodyMD    string  `json:"body_md,omitempty" jsonschema:"optional markdown body"`
 		DependsOn []int64 `json:"depends_on,omitempty" jsonschema:"ids of tasks this one must wait for; each must be done before this task can be worked on"`
 	}) (*mcp.CallToolResult, taskOut, error) {
-		t, err := store.AddTaskWithBody(ctx, in.Title, in.BodyMD)
+		// A new task belongs next to the session's own, not in Unsorted:
+		// the agent is working inside the bound task's project.
+		bound, err := store.GetTask(ctx, boundTaskID)
+		if err != nil {
+			return nil, taskOut{}, err
+		}
+		t, err := store.AddTaskWithBodyIn(ctx, bound.ProjectID, in.Title, in.BodyMD)
 		if err != nil {
 			return nil, taskOut{}, err
 		}
