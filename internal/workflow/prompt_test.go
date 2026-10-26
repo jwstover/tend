@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 var fullData = PromptData{
@@ -159,6 +160,9 @@ func TestValidatePrompt(t *testing.T) {
 		{"unknown sub-task field", "{{range .Subtasks}}{{.Body}}{{end}}", ErrInvalidPrompt},
 		{"unknown field inside blocked branch", "{{range .Subtasks}}{{if .IsBlocked}}{{.Blockers}}{{end}}{{end}}", ErrInvalidPrompt},
 		{"unknown field inside unblocked branch", "{{range .Subtasks}}{{if .IsBlocked}}ok{{else}}{{.Blockers}}{{end}}{{end}}", ErrInvalidPrompt},
+		{"every schedule field", "{{.Schedule.Name}}{{.Schedule.LastRunAt}}{{.Schedule.LastRunState}}{{.Schedule.LastDeliverable}}", nil},
+		{"unknown schedule field", "{{if .Schedule.Name}}{{.Schedule.Bogus}}{{end}}", ErrInvalidPrompt},
+		{"unknown schedule field in falsy branch", "{{if .Schedule.Name}}ok{{else}}{{.Schedule.Bogus}}{{end}}", ErrInvalidPrompt},
 		{"unknown variable", "{{.Cwdd}}", ErrInvalidPrompt},
 		{"unknown variable inside truthy branch", "{{if .Feedback}}{{.Bogus}}{{end}}", ErrInvalidPrompt},
 		{"unknown variable inside falsy branch", "{{if .Feedback}}ok{{else}}{{.Bogus}}{{end}}", ErrInvalidPrompt},
@@ -170,5 +174,40 @@ func TestValidatePrompt(t *testing.T) {
 				t.Errorf("ValidatePrompt(%q) = %v, want %v", c.prompt, err, c.err)
 			}
 		})
+	}
+}
+
+func TestNewPromptSchedule(t *testing.T) {
+	started := time.Date(2026, 3, 3, 3, 0, 0, 0, time.UTC)
+	sc := Schedule{Name: "watch"}
+
+	if got := NewPromptSchedule(ScheduleRunContext{Schedule: sc}); got != (PromptSchedule{Name: "watch"}) {
+		t.Errorf("first run = %+v, want name only", got)
+	}
+	got := NewPromptSchedule(ScheduleRunContext{
+		Schedule:            sc,
+		Previous:            &Run{State: RunDone, StartedAt: started},
+		PreviousDeliverable: "all quiet",
+	})
+	want := PromptSchedule{
+		Name:            "watch",
+		LastRunAt:       started.In(time.Local).Format(time.RFC3339),
+		LastRunState:    "done",
+		LastDeliverable: "all quiet",
+	}
+	if got != want {
+		t.Errorf("second run = %+v, want %+v", got, want)
+	}
+}
+
+func TestRenderPromptSchedule(t *testing.T) {
+	const tpl = "{{if .Schedule.Name}}{{.Schedule.Name}}|{{.Schedule.LastRunAt}}|{{.Schedule.LastRunState}}|{{.Schedule.LastDeliverable}}{{else}}unscheduled{{end}}"
+	got, err := RenderPrompt(tpl, PromptData{})
+	if err != nil || got != "unscheduled" {
+		t.Errorf("zero data = %q, %v", got, err)
+	}
+	got, err = RenderPrompt(tpl, PromptData{Schedule: PromptSchedule{Name: "w", LastRunAt: "t", LastRunState: "done", LastDeliverable: "d"}})
+	if err != nil || got != "w|t|done|d" {
+		t.Errorf("scheduled = %q, %v", got, err)
 	}
 }
