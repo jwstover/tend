@@ -20,6 +20,7 @@ import (
 
 	"github.com/jwstover/tend/internal/agent"
 	"github.com/jwstover/tend/internal/jira"
+	"github.com/jwstover/tend/internal/runner"
 	"github.com/jwstover/tend/internal/task"
 	"github.com/jwstover/tend/internal/usage"
 	"github.com/jwstover/tend/internal/workflow"
@@ -77,6 +78,13 @@ type Store interface {
 	CreateSession(ctx context.Context, taskID int64, externalID, cwd, label, tmuxSession string) (task.Session, error)
 	DeleteSession(ctx context.Context, id int64) error
 	ListSessionsForTask(ctx context.Context, taskID int64) ([]task.Session, error)
+	// Schedules (schedules.go): the Schedules view and its pause / run-now
+	// writes; runner.Tick (the backup ticker) needs DueSchedules/ClaimSchedule.
+	ListSchedules(ctx context.Context) ([]workflow.Schedule, error)
+	SetScheduleEnabled(ctx context.Context, id int64, enabled bool, now time.Time) error
+	StartScheduleNow(ctx context.Context, id int64) (workflow.Run, error)
+	DueSchedules(ctx context.Context, now time.Time) ([]workflow.Schedule, error)
+	ClaimSchedule(ctx context.Context, id int64, now time.Time) (workflow.ScheduleClaim, error)
 	// The agents view (agents.go): a project's sessions across its tasks,
 	// and the status write `dd` makes when it kills one.
 	ListSessionsForProject(ctx context.Context, projectID *int64) ([]task.TaskSession, error)
@@ -170,6 +178,9 @@ func Run(ctx context.Context, s Store, watcher ChangeWatcher, dbPath string) err
 	go runSessionPoller(pollCtx, s, p.Send)
 	startQuotaPoller(pollCtx, p.Send)
 	startUsagePoller(pollCtx, p.Send)
+	go runScheduleTicker(pollCtx, s, func(ctx context.Context, runID int64) (string, error) {
+		return runner.Launch(ctx, s, runID, dbPath, false)
+	}, backupTickInterval)
 	if watcher != nil {
 		go runChangeWatcher(pollCtx, watcher, changePollInterval, p.Send)
 	}
@@ -251,8 +262,9 @@ const (
 	modeTriage
 	modeStandup
 	modeWorkflows
-	modeRun    // watching one workflow run (runview.go)
-	modeAgents // a project's agent sessions (agents.go)
+	modeRun       // watching one workflow run (runview.go)
+	modeAgents    // a project's agent sessions (agents.go)
+	modeSchedules // every workflow schedule (schedules.go)
 )
 
 // pane identifies which column owns the keyboard. It replaces an earlier
@@ -704,6 +716,9 @@ type app struct {
 	// list view, since it is laid out the same way.
 	av agentsView
 
+	// Schedules view (schedules.go).
+	sv schedulesView
+
 	showDetail bool
 	focus      pane // which column owns j/k and the scroll keys
 	detail     viewport.Model
@@ -1006,6 +1021,13 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return a, tea.Batch(a.applyAgents(msg), settle)
 
+	case schedulesLoadedMsg:
+		settle := a.liveReloadSettled()
+		if a.mode == modeSchedules {
+			a.applySchedules(msg)
+		}
+		return a, settle
+
 	case agentDetailLoadedMsg:
 		if a.mode == modeAgents {
 			a.applyAgentDetail(msg)
@@ -1109,6 +1131,8 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, a.loadRunView(a.rv.runID)
 		case modeAgents:
 			return a, a.loadAgentSessions()
+		case modeSchedules:
+			return a, a.loadSchedules()
 		}
 		return a, a.loadTasks(a.mode)
 
@@ -1402,6 +1426,9 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if a.mode == modeAgents {
 		return a.handleAgentsKey(msg)
 	}
+	if a.mode == modeSchedules {
+		return a.handleSchedulesKey(msg)
+	}
 
 	// A pending `c` chord consumes the next key: a state key applies it,
 	// anything else cancels.
@@ -1559,6 +1586,10 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, a.keys.Agents):
 		a.startAgents()
 		return a, a.loadAgentSessions()
+
+	case key.Matches(msg, a.keys.Schedules):
+		a.startSchedules()
+		return a, a.loadSchedules()
 
 	case key.Matches(msg, a.keys.Note):
 		return a, a.modal.Open(modalLog, true, "note", 0, "")
@@ -2510,6 +2541,8 @@ func (a app) reloadCmd() tea.Cmd {
 		return a.loadWorkflows(a.selectedWorkflowID())
 	case modeRun:
 		return a.loadRunView(a.rv.runID)
+	case modeSchedules:
+		return a.loadSchedules()
 	}
 	return tea.Batch(a.loadScoped(), a.loadProjects())
 }
@@ -2753,6 +2786,9 @@ func (a app) View() tea.View {
 	case modeAgents:
 		splits = a.agentsSplits()
 		body = a.agentsBody()
+	case modeSchedules:
+		splits = nil
+		body = a.schedulesBody()
 	default:
 		body = a.listBody()
 	}
@@ -2861,6 +2897,8 @@ func (a app) headerLine() string {
 		}
 	case modeAgents:
 		left += s.HeaderView.Render("agents")
+	case modeSchedules:
+		left += s.HeaderView.Render("schedules")
 	default:
 		left += s.HeaderView.Render("live")
 		// State is the default and needs no announcing; any other grouping
@@ -2895,6 +2933,12 @@ func (a app) headerLine() string {
 	case a.mode == modeRun:
 		mark, style := runStateCell(s, a.rv.run.State)
 		right = style.Render(mark+" "+string(a.rv.run.State)) + "  "
+	case a.mode == modeSchedules:
+		noun := "schedules"
+		if len(a.sv.rows) == 1 {
+			noun = "schedule"
+		}
+		right = s.CountNum.Render(fmt.Sprintf("%d", len(a.sv.rows))) + s.CountLabel.Render(" "+noun) + "  "
 	case a.mode == modeAgents:
 		noun := "sessions"
 		if len(a.av.rows) == 1 {
@@ -3092,6 +3136,9 @@ func (a app) footer() string {
 	}
 	if a.mode == modeAgents {
 		hints = a.agentsHints()
+	}
+	if a.mode == modeSchedules {
+		hints = a.schedulesHints()
 	}
 	return a.hintLine(hints)
 }

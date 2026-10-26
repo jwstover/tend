@@ -101,6 +101,11 @@ func (a app) paletteCommands() []paletteCommand {
 				a.startAgents()
 				return a, a.loadAgentSessions()
 			}},
+		{icon: "⏲", label: "Schedules view", hint: "X", aliases: []string{"schedules", "cron"},
+			act: func(a app) (tea.Model, tea.Cmd) {
+				a.startSchedules()
+				return a, a.loadSchedules()
+			}},
 		{icon: "⚡", label: "Run workflow on task", hint: "w", aliases: []string{"run"},
 			act: func(a app) (tea.Model, tea.Cmd) {
 				t, ok := a.selected()
