@@ -7,6 +7,7 @@ package mcpserver
 
 import (
 	"context"
+	"time"
 
 	"github.com/jwstover/tend/internal/task"
 	"github.com/jwstover/tend/internal/workflow"
@@ -85,6 +86,14 @@ type Store interface {
 	ListEdges(ctx context.Context, workflowID int64) ([]workflow.Edge, error)
 	SetEdge(ctx context.Context, fromStepID int64, outcome string, toStepID int64, maxIterations *int64) (workflow.Edge, error)
 	DeleteEdge(ctx context.Context, id int64) error
+
+	// The schedule authoring tools (schedules.go), available to every
+	// session. The store owns cron parsing and next_run_at.
+	ListSchedules(ctx context.Context) ([]workflow.Schedule, error)
+	GetSchedule(ctx context.Context, id int64) (workflow.Schedule, error)
+	CreateSchedule(ctx context.Context, sc workflow.Schedule, now time.Time) (workflow.Schedule, error)
+	UpdateSchedule(ctx context.Context, sc workflow.Schedule, now time.Time) (workflow.Schedule, error)
+	DeleteSchedule(ctx context.Context, id int64) error
 
 	Close() error
 }
