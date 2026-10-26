@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jwstover/tend/internal/agent"
 	"github.com/jwstover/tend/internal/workflow"
 )
 
@@ -151,5 +152,73 @@ func TestTickDueError(t *testing.T) {
 	_, err := Tick(context.Background(), &tickStore{dueErr: errors.New("boom")}, time.Now(), nil, nil)
 	if err == nil {
 		t.Fatal("want error")
+	}
+}
+
+func stubQuota(t *testing.T, q agent.Quota, err error) *int {
+	t.Helper()
+	calls := 0
+	old := fetchQuota
+	fetchQuota = func(context.Context) (agent.Quota, error) { calls++; return q, err }
+	t.Cleanup(func() { fetchQuota = old })
+	return &calls
+}
+
+func TestQuotaGuardTick(t *testing.T) {
+	now := time.Date(2026, 10, 26, 9, 0, 0, 0, time.UTC)
+	launch := func(context.Context, int64) (string, error) { return "tend-wf-x", nil }
+	newStore := func() *tickStore {
+		return &tickStore{
+			due:    []workflow.Schedule{{ID: 1}, {ID: 2}},
+			claims: map[int64]workflow.ScheduleClaim{1: tickClaim(10), 2: tickClaim(20)},
+		}
+	}
+	session := func(p int, resets string) agent.Quota {
+		return agent.Quota{Session: &agent.QuotaLimit{Percent: p, Resets: resets}}
+	}
+	tests := []struct {
+		name       string
+		quota      agent.Quota
+		err        error
+		started    int
+		skipped    int
+		wantReason string
+	}{
+		{name: "85 percent skips", quota: session(85, "3pm"), skipped: 2, wantReason: "5h quota at 85% (resets 3pm)"},
+		{name: "80 percent skips, no resets", quota: session(80, ""), skipped: 2, wantReason: "5h quota at 80%"},
+		{name: "79 percent starts", quota: session(79, "3pm"), started: 2},
+		{name: "error proceeds", err: errors.New("no claude"), started: 2},
+		{name: "nil session proceeds", quota: agent.Quota{}, started: 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stubQuota(t, tt.quota, tt.err)
+			st := newStore()
+			res, err := Tick(context.Background(), st, now, launch, QuotaGuard)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(res.Started) != tt.started || len(res.Skipped) != tt.skipped {
+				t.Fatalf("started=%d skipped=%d, want %d/%d", len(res.Started), len(res.Skipped), tt.started, tt.skipped)
+			}
+			if tt.skipped > 0 && len(st.claimed) != 0 {
+				t.Errorf("claimed %v while skipped", st.claimed)
+			}
+			for _, sk := range res.Skipped {
+				if sk.Reason != tt.wantReason {
+					t.Errorf("reason = %q, want %q", sk.Reason, tt.wantReason)
+				}
+			}
+		})
+	}
+}
+
+func TestQuotaGuardNothingDueSkipsFetch(t *testing.T) {
+	calls := stubQuota(t, agent.Quota{}, nil)
+	if _, err := Tick(context.Background(), &tickStore{}, time.Now(), nil, QuotaGuard); err != nil {
+		t.Fatal(err)
+	}
+	if *calls != 0 {
+		t.Errorf("fetchQuota called %d times with nothing due", *calls)
 	}
 }
