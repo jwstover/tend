@@ -193,3 +193,173 @@ func scheduleToDomain(r gen.Schedule) (workflow.Schedule, error) {
 		NextRunAt: next, CreatedAt: created, UpdatedAt: updated,
 	}, nil
 }
+
+// DueSchedules lists the enabled schedules whose next_run_at is at or
+// before now, oldest first.
+func (s *Store) DueSchedules(ctx context.Context, now time.Time) ([]workflow.Schedule, error) {
+	rows, err := s.q.DueSchedules(ctx, now.UTC().Format(sqliteTimeLayout))
+	if err != nil {
+		return nil, fmt.Errorf("listing due schedules: %w", err)
+	}
+	out := make([]workflow.Schedule, 0, len(rows))
+	for _, r := range rows {
+		sc, err := scheduleToDomain(r)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, sc)
+	}
+	return out, nil
+}
+
+// liveLastRun returns the schedule's last run when it is not terminal.
+func liveLastRun(ctx context.Context, q *gen.Queries, id int64) (*workflow.Run, error) {
+	row, err := q.GetScheduleLastRunForTx(ctx, id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("loading last run of schedule %d: %w", id, err)
+	}
+	run, err := runToDomain(row)
+	if err != nil {
+		return nil, err
+	}
+	if run.State.Terminal() {
+		return nil, nil
+	}
+	return &run, nil
+}
+
+func startScheduledRun(ctx context.Context, q *gen.Queries, sc workflow.Schedule) (workflow.Run, error) {
+	row, err := q.CreateScheduledRun(ctx, gen.CreateScheduledRunParams{
+		WorkflowID: sc.WorkflowID, TaskID: sc.TaskID, Cwd: sc.Cwd,
+		ScheduleID: sql.NullInt64{Int64: sc.ID, Valid: true},
+	})
+	if err != nil {
+		return workflow.Run{}, fmt.Errorf("creating run for schedule %d: %w", sc.ID, err)
+	}
+	if err := q.SetScheduleLastRun(ctx, gen.SetScheduleLastRunParams{
+		LastRunID: sql.NullInt64{Int64: row.ID, Valid: true}, ID: sc.ID,
+	}); err != nil {
+		return workflow.Run{}, fmt.Errorf("recording last run of schedule %d: %w", sc.ID, err)
+	}
+	return runToDomain(row)
+}
+
+// ClaimSchedule turns a due schedule into a pending run, at most once per
+// due time: next_run_at is advanced by a compare-and-swap that is the first
+// write of the transaction, so a racing tick matches no row and gets the
+// zero claim. The next time is computed from now, so intervals missed while
+// asleep merge into this one run. When the previous run is still live the
+// tick is skipped (overlap policy skip) but next_run_at still advances.
+func (s *Store) ClaimSchedule(ctx context.Context, id int64, now time.Time) (workflow.ScheduleClaim, error) {
+	sc, err := s.GetSchedule(ctx, id)
+	if err != nil {
+		return workflow.ScheduleClaim{}, err
+	}
+	if !sc.Enabled || sc.NextRunAt.After(now) {
+		return workflow.ScheduleClaim{}, nil
+	}
+	c, err := workflow.ParseCron(sc.CronExpr)
+	if err != nil {
+		return workflow.ScheduleClaim{}, err
+	}
+	next, err := nextRunAt(c, now)
+	if err != nil {
+		return workflow.ScheduleClaim{}, err
+	}
+	var claim workflow.ScheduleClaim
+	err = s.inTx(ctx, func(q *gen.Queries) error {
+		n, err := q.AdvanceSchedule(ctx, gen.AdvanceScheduleParams{
+			NextRunAt: next, ID: id, NextRunAt_2: sc.NextRunAt.UTC().Format(sqliteTimeLayout),
+		})
+		if err != nil {
+			return fmt.Errorf("advancing schedule %d: %w", id, err)
+		}
+		if n == 0 {
+			return nil
+		}
+		live, err := liveLastRun(ctx, q, id)
+		if err != nil {
+			return err
+		}
+		if live != nil {
+			claim.Skipped = fmt.Sprintf("run %d is still %s", live.ID, live.State)
+			return nil
+		}
+		run, err := startScheduledRun(ctx, q, sc)
+		if err != nil {
+			return err
+		}
+		claim.Claimed, claim.Run = true, &run
+		return nil
+	})
+	if err != nil {
+		return workflow.ScheduleClaim{}, err
+	}
+	return claim, nil
+}
+
+// StartScheduleNow is run-now: it starts a pending run of the schedule
+// regardless of next_run_at or whether the schedule is enabled, refusing
+// with ErrScheduleBusy while its last run is live.
+func (s *Store) StartScheduleNow(ctx context.Context, id int64) (workflow.Run, error) {
+	sc, err := s.GetSchedule(ctx, id)
+	if err != nil {
+		return workflow.Run{}, err
+	}
+	var run workflow.Run
+	err = s.inTx(ctx, func(q *gen.Queries) error {
+		live, err := liveLastRun(ctx, q, id)
+		if err != nil {
+			return err
+		}
+		if live != nil {
+			return fmt.Errorf("schedule %q: run %d is %s: %w", sc.Name, live.ID, live.State, workflow.ErrScheduleBusy)
+		}
+		run, err = startScheduledRun(ctx, q, sc)
+		return err
+	})
+	return run, err
+}
+
+// ScheduleRunContext describes the schedule behind a run and the run
+// before it; ok is false for a run no schedule started.
+func (s *Store) ScheduleRunContext(ctx context.Context, runID int64) (workflow.ScheduleRunContext, bool, error) {
+	sid, err := s.q.GetRunScheduleID(ctx, runID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return workflow.ScheduleRunContext{}, false, fmt.Errorf("run %d: %w", runID, workflow.ErrRunNotFound)
+	}
+	if err != nil {
+		return workflow.ScheduleRunContext{}, false, fmt.Errorf("loading run %d: %w", runID, err)
+	}
+	if !sid.Valid {
+		return workflow.ScheduleRunContext{}, false, nil
+	}
+	sc, err := s.GetSchedule(ctx, sid.Int64)
+	if err != nil {
+		return workflow.ScheduleRunContext{}, false, err
+	}
+	out := workflow.ScheduleRunContext{Schedule: sc}
+	row, err := s.q.GetPreviousScheduledRun(ctx, gen.GetPreviousScheduledRunParams{
+		ScheduleID: sid, ID: runID,
+	})
+	if errors.Is(err, sql.ErrNoRows) {
+		return out, true, nil
+	}
+	if err != nil {
+		return workflow.ScheduleRunContext{}, false, fmt.Errorf("loading run before %d: %w", runID, err)
+	}
+	prev, err := runToDomain(row)
+	if err != nil {
+		return workflow.ScheduleRunContext{}, false, err
+	}
+	out.Previous = &prev
+	d, err := s.q.GetLastFinishedStepDeliverable(ctx, prev.ID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return workflow.ScheduleRunContext{}, false, fmt.Errorf("loading deliverable of run %d: %w", prev.ID, err)
+	}
+	out.PreviousDeliverable = d
+	return out, true, nil
+}

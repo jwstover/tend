@@ -13,6 +13,7 @@ type Querier interface {
 	// OR IGNORE so recording a dependency that already exists is a no-op
 	// rather than a constraint error: SetDependencies re-adds the survivors.
 	AddDependency(ctx context.Context, arg AddDependencyParams) error
+	AdvanceSchedule(ctx context.Context, arg AdvanceScheduleParams) (int64, error)
 	// Appends text as a new paragraph: an empty body just becomes the text,
 	// otherwise trailing whitespace is trimmed and a blank line separates the
 	// old body from the new text. Done in SQL so the append is atomic.
@@ -36,6 +37,7 @@ type Querier interface {
 	CreateProject(ctx context.Context, name string) (Project, error)
 	CreateRun(ctx context.Context, arg CreateRunParams) (WorkflowRun, error)
 	CreateSchedule(ctx context.Context, arg CreateScheduleParams) (Schedule, error)
+	CreateScheduledRun(ctx context.Context, arg CreateScheduledRunParams) (WorkflowRun, error)
 	// workflow_step_run_id is NULL for an ordinary session and set when the
 	// session runs a workflow step (Store.CreateStepRunSession).
 	//
@@ -77,6 +79,7 @@ type Querier interface {
 	DeleteStep(ctx context.Context, id int64) error
 	DeleteTask(ctx context.Context, id int64) error
 	DeleteWorkflow(ctx context.Context, id int64) error
+	DueSchedules(ctx context.Context, nextRunAt string) ([]Schedule, error)
 	// SetRunState for the failed state, recording why in the same statement
 	// so a run can never read as failed for no reason. Same terminal-is-final
 	// WHERE as SetRunState; the caller turns zero rows into ErrRunEnded.
@@ -84,11 +87,15 @@ type Querier interface {
 	// One-shot handoff: only an unfinished step run takes an outcome, so a
 	// second finish_step call affects zero rows and the first outcome stands.
 	FinishStepRun(ctx context.Context, arg FinishStepRunParams) (int64, error)
+	GetLastFinishedStepDeliverable(ctx context.Context, runID int64) (string, error)
+	GetPreviousScheduledRun(ctx context.Context, arg GetPreviousScheduledRunParams) (WorkflowRun, error)
 	GetProject(ctx context.Context, id int64) (Project, error)
 	GetProjectByName(ctx context.Context, name string) (Project, error)
 	GetRun(ctx context.Context, id int64) (WorkflowRun, error)
+	GetRunScheduleID(ctx context.Context, id int64) (sql.NullInt64, error)
 	GetSchedule(ctx context.Context, id int64) (Schedule, error)
 	GetScheduleByName(ctx context.Context, name string) (Schedule, error)
+	GetScheduleLastRunForTx(ctx context.Context, id int64) (WorkflowRun, error)
 	GetSetting(ctx context.Context, key string) (string, error)
 	GetStep(ctx context.Context, id int64) (WorkflowStep, error)
 	GetStepRun(ctx context.Context, id int64) (WorkflowStepRun, error)
@@ -199,6 +206,7 @@ type Querier interface {
 	SetRunState(ctx context.Context, arg SetRunStateParams) (int64, error)
 	SetRunTmuxSession(ctx context.Context, arg SetRunTmuxSessionParams) error
 	SetScheduleEnabled(ctx context.Context, arg SetScheduleEnabledParams) (int64, error)
+	SetScheduleLastRun(ctx context.Context, arg SetScheduleLastRunParams) error
 	// Closes the SessionEnd gap: a host that dies takes its chance to fire
 	// the hook with it, so the poller is the only thing left that will ever
 	// learn the session is gone (via tmux has-session, checked by the

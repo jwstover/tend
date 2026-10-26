@@ -183,3 +183,182 @@ func TestSchedulesMigrationUpDown(t *testing.T) {
 		t.Error("down left schedules or schedule_id behind")
 	}
 }
+
+// dueSchedule makes a daily 03:00 schedule and returns it with a "now" two
+// days past its first fire.
+func dueSchedule(t *testing.T, s *Store) (workflow.Schedule, time.Time) {
+	t.Helper()
+	wf, taskID := scheduleFixture(t, s)
+	created := time.Date(2026, 3, 1, 10, 0, 0, 0, time.Local)
+	sc, err := s.CreateSchedule(context.Background(), workflow.Schedule{
+		Name: "daily", WorkflowID: wf.ID, TaskID: taskID, Cwd: "/tmp", CronExpr: "0 3 * * *",
+	}, created)
+	if err != nil {
+		t.Fatalf("CreateSchedule: %v", err)
+	}
+	return sc, time.Date(2026, 3, 4, 3, 5, 0, 0, time.Local)
+}
+
+func TestClaimScheduleOnce(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	sc, now := dueSchedule(t, s)
+
+	if early, err := s.ClaimSchedule(ctx, sc.ID, sc.NextRunAt.Add(-time.Minute)); err != nil || early.Claimed || early.Skipped != "" {
+		t.Fatalf("early claim = %+v, %v, want zero", early, err)
+	}
+	due, err := s.DueSchedules(ctx, now)
+	if err != nil || len(due) != 1 || due[0].ID != sc.ID {
+		t.Fatalf("DueSchedules = %+v, %v", due, err)
+	}
+
+	first, err := s.ClaimSchedule(ctx, sc.ID, now)
+	if err != nil || !first.Claimed || first.Run == nil || first.Run.State != workflow.RunPending {
+		t.Fatalf("first claim = %+v, %v", first, err)
+	}
+	second, err := s.ClaimSchedule(ctx, sc.ID, now)
+	if err != nil || second.Claimed || second.Skipped != "" {
+		t.Errorf("second claim = %+v, %v, want zero", second, err)
+	}
+	// Overdue by three intervals: one run, next fire after now.
+	got, _ := s.GetSchedule(ctx, sc.ID)
+	if !got.NextRunAt.After(now) || got.LastRunID == nil || *got.LastRunID != first.Run.ID {
+		t.Errorf("schedule after claim = %+v", got)
+	}
+	if want := time.Date(2026, 3, 5, 3, 0, 0, 0, time.Local); !got.NextRunAt.Equal(want) {
+		t.Errorf("NextRunAt = %v, want %v", got.NextRunAt, want)
+	}
+	if due, _ := s.DueSchedules(ctx, now); len(due) != 0 {
+		t.Errorf("DueSchedules after claim = %+v", due)
+	}
+}
+
+func TestClaimScheduleConcurrent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tend.db")
+	ctx := context.Background()
+	s1, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s1.Close()
+	s2, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s2.Close()
+	sc, now := dueSchedule(t, s1)
+
+	claims := make(chan workflow.ScheduleClaim, 2)
+	errs := make(chan error, 2)
+	for _, st := range []*Store{s1, s2} {
+		go func() {
+			c, err := st.ClaimSchedule(ctx, sc.ID, now)
+			claims <- c
+			errs <- err
+		}()
+	}
+	won := 0
+	for range 2 {
+		if err := <-errs; err != nil {
+			t.Errorf("ClaimSchedule: %v", err)
+		}
+		if c := <-claims; c.Claimed {
+			won++
+		}
+	}
+	if won != 1 {
+		t.Errorf("%d claims won, want 1", won)
+	}
+	runs, err := s1.ListRunsForTask(ctx, sc.TaskID)
+	if err != nil || len(runs) != 1 {
+		t.Errorf("runs = %d, %v, want 1", len(runs), err)
+	}
+}
+
+func TestClaimScheduleSkipsWhileRunLive(t *testing.T) {
+	for _, live := range []workflow.RunState{workflow.RunPending, workflow.RunRunning, workflow.RunWaitingReview, workflow.RunPaused} {
+		t.Run(string(live), func(t *testing.T) {
+			s := newTestStore(t)
+			ctx := context.Background()
+			sc, now := dueSchedule(t, s)
+			first, err := s.ClaimSchedule(ctx, sc.ID, now)
+			if err != nil || !first.Claimed {
+				t.Fatalf("claim = %+v, %v", first, err)
+			}
+			if live != workflow.RunPending {
+				if err := s.SetRunState(ctx, first.Run.ID, live); err != nil {
+					t.Fatalf("SetRunState: %v", err)
+				}
+			}
+			next := now.Add(24 * time.Hour)
+			skipped, err := s.ClaimSchedule(ctx, sc.ID, next)
+			if err != nil || skipped.Claimed || skipped.Skipped == "" {
+				t.Fatalf("claim while live = %+v, %v, want skipped", skipped, err)
+			}
+			got, _ := s.GetSchedule(ctx, sc.ID)
+			if !got.NextRunAt.After(next) {
+				t.Errorf("NextRunAt = %v, want advanced past %v", got.NextRunAt, next)
+			}
+			if err := s.SetRunState(ctx, first.Run.ID, workflow.RunCancelled); err != nil {
+				t.Fatalf("SetRunState: %v", err)
+			}
+			again, err := s.ClaimSchedule(ctx, sc.ID, next.Add(24*time.Hour))
+			if err != nil || !again.Claimed || again.Run.ID == first.Run.ID {
+				t.Errorf("claim after terminal = %+v, %v, want a new run", again, err)
+			}
+		})
+	}
+}
+
+func TestStartScheduleNowAndRunContext(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	sc, _ := dueSchedule(t, s)
+
+	if _, ok, err := s.ScheduleRunContext(ctx, mustRun(t, s, sc.WorkflowID).ID); err != nil || ok {
+		t.Errorf("unscheduled run context ok = %v, %v, want false", ok, err)
+	}
+
+	r1, err := s.StartScheduleNow(ctx, sc.ID)
+	if err != nil || r1.State != workflow.RunPending {
+		t.Fatalf("StartScheduleNow = %+v, %v", r1, err)
+	}
+	if _, err := s.StartScheduleNow(ctx, sc.ID); !errors.Is(err, workflow.ErrScheduleBusy) {
+		t.Errorf("second start err = %v, want ErrScheduleBusy", err)
+	}
+	if got, _ := s.GetSchedule(ctx, sc.ID); !got.NextRunAt.Equal(sc.NextRunAt) {
+		t.Errorf("run-now moved next_run_at to %v", got.NextRunAt)
+	}
+
+	// Give r1 a finished step with a deliverable, end it, then run again.
+	step := mustStep(t, s, sc.WorkflowID, "work")
+	sr, err := s.CreateStepRun(ctx, workflow.StepRun{RunID: r1.ID, StepID: step.ID})
+	if err != nil {
+		t.Fatalf("CreateStepRun: %v", err)
+	}
+	if err := s.FinishStepRun(ctx, sr.ID, "done", "all quiet"); err != nil {
+		t.Fatalf("FinishStepRun: %v", err)
+	}
+	if err := s.SetRunState(ctx, r1.ID, workflow.RunDone); err != nil {
+		t.Fatalf("SetRunState: %v", err)
+	}
+	if err := s.SetScheduleEnabled(ctx, sc.ID, false, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	r2, err := s.StartScheduleNow(ctx, sc.ID) // works while paused
+	if err != nil {
+		t.Fatalf("StartScheduleNow on paused schedule: %v", err)
+	}
+
+	rc, ok, err := s.ScheduleRunContext(ctx, r2.ID)
+	if err != nil || !ok {
+		t.Fatalf("ScheduleRunContext = %v, %v", ok, err)
+	}
+	if rc.Schedule.ID != sc.ID || rc.Previous == nil || rc.Previous.ID != r1.ID || rc.PreviousDeliverable != "all quiet" {
+		t.Errorf("context = %+v", rc)
+	}
+	first, _, _ := s.ScheduleRunContext(ctx, r1.ID)
+	if first.Previous != nil || first.PreviousDeliverable != "" {
+		t.Errorf("first run context = %+v, want no previous", first)
+	}
+}
