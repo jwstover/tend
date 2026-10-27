@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jwstover/tend/internal/agent"
 	"github.com/jwstover/tend/internal/workflow"
 )
 
@@ -100,9 +101,30 @@ func Tick(ctx context.Context, s ScheduleStore, now time.Time, launch LaunchFunc
 	return res, nil
 }
 
-// QuotaGuard is the production TickGuard; a placeholder until the quota
-// check lands.
+// QuotaSkipPercent is the five-hour quota usage at or above which a tick
+// leaves its due schedules for a later one.
+const QuotaSkipPercent = 80
+
+// quotaTimeout bounds the `claude -p /usage` call a guard makes.
+const quotaTimeout = 20 * time.Second
+
+// fetchQuota is the quota reading, a seam so tests need no claude binary.
+var fetchQuota = agent.FetchQuota
+
+// QuotaGuard is the production TickGuard: unattended runs must not eat the
+// subscription, so it skips the tick once the five-hour window is at or past
+// QuotaSkipPercent. Any failure to read the quota (no claude, an API-key
+// login, a timeout) proceeds, since that must never stop schedules.
 func QuotaGuard(ctx context.Context) string {
-	// TODO(#661): skip past 80% of the 5h quota.
-	return ""
+	ctx, cancel := context.WithTimeout(ctx, quotaTimeout)
+	defer cancel()
+	q, err := fetchQuota(ctx)
+	if err != nil || q.Session == nil || q.Session.Percent < QuotaSkipPercent {
+		return ""
+	}
+	reason := fmt.Sprintf("5h quota at %d%%", q.Session.Percent)
+	if q.Session.Resets != "" {
+		reason += fmt.Sprintf(" (resets %s)", q.Session.Resets)
+	}
+	return reason
 }
