@@ -3,9 +3,12 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/jwstover/tend/internal/runner"
 	"github.com/jwstover/tend/internal/store"
 	"github.com/jwstover/tend/internal/workflow"
 )
@@ -149,5 +152,106 @@ func TestScheduleAddWarnsOnBypassPermissions(t *testing.T) {
 	}
 	if !strings.Contains(out, "added schedule") || !strings.Contains(errOut, "warning: step \"check\" runs with bypassPermissions") {
 		t.Errorf("out = %q, stderr = %q", out, errOut)
+	}
+}
+
+// seedDueSchedule creates schedule "due1" (every minute) as of ten minutes
+// ago, so it is due now.
+func (h *scheduleHarness) seedDueSchedule() workflow.Schedule {
+	h.t.Helper()
+	sc, err := h.s.CreateSchedule(context.Background(), workflow.Schedule{
+		Name: "due1", WorkflowID: 1, TaskID: 1, Cwd: h.t.TempDir(), CronExpr: "* * * * *",
+	}, time.Now().Add(-10*time.Minute))
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	return sc
+}
+
+// stubLaunch replaces the runner-launch seam, returning its call count.
+func stubLaunch(t *testing.T, fail error) *int {
+	t.Helper()
+	old := launchRunner
+	t.Cleanup(func() { launchRunner = old })
+	n := new(int)
+	launchRunner = func(context.Context, runner.LaunchStore, int64, string) (string, error) {
+		*n++
+		return "tend-wf-x", fail
+	}
+	return n
+}
+
+func TestScheduleTickStartsDueOnce(t *testing.T) {
+	h := newScheduleHarness(t)
+	h.seedDueSchedule()
+	n := stubLaunch(t, nil)
+
+	out, errOut, err := h.run("tick")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != "started run 1 for schedule \"due1\"\n" || errOut != "" || *n != 1 {
+		t.Errorf("tick out = %q, err = %q, launches = %d", out, errOut, *n)
+	}
+	out, errOut, err = h.run("tick")
+	if err != nil || out != "" || errOut != "" || *n != 1 {
+		t.Errorf("second tick out = %q, err = %q, %v, launches = %d", out, errOut, err, *n)
+	}
+}
+
+func TestScheduleTickLaunchFailureFailsRun(t *testing.T) {
+	h := newScheduleHarness(t)
+	h.seedDueSchedule()
+	stubLaunch(t, errors.New("no tmux today"))
+
+	out, errOut, err := h.run("tick")
+	if err != nil {
+		t.Fatalf("tick must exit 0 on a failed schedule: %v", err)
+	}
+	if out != "" || !strings.Contains(errOut, `failed "due1": no tmux today`) {
+		t.Errorf("out = %q, err = %q", out, errOut)
+	}
+	run, err := h.s.GetRun(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.State != workflow.RunFailed || !strings.Contains(run.Error, "no tmux today") {
+		t.Errorf("run = %s %q", run.State, run.Error)
+	}
+}
+
+func TestScheduleRunNow(t *testing.T) {
+	h := newScheduleHarness(t)
+	h.seedDueSchedule()
+	n := stubLaunch(t, nil)
+	if _, _, err := h.run("pause", "due1"); err != nil {
+		t.Fatal(err)
+	}
+
+	out, _, err := h.run("run-now", "due1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "started run 1: W on #1") || !strings.Contains(out, "tend workflow status 1") || *n != 1 {
+		t.Errorf("out = %q, launches = %d", out, *n)
+	}
+
+	_, _, err = h.run("run-now", "due1")
+	if !errors.Is(err, workflow.ErrScheduleBusy) || *n != 1 {
+		t.Errorf("second run-now err = %v, launches = %d", err, *n)
+	}
+}
+
+func TestScheduleRunNowLaunchFailure(t *testing.T) {
+	h := newScheduleHarness(t)
+	h.seedDueSchedule()
+	stubLaunch(t, errors.New("boom"))
+
+	_, _, err := h.run("run-now", "due1")
+	if err == nil || !strings.Contains(err.Error(), "run 1 failed to start: boom") {
+		t.Fatalf("err = %v", err)
+	}
+	if run, _ := h.s.GetRun(context.Background(), 1); run.State != workflow.RunFailed {
+		t.Errorf("run state = %s", run.State)
 	}
 }
