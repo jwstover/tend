@@ -26,10 +26,16 @@ func TestCommandArgv(t *testing.T) {
 	tests := []struct {
 		name         string
 		haveNotifier bool
+		url, act     string
 		want         []string
 	}{
-		{"terminal-notifier", true, []string{"terminal-notifier", "-title", title, "-message", body, "-group", "tend"}},
-		{"osascript", false, []string{"osascript",
+		{"terminal-notifier with url", true, "https://example.com/pr/1", "ignored.app",
+			[]string{"terminal-notifier", "-title", title, "-message", body, "-group", "tend", "-open", "https://example.com/pr/1"}},
+		{"terminal-notifier no url", true, "", "",
+			[]string{"terminal-notifier", "-title", title, "-message", body, "-group", "tend", "-activate", DefaultActivate}},
+		{"terminal-notifier configured activate", true, "", "com.apple.Terminal",
+			[]string{"terminal-notifier", "-title", title, "-message", body, "-group", "tend", "-activate", "com.apple.Terminal"}},
+		{"osascript ignores url", false, "https://example.com/pr/1", "com.apple.Terminal", []string{"osascript",
 			"-e", "on run argv",
 			"-e", "display notification (item 2 of argv) with title (item 1 of argv)",
 			"-e", "end run", title, body}},
@@ -37,7 +43,7 @@ func TestCommandArgv(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			stub(t, "darwin", tt.haveNotifier)
-			cmd, err := command(context.Background(), title, body)
+			cmd, err := command(context.Background(), Message{title, body, tt.url, tt.act})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -51,7 +57,7 @@ func TestCommandArgv(t *testing.T) {
 func TestSendUnsupportedOffDarwin(t *testing.T) {
 	stub(t, "linux", true)
 	run = func(*exec.Cmd) error { t.Error("ran a command off darwin"); return nil }
-	if err := Send(context.Background(), "t", "b"); !errors.Is(err, ErrUnsupported) {
+	if err := Send(context.Background(), Message{Title: "t", Body: "b"}); !errors.Is(err, ErrUnsupported) {
 		t.Errorf("err = %v, want ErrUnsupported", err)
 	}
 }
@@ -61,7 +67,7 @@ func TestSendRunsCommandAndReturnsItsError(t *testing.T) {
 	boom := errors.New("boom")
 	var got *exec.Cmd
 	run = func(c *exec.Cmd) error { got = c; return boom }
-	if err := Send(context.Background(), "t", "b"); !errors.Is(err, boom) {
+	if err := Send(context.Background(), Message{Title: "t", Body: "b"}); !errors.Is(err, boom) {
 		t.Errorf("err = %v, want boom", err)
 	}
 	if got == nil || got.Args[0] != "osascript" {

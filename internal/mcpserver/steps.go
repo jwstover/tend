@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"unicode/utf8"
 
@@ -81,7 +82,7 @@ func registerStepTools(srv *mcp.Server, store Store, stepRunID int64) {
 		return fetchStep(ctx, store, stepRunID)
 	})
 
-	registerNotifyTool(srv)
+	registerNotifyTool(srv, store)
 }
 
 // notifyOut reports whether a notification went out. A failed send is a
@@ -104,15 +105,18 @@ func truncateRunes(s string, n int) string {
 	return string([]rune(s)[:n])
 }
 
-func registerNotifyTool(srv *mcp.Server) {
+func registerNotifyTool(srv *mcp.Server, store Store) {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name: "notify",
 		Description: "Post a desktop notification to the user. Use it only when there is something " +
 			"the user should look at now (a finding), not for routine \"nothing found\" runs. " +
+			"With a url, clicking the notification opens it (pass the PR/MR link when you just shipped one); " +
+			"without one, a click brings the user's terminal forward. " +
 			"A failed delivery is reported in the result, never as an error.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in struct {
 		Title string `json:"title" jsonschema:"short headline for the notification"`
 		Body  string `json:"body,omitempty" jsonschema:"one or two lines of detail"`
+		URL   string `json:"url,omitempty" jsonschema:"http(s) link opened when the notification is clicked"`
 	}) (*mcp.CallToolResult, notifyOut, error) {
 		title := strings.TrimSpace(in.Title)
 		if title == "" {
@@ -120,10 +124,19 @@ func registerNotifyTool(srv *mcp.Server) {
 		}
 		title = truncateRunes(title, notifyTitleMax)
 		body := truncateRunes(strings.TrimSpace(in.Body), notifyBodyMax)
+		link := strings.TrimSpace(in.URL)
+		if link != "" {
+			u, err := url.Parse(link)
+			if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+				return nil, notifyOut{}, errors.New("url must be an http(s) URL")
+			}
+		}
 		if notifier == nil {
 			return nil, notifyOut{Reason: "notifications are not available in this session"}, nil
 		}
-		if err := notifier(ctx, title, body); err != nil {
+		// A failed read degrades to "": the notifier falls back to its default.
+		activate, _ := store.NotifyActivateBundleID(ctx)
+		if err := notifier(ctx, Notification{Title: title, Body: body, URL: link, Activate: activate}); err != nil {
 			return nil, notifyOut{Reason: err.Error()}, nil
 		}
 		return nil, notifyOut{Delivered: true}, nil

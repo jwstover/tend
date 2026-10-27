@@ -37,7 +37,9 @@ func newMcpCmd(open func(ctx context.Context) (mcpserver.Store, error)) *cobra.C
 				return err
 			}
 			defer s.Close()
-			mcpserver.SetNotifier(notify.Send)
+			mcpserver.SetNotifier(func(ctx context.Context, n mcpserver.Notification) error {
+				return notify.Send(ctx, notify.Message{Title: n.Title, Body: n.Body, URL: n.URL, Activate: n.Activate})
+			})
 			return mcpserver.New(s, taskID, stepRunID).Run(cmd.Context())
 		},
 	}

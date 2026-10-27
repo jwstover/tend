@@ -35,6 +35,8 @@ type fakeStore struct {
 	runs      map[int64]workflow.Run
 	schedules map[int64]workflow.Schedule
 
+	notifyActivate string
+
 	// onGetStep, when set, runs after GetStep has taken its copy and
 	// before it returns, so a test can stand in for another writer
 	// landing between a tool's read and its write.
@@ -59,6 +61,10 @@ func newFakeStore(seed ...task.Task) *fakeStore {
 		}
 	}
 	return s
+}
+
+func (s *fakeStore) NotifyActivateBundleID(context.Context) (string, error) {
+	return s.notifyActivate, nil
 }
 
 func (s *fakeStore) GetTask(_ context.Context, id int64) (task.Task, error) {

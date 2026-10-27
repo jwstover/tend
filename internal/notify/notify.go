@@ -24,11 +24,23 @@ var (
 	run      = func(c *exec.Cmd) error { return c.Run() }
 )
 
-// Send posts a notification with the given title and body.
-func Send(ctx context.Context, title, body string) error {
+// DefaultActivate is the bundle id a click brings forward when the message
+// has no URL and no terminal is configured: the user's terminal, Ghostty.
+const DefaultActivate = "com.mitchellh.ghostty"
+
+// Message is one notification. URL and Activate are optional and only
+// honoured by terminal-notifier: a click opens URL when it is set, and
+// otherwise activates the app with bundle id Activate (DefaultActivate
+// when empty).
+type Message struct {
+	Title, Body, URL, Activate string
+}
+
+// Send posts a notification.
+func Send(ctx context.Context, m Message) error {
 	ctx, cancel := context.WithTimeout(ctx, sendTimeout)
 	defer cancel()
-	cmd, err := command(ctx, title, body)
+	cmd, err := command(ctx, m)
 	if err != nil {
 		return err
 	}
@@ -38,17 +50,28 @@ func Send(ctx context.Context, title, body string) error {
 // command builds the process that posts the notification. Title and body
 // travel as argv, never as part of the AppleScript source, so quotes or
 // backslashes in them cannot break out of it.
-func command(ctx context.Context, title, body string) (*exec.Cmd, error) {
+func command(ctx context.Context, m Message) (*exec.Cmd, error) {
 	if goos != "darwin" {
 		return nil, ErrUnsupported
 	}
 	if _, err := lookPath("terminal-notifier"); err == nil {
-		return exec.CommandContext(ctx, "terminal-notifier",
-			"-title", title, "-message", body, "-group", "tend"), nil
+		args := []string{"-title", m.Title, "-message", m.Body, "-group", "tend"}
+		if m.URL != "" {
+			args = append(args, "-open", m.URL)
+		} else {
+			activate := m.Activate
+			if activate == "" {
+				activate = DefaultActivate
+			}
+			args = append(args, "-activate", activate)
+		}
+		return exec.CommandContext(ctx, "terminal-notifier", args...), nil
 	}
+	// osascript's display notification cannot set a click action, so the
+	// URL and the activate id are ignored here.
 	return exec.CommandContext(ctx, "osascript",
 		"-e", "on run argv",
 		"-e", "display notification (item 2 of argv) with title (item 1 of argv)",
 		"-e", "end run",
-		title, body), nil
+		m.Title, m.Body), nil
 }
