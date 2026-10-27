@@ -77,7 +77,7 @@ func (q *Queries) ListAllDependencies(ctx context.Context) ([]ListAllDependencie
 const listBlockerCounts = `-- name: ListBlockerCounts :many
 SELECT d.task_id,
        COUNT(*)                                                             AS total,
-       CAST(SUM(CASE WHEN b.state <> 'done' THEN 1 ELSE 0 END) AS INTEGER) AS open
+       CAST(SUM(CASE WHEN b.state NOT IN ('done', 'canceled') THEN 1 ELSE 0 END) AS INTEGER) AS open
 FROM task_dependencies d
 JOIN tasks b ON b.id = d.depends_on_id
 GROUP BY d.task_id
@@ -90,7 +90,7 @@ type ListBlockerCountsRow struct {
 }
 
 // Batch load for the list view: per task, how many tasks it waits on and
-// how many of those are still open (not done). Same idiom as
+// how many of those are still open (not done or canceled). Same idiom as
 // ListChildCounts -- one query for every visible row, not N+1.
 func (q *Queries) ListBlockerCounts(ctx context.Context) ([]ListBlockerCountsRow, error) {
 	rows, err := q.db.QueryContext(ctx, listBlockerCounts)
@@ -208,12 +208,12 @@ func (q *Queries) ListBlocking(ctx context.Context, dependsOnID int64) ([]Task, 
 const listOpenTasks = `-- name: ListOpenTasks :many
 SELECT id, title, body_md, state, parent_id, priority, due, snooze_until, created_at, updated_at, completed_at, project_id
 FROM tasks
-WHERE state <> 'done'
+WHERE state NOT IN ('done', 'canceled')
 ORDER BY project_id, id
 `
 
-// Every task not yet done, in every project and at any depth: the
-// candidate list for the TUI's dependency picker. A done task cannot
+// Every task not yet closed (done or canceled), in every project and at any depth: the
+// candidate list for the TUI's dependency picker. A closed task cannot
 // usefully block anything, so it is left out; someday and snoozed tasks
 // stay in, since "wait for that someday thing" is a real dependency.
 func (q *Queries) ListOpenTasks(ctx context.Context) ([]Task, error) {

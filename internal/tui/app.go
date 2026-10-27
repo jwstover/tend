@@ -1687,9 +1687,9 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	case key.Matches(msg, a.keys.ToggleCompleted) && a.mode == modeList:
 		a.showCompleted = !a.showCompleted
-		text := "completed and someday tasks hidden"
+		text := "completed, canceled and someday tasks hidden"
 		if a.showCompleted {
-			text = "completed and someday tasks shown"
+			text = "completed, canceled and someday tasks shown"
 		}
 		a.status = flash{text: text}
 		// Completed tasks are a different query, so reload rather than
@@ -1719,7 +1719,7 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		a.helpScroll = 0
 		return a, nil
 
-	case key.Matches(msg, a.keys.ChangeState):
+	case key.Matches(msg, a.keys.ChangeState) && a.mode != modeTriage:
 		if _, ok := a.selected(); ok {
 			a.statePending = true
 			a.resize()
@@ -1855,6 +1855,8 @@ func (a app) stateForKey(msg tea.KeyPressMsg) (task.State, bool) {
 		return task.StateDone, true
 	case key.Matches(msg, a.keys.SetSomeday):
 		return task.StateSomeday, true
+	case key.Matches(msg, a.keys.SetCanceled):
+		return task.StateCanceled, true
 	}
 	return "", false
 }
@@ -1872,6 +1874,7 @@ func (a app) statePanel() string {
 		{a.keys.SetBlocked, a.styles.State[task.StateBlocked]},
 		{a.keys.SetDone, a.styles.State[task.StateDone]},
 		{a.keys.SetSomeday, a.styles.State[task.StateSomeday]},
+		{a.keys.SetCanceled, a.styles.State[task.StateCanceled]},
 		{a.keys.Cancel, a.styles.Dimmed},
 	}
 	entries := make([]panelEntry, 0, len(bindings))

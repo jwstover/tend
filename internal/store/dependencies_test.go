@@ -290,3 +290,29 @@ func TestListOpenTasksSpansProjectsAndSkipsDone(t *testing.T) {
 		t.Errorf("ListOpenTasks = %v, want %v (by project then id, done left out)", got, want)
 	}
 }
+
+// A canceled blocker no longer holds anything up, and the dependency
+// picker leaves canceled tasks out like done ones.
+func TestCanceledBlockerUnblocksAndLeavesOpenList(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	a, _ := s.AddTask(ctx, "a")
+	b, _ := s.AddTask(ctx, "b")
+	if err := s.AddDependency(ctx, a.ID, b.ID); err != nil {
+		t.Fatalf("AddDependency: %v", err)
+	}
+	if err := s.SetState(ctx, b.ID, task.StateCanceled); err != nil {
+		t.Fatalf("SetState: %v", err)
+	}
+	counts, _ := s.BlockerCounts(ctx)
+	if got := counts[a.ID]; got != (task.BlockerCount{Open: 0, Total: 1}) || got.Blocked() {
+		t.Errorf("counts[a] = %+v after the blocker was canceled, want 0 open of 1", got)
+	}
+	open, err := s.ListOpenTasks(ctx)
+	if err != nil {
+		t.Fatalf("ListOpenTasks: %v", err)
+	}
+	if got, want := ids(open), []int64{a.ID}; !sameIDs(got, want) {
+		t.Errorf("ListOpenTasks = %v, want %v (canceled left out)", got, want)
+	}
+}

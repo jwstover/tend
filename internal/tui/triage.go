@@ -146,6 +146,7 @@ func (a app) triageCardLines(width int) []string {
 		{"v", "→ in review", s.State[task.StateReview]}, {"T", "set tags", s.Accent},
 		{"b", "→ blocked", s.State[task.StateBlocked]}, {"u", "set due", s.Accent},
 		{"x", "→ done", s.State[task.StateDone]}, {"p", "set priority", s.Accent},
+		{"c", "→ canceled", s.State[task.StateCanceled]},
 		{"⏎", "skip for now", s.Muted},
 	}
 	colW := width / 2

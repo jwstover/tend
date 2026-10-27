@@ -2353,3 +2353,28 @@ func TestQuickAddJiraURLFetchesTitle(t *testing.T) {
 		t.Errorf("view missing expanded task:\n%s", ansi.Strip(m.View().Content))
 	}
 }
+
+func TestCanceledKeyInListChordAndTriage(t *testing.T) {
+	ctx := context.Background()
+	m, s := newTestApp(t)
+	listed, err := s.AddTask(ctx, "drop from list")
+	if err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	m = drive(t, m, refreshMsg{})
+	m = drive(t, m, keyPress('c'))
+	m = drive(t, m, keyPress('c'))
+	waitForTask(t, s, listed.ID, "state canceled after cc", func(got task.Task) bool {
+		return got.State == task.StateCanceled
+	})
+
+	triaged, err := s.AddTask(ctx, "drop from triage")
+	if err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	m = drive(t, m, keyPress('i'))
+	_ = drive(t, m, keyPress('c'))
+	waitForTask(t, s, triaged.ID, "state canceled after triage c", func(got task.Task) bool {
+		return got.State == task.StateCanceled
+	})
+}

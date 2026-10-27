@@ -397,7 +397,7 @@ WHERE (s.is_terminal = 0 OR t.state = 'done' OR s.hidden_by_default = 1)
 ORDER BY s.sort_order, t.priority IS NULL, t.priority, t.id
 `
 
-// Like ListLiveTasks but also surfaces completed (done) tasks and
+// Like ListLiveTasks but also surfaces completed (done) tasks, canceled tasks and
 // hidden-by-default states (someday), for when the list view has the
 // completed section toggled on. Snoozed tasks stay hidden either way.
 func (q *Queries) ListLiveWithCompletedTasks(ctx context.Context, projectID interface{}) ([]Task, error) {
@@ -558,7 +558,7 @@ const setTaskState = `-- name: SetTaskState :exec
 
 UPDATE tasks
 SET state        = ?1,
-    completed_at = CASE WHEN ?1 = 'done' THEN datetime('now') ELSE NULL END,
+    completed_at = CASE WHEN ?1 = 'done' OR ?1 = 'canceled' THEN datetime('now') ELSE NULL END,
     updated_at   = datetime('now')
 WHERE id = ?2
 `

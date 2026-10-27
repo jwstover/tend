@@ -107,6 +107,7 @@ var stateOrder = []task.State{
 	task.StateInbox,
 	task.StateSomeday,
 	task.StateDone,
+	task.StateCanceled,
 }
 
 // sessionOrder is the display order of agent-status sections: the ones
@@ -591,7 +592,7 @@ func (d taskDelegate) renderTaskRow(r rowSpec, selected bool, width int) string 
 // read.
 func (d taskDelegate) titleStyle(t task.Task, depth int, selected bool) lipgloss.Style {
 	s := d.styles
-	done := t.State == task.StateDone
+	done := t.State.Closed()
 	if depth == 0 {
 		if done {
 			return s.TitleDone

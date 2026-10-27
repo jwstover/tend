@@ -105,3 +105,14 @@ func TestLastWorkdayStart(t *testing.T) {
 		}
 	}
 }
+
+// Canceled work was not done: it never reaches the standup's completed list.
+func TestSummarizeCanceledIsNotCompleted(t *testing.T) {
+	sum := Summarize([]Event{
+		stateEvent(1, "dropped", "todo", "doing"),
+		stateEvent(1, "dropped", "doing", "canceled"),
+	})
+	if len(sum.Completed) != 0 {
+		t.Errorf("Completed = %v, want none", sum.Completed)
+	}
+}

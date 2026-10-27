@@ -255,11 +255,11 @@ func registerTools(srv *mcp.Server, store Store, boundTaskID int64) {
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name: "set_task_state",
-		Description: "Move a task to a new workflow state: todo, doing, review, blocked, done, or " +
+		Description: "Move a task to a new workflow state: todo, doing, review, blocked, canceled, or " +
 			"someday. Use review once the work is handed off and waiting on someone else " +
-			"(a PR out for review). Defaults to the bound task." + slimNote,
+			"(a PR out for review). Use canceled for work closed without being done; it will not be picked up again. Defaults to the bound task." + slimNote,
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in struct {
-		State  string `json:"state" jsonschema:"one of: todo, doing, review, blocked, done, someday"`
+		State  string `json:"state" jsonschema:"one of: todo, doing, review, blocked, done, canceled, someday"`
 		TaskID *int64 `json:"task_id,omitempty" jsonschema:"task id to update; defaults to the session's bound task"`
 	}) (*mcp.CallToolResult, taskOut, error) {
 		id := resolveID(in.TaskID, boundTaskID)

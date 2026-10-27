@@ -75,7 +75,7 @@ type keyMap struct {
 	PageUp     key.Binding
 	PageDown   key.Binding
 
-	ToggleCompleted key.Binding // C shows/hides the completed (done) and someday sections
+	ToggleCompleted key.Binding // C shows/hides the completed (done), canceled and someday sections
 
 	// List grouping: `g` opens the chord, the second key picks the grouping.
 	// `gg` keeps its vim meaning (top of the list) as the chord's fourth key.
@@ -89,14 +89,15 @@ type keyMap struct {
 
 	// State mutations: single keys in triage mode, the second key of the
 	// `c` chord everywhere else.
-	SetTodo    key.Binding
-	SetDoing   key.Binding
-	SetReview  key.Binding // v: `r` is taken by sessions in the list, and the triage grid shares these keys
-	SetBlocked key.Binding
-	SetDone    key.Binding
-	SetSomeday key.Binding
-	SetTags    key.Binding
-	SetDue     key.Binding
+	SetTodo     key.Binding
+	SetDoing    key.Binding
+	SetReview   key.Binding // v: `r` is taken by sessions in the list, and the triage grid shares these keys
+	SetBlocked  key.Binding
+	SetDone     key.Binding
+	SetSomeday  key.Binding
+	SetCanceled key.Binding
+	SetTags     key.Binding
+	SetDue      key.Binding
 
 	// Priority mutations: the second key of the `p` chord.
 	PriorityA    key.Binding
@@ -193,14 +194,15 @@ func defaultKeyMap() keyMap {
 
 		ChangePriority: key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "priority")),
 
-		SetTodo:    key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "todo")),
-		SetDoing:   key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "doing")),
-		SetReview:  key.NewBinding(key.WithKeys("v"), key.WithHelp("v", "in review")),
-		SetBlocked: key.NewBinding(key.WithKeys("b"), key.WithHelp("b", "blocked")),
-		SetDone:    key.NewBinding(key.WithKeys("x"), key.WithHelp("x", "done")),
-		SetSomeday: key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "someday")),
-		SetTags:    key.NewBinding(key.WithKeys("T"), key.WithHelp("T", "tags")),
-		SetDue:     key.NewBinding(key.WithKeys("u"), key.WithHelp("u", "due")),
+		SetTodo:     key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "todo")),
+		SetDoing:    key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "doing")),
+		SetReview:   key.NewBinding(key.WithKeys("v"), key.WithHelp("v", "in review")),
+		SetBlocked:  key.NewBinding(key.WithKeys("b"), key.WithHelp("b", "blocked")),
+		SetDone:     key.NewBinding(key.WithKeys("x"), key.WithHelp("x", "done")),
+		SetSomeday:  key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "someday")),
+		SetCanceled: key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "canceled")),
+		SetTags:     key.NewBinding(key.WithKeys("T"), key.WithHelp("T", "tags")),
+		SetDue:      key.NewBinding(key.WithKeys("u"), key.WithHelp("u", "due")),
 
 		PriorityA:    key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "A (highest)")),
 		PriorityB:    key.NewBinding(key.WithKeys("b"), key.WithHelp("b", "B")),

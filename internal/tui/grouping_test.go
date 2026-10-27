@@ -322,3 +322,16 @@ func TestToggleCompletedUnderPriorityGrouping(t *testing.T) {
 		t.Errorf("second C reset the grouping")
 	}
 }
+
+func TestGroupTasksByStateListsCanceledAfterDone(t *testing.T) {
+	tasks := []task.Task{
+		{ID: 1, Title: "dropped", State: task.StateCanceled},
+		{ID: 2, Title: "finished", State: task.StateDone},
+		{ID: 3, Title: "queued", State: task.StateTodo},
+	}
+	got := sectionTitles(groupTasks(groupByState, tasks, nil, DefaultStyles()))
+	want := []string{"todo: queued", "done: finished", "canceled: dropped"}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("sections:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}

@@ -39,21 +39,21 @@ ORDER BY task_id, depends_on_id;
 
 -- name: ListBlockerCounts :many
 -- Batch load for the list view: per task, how many tasks it waits on and
--- how many of those are still open (not done). Same idiom as
+-- how many of those are still open (not done or canceled). Same idiom as
 -- ListChildCounts -- one query for every visible row, not N+1.
 SELECT d.task_id,
        COUNT(*)                                                             AS total,
-       CAST(SUM(CASE WHEN b.state <> 'done' THEN 1 ELSE 0 END) AS INTEGER) AS open
+       CAST(SUM(CASE WHEN b.state NOT IN ('done', 'canceled') THEN 1 ELSE 0 END) AS INTEGER) AS open
 FROM task_dependencies d
 JOIN tasks b ON b.id = d.depends_on_id
 GROUP BY d.task_id;
 
 -- name: ListOpenTasks :many
--- Every task not yet done, in every project and at any depth: the
--- candidate list for the TUI's dependency picker. A done task cannot
+-- Every task not yet closed (done or canceled), in every project and at any depth: the
+-- candidate list for the TUI's dependency picker. A closed task cannot
 -- usefully block anything, so it is left out; someday and snoozed tasks
 -- stay in, since "wait for that someday thing" is a real dependency.
 SELECT *
 FROM tasks
-WHERE state <> 'done'
+WHERE state NOT IN ('done', 'canceled')
 ORDER BY project_id, id;

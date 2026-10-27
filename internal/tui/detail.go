@@ -115,7 +115,7 @@ func renderDetail(t task.Task, children, blockers, blocking []task.Task, log []t
 		b.WriteString("\n" + "  " + styles.SubHeader.Render("SUB-TASKS") + "  " +
 			count.Render(fmt.Sprintf("%d/%d", done, len(children))) + "\n")
 		for _, c := range children {
-			if c.State == task.StateDone {
+			if c.State.Closed() {
 				b.WriteString("  " + styles.CheckDone.Render(g.BoxChecked) + " " +
 					styles.SubDoneText.Render(c.Title) + "\n")
 			} else {
@@ -217,7 +217,7 @@ func renderDetail(t task.Task, children, blockers, blocking []task.Task, log []t
 func dependencyRowLine(styles Styles, t task.Task) string {
 	g := styles.Glyphs
 	id := styles.DetailFaint.Render(fmt.Sprintf("#%d", t.ID))
-	if t.State == task.StateDone {
+	if t.State.Closed() {
 		return styles.CheckDone.Render(g.BoxChecked) + " " +
 			styles.SubDoneText.Render(t.Title) + "  " + id
 	}
