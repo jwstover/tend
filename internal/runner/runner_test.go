@@ -430,7 +430,9 @@ func TestRunFollowsFinishStepOutcome(t *testing.T) {
 
 // A reject edge loops back with the reviewer's deliverable as Feedback,
 // the original Input kept, and stops at the edge's max_iterations with a
-// message that says so.
+// message that says so. The bound counts trips over the reject edge: the
+// first implement ran by position and does not spend it, so max 2 allows
+// two rejects and refuses the third.
 func TestRunLoopsBackWithFeedbackUntilMaxIterations(t *testing.T) {
 	f := newFixture(t)
 	f.step("implement", workflow.StepAgent)
@@ -459,8 +461,8 @@ func TestRunLoopsBackWithFeedbackUntilMaxIterations(t *testing.T) {
 		t.Errorf("run = %+v, want failed with the max-iterations message", got)
 	}
 	srs := f.stepRuns(run.ID)
-	if len(srs) != 4 {
-		t.Fatalf("step runs = %d, want implement, review, implement, review", len(srs))
+	if len(srs) != 6 {
+		t.Fatalf("step runs = %d, want implement, review, implement, review, implement, review", len(srs))
 	}
 	second := srs[2]
 	if second.StepID != f.steps["implement"].ID || second.Iteration != 2 || second.Input != "" {
@@ -477,11 +479,11 @@ func TestRunLoopsBackWithFeedbackUntilMaxIterations(t *testing.T) {
 	}
 }
 
-// max_iterations 1 means the target may run once in the whole run: a
-// loop-back edge bounded to 1 refuses the very first return trip, and
-// the count is of the step's prior runs however they were reached (the
-// first implement ran by position, not over the reject edge).
-func TestRunMaxIterationsOfOneRefusesTheFirstLoopBack(t *testing.T) {
+// max_iterations 1 means the edge may be followed once in the whole run:
+// a loop-back bounded to 1 allows the first return trip and refuses the
+// second. Only trips over the edge count -- the first implement ran by
+// position, not over the reject edge, so it does not spend the bound.
+func TestRunMaxIterationsOfOneAllowsOneLoopBack(t *testing.T) {
 	f := newFixture(t)
 	f.step("implement", workflow.StepAgent)
 	f.step("review", workflow.StepAgent)
@@ -505,16 +507,79 @@ func TestRunMaxIterationsOfOneRefusesTheFirstLoopBack(t *testing.T) {
 	got := f.getRun(run.ID)
 	if got.State != workflow.RunFailed ||
 		!strings.Contains(got.Error, `step "implement" would run for the 2nd time via "reject"; the edge allows 1`) {
-		t.Errorf("run = %+v, want failed with the max-iterations message naming the 2nd run", got)
+		t.Errorf("run = %+v, want failed with the max-iterations message naming the 2nd trip over reject", got)
 	}
-	if srs := f.stepRuns(run.ID); len(srs) != 2 {
-		t.Errorf("step runs = %d, want exactly implement and review (no second implement)", len(srs))
+	if srs := f.stepRuns(run.ID); len(srs) != 4 {
+		t.Errorf("step runs = %d, want implement, review, implement, review (no third implement)", len(srs))
 	}
 }
 
-// A bounded edge to the step itself is a retry loop: the step runs up to
-// the bound, each pass seeing the previous hand-off as Feedback, and the
-// run fails when the bound would be exceeded.
+// The bound is per edge, not per target step. A step the main loop keeps
+// returning to over an unbounded edge still has its rare `retry`
+// self-loop's small bound intact: the runner counts trips over the retry
+// edge, not visits to the step (tend task #213, run 62: dispatch had run
+// nine times over `shipped` and `continue`, and its first ever `retry`
+// was refused against a bound of 5).
+func TestRunMaxIterationsCountsThisEdgeOnly(t *testing.T) {
+	f := newFixture(t)
+	f.step("dispatch", workflow.StepAgent)
+	f.step("ship", workflow.StepAgent)
+	f.edge("dispatch", "wave ready", "ship", nil)
+	f.edge("dispatch", "all done", "ship", nil) // never taken; keeps outcomes routable
+	one := int64(1)
+	f.edge("dispatch", "retry", "dispatch", &one)
+	f.edge("ship", "shipped", "dispatch", nil)
+	// Three waves ship, then dispatch retries once (allowed), builds a
+	// wave, ships it, and retries again (the 2nd trip over retry: refused).
+	outcomes := map[int]string{4: "retry", 8: "retry"}
+	dispatchPass := 0
+	f.exec.handle = func(_ context.Context, req StepExec) (agent.HeadlessResult, error) {
+		outcome := "shipped"
+		if req.StepRun.StepID == f.steps["dispatch"].ID {
+			dispatchPass++
+			outcome = "wave ready"
+			if o, ok := outcomes[dispatchPass]; ok {
+				outcome = o
+			}
+		}
+		if err := f.s.FinishStepRun(f.ctx, req.StepRun.ID, outcome, outcome); err != nil {
+			t.Errorf("FinishStepRun: %v", err)
+		}
+		return success(outcome), nil
+	}
+	run := f.run()
+
+	err := f.runner().Run(f.ctx, run.ID, false)
+	if !errors.Is(err, ErrRunFailed) {
+		t.Fatalf("Run = %v, want ErrRunFailed\n%s", err, f.log)
+	}
+	got := f.getRun(run.ID)
+	if !strings.Contains(got.Error, `step "dispatch" would run for the 2nd time via "retry"; the edge allows 1`) {
+		t.Errorf("run error = %q, want the 2nd-trip-over-retry message, not one counting every dispatch run", got.Error)
+	}
+	srs := f.stepRuns(run.ID)
+	var dispatches int
+	for _, sr := range srs {
+		if sr.StepID == f.steps["dispatch"].ID {
+			dispatches++
+		}
+	}
+	if dispatches != 8 || len(srs) != 14 || srs[len(srs)-1].Outcome != "retry" {
+		t.Fatalf("dispatch ran %d times over %d step runs, last outcome %q; want 8 dispatch runs in 14 (3 waves, an allowed retry, 3 waves, a refused retry)\n%+v",
+			dispatches, len(srs), srs[len(srs)-1].Outcome, srs)
+	}
+	// The dispatch entered over the allowed retry is the fifth run of the
+	// step, and a loop-back: it keeps the original input and gets the
+	// retry hand-off as feedback.
+	if after := srs[7]; after.Iteration != 5 || after.Feedback != "retry" || after.Input != "" {
+		t.Errorf("the dispatch after the allowed retry = %+v, want iteration 5 with the retry hand-off as feedback and the original input", after)
+	}
+}
+
+// A bounded edge to the step itself is a retry loop: the step retries up
+// to the bound (the first pass, entered by position, is not a retry),
+// each pass seeing the previous hand-off as Feedback, and the run fails
+// when the bound would be exceeded.
 func TestRunSelfLoopStopsAtMaxIterations(t *testing.T) {
 	f := newFixture(t)
 	f.step("implement", workflow.StepAgent)
@@ -537,8 +602,8 @@ func TestRunSelfLoopStopsAtMaxIterations(t *testing.T) {
 		t.Errorf("run error = %q, want the 3rd-time message", got.Error)
 	}
 	srs := f.stepRuns(run.ID)
-	if len(srs) != 2 || srs[0].Iteration != 1 || srs[1].Iteration != 2 {
-		t.Fatalf("step runs = %+v, want two iterations of implement", srs)
+	if len(srs) != 3 || srs[0].Iteration != 1 || srs[1].Iteration != 2 || srs[2].Iteration != 3 {
+		t.Fatalf("step runs = %+v, want three iterations of implement (one by position, two retries)", srs)
 	}
 	if srs[1].Feedback != "attempt 1" || srs[1].Input != "" {
 		t.Errorf("second pass = feedback %q input %q, want the first pass's hand-off as feedback and the original input", srs[1].Feedback, srs[1].Input)

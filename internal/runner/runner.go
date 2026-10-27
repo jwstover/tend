@@ -13,8 +13,8 @@
 //  2. Otherwise pick the next step from the previous step run's outcome
 //     via the workflow's edges, read live -- there is no snapshot. No
 //     edge for the outcome means the run is done.
-//  3. An edge's max_iterations bounds how often its target may run;
-//     exceeding it fails the run with a message saying so.
+//  3. An edge's max_iterations bounds how often the run may follow that
+//     edge; exceeding it fails the run with a message saying so.
 //  4. Agent steps: create the step run, render the prompt with the task,
 //     cwd, Input, Feedback, Iteration and allowed Outcomes, create the
 //     session row, and exec claude headlessly (agent.HeadlessCmd via the
@@ -266,7 +266,12 @@ func (r *Runner) claim(ctx context.Context, runID int64, takeover bool) (workflo
 // the one it already rejected. A loop-back edge (to an earlier step, or
 // the step itself) is the reject-style case: the target keeps the Input
 // it had and gets the hand-off as Feedback instead. Either way
-// max_iterations bounds how often the target runs.
+// max_iterations bounds how often the target is reached over this edge:
+// runs of the target that other edges (or its position as the first
+// step) led to do not count, so a small bound on a rare `retry` route is
+// not spent by the ordinary loop that visits the same step (tend task
+// #213, run 62: a first retry refused because eight earlier visits came
+// over `shipped` and `continue`).
 //
 // A gate is the exception on a forward edge: its deliverable is a human's
 // message about what it reviewed, not a replacement for it (tend task
@@ -310,13 +315,14 @@ func (r *Runner) nextStep(ctx context.Context, run workflow.Run, wf workflow.Wor
 		return nil, "", "", err
 	}
 
-	prior, err := r.priorRuns(ctx, run.ID, next.ID)
+	all, err := r.Store.ListStepRunsForRun(ctx, run.ID)
 	if err != nil {
 		return nil, "", "", err
 	}
-	if edge.MaxIterations != nil && int64(len(prior))+1 > *edge.MaxIterations {
+	prior := runsOf(all, next.ID)
+	if via := edgeTraversals(all, *edge); edge.MaxIterations != nil && int64(via)+1 > *edge.MaxIterations {
 		return nil, "", "", fmt.Errorf("step %q would run for the %s time via %q; the edge allows %d",
-			next.Name, ordinal(len(prior)+1), last.Outcome, *edge.MaxIterations)
+			next.Name, ordinal(via+1), last.Outcome, *edge.MaxIterations)
 	}
 
 	from, err := r.Store.GetStep(ctx, last.StepID)
@@ -799,13 +805,34 @@ func (r *Runner) priorRuns(ctx context.Context, runID, stepID int64) ([]workflow
 	if err != nil {
 		return nil, err
 	}
+	return runsOf(all, stepID), nil
+}
+
+// runsOf filters a run's step runs (oldest first) down to those of stepID.
+func runsOf(all []workflow.StepRun, stepID int64) []workflow.StepRun {
 	var out []workflow.StepRun
 	for _, sr := range all {
 		if sr.StepID == stepID {
 			out = append(out, sr)
 		}
 	}
-	return out, nil
+	return out
+}
+
+// edgeTraversals counts how many of a run's step runs (oldest first) were
+// reached over edge: a run of the target whose predecessor is a run of
+// the source that ended with the edge's outcome. Steps run one at a time,
+// so the step run before a target run is always the one whose outcome
+// routed to it. This is the count max_iterations bounds.
+func edgeTraversals(all []workflow.StepRun, edge workflow.Edge) int {
+	n := 0
+	for i := 1; i < len(all); i++ {
+		prev := all[i-1]
+		if all[i].StepID == edge.ToStepID && prev.StepID == edge.FromStepID && prev.Outcome == edge.Outcome {
+			n++
+		}
+	}
+	return n
 }
 
 func (r *Runner) poll() time.Duration {

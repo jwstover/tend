@@ -242,9 +242,11 @@ func TestRunRetryReevaluatesEdgesWhenNoStepIsUnfinished(t *testing.T) {
 	if err := f.runner().Run(f.ctx, run.ID, true); err != nil {
 		t.Fatalf("Run after retry = %v\n%s", err, f.log)
 	}
+	// Bound 1 allowed one trip over reject before failing, so the retry
+	// adds a third implement and the approving review.
 	srs := f.stepRuns(run.ID)
-	if len(srs) != 4 || srs[2].StepID != f.steps["implement"].ID || srs[2].Iteration != 2 || srs[3].Outcome != "approve" {
-		t.Errorf("step runs = %+v, want implement, review(reject), implement #2, review(approve)", srs)
+	if len(srs) != 6 || srs[4].StepID != f.steps["implement"].ID || srs[4].Iteration != 3 || srs[5].Outcome != "approve" {
+		t.Errorf("step runs = %d, want implement, review(reject), implement #2, review(reject), implement #3, review(approve)", len(srs))
 	}
 	if got := f.getRun(run.ID); got.State != workflow.RunDone {
 		t.Errorf("run = %+v, want done", got)

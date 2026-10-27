@@ -172,9 +172,12 @@ type Step struct {
 
 // Edge routes a step's outcome to the next step. The edges leaving a step
 // define its allowed outcomes; an outcome with no edge ends the run.
-// MaxIterations bounds how many times ToStep may run within one run when
-// reached over this edge, nil meaning unbounded -- the guard on a
-// review-reject loop.
+// MaxIterations bounds how many times one run may follow this edge, nil
+// meaning unbounded -- the guard on a review-reject loop. It counts
+// traversals of this edge only: runs of ToStep reached by position or
+// over another edge do not spend it, so a `retry` self-loop bounded to 5
+// still allows five retries of a step the main loop has visited many
+// times.
 type Edge struct {
 	ID            int64
 	FromStepID    int64

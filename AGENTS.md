@@ -329,7 +329,8 @@ CREATE TABLE workflow_edges (       -- keyed by outcome: the edges leaving a ste
   id, from_step_id, to_step_id       -- with no edge ends the run. One primitive covers handoff (done -> next), review
     REFERENCES workflow_steps ON DELETE CASCADE,   -- verdicts (approve/reject) and loop-back with feedback (reject -> an
   outcome TEXT NOT NULL COLLATE NOCASE,            -- earlier step). Outcomes are normalised (trimmed, lower-cased) by the
-  max_iterations INTEGER,                          -- Store. max_iterations bounds a loop-back; NULL = unbounded.
+  max_iterations INTEGER,                          -- Store. max_iterations bounds how often a run follows THIS edge
+                                                   -- (visits to the target over other edges don't count); NULL = unbounded.
   UNIQUE (from_step_id, outcome)
 );
 CREATE TABLE workflow_runs (        -- one execution of a workflow against a task; cascades with the task (like a session)

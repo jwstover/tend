@@ -96,10 +96,10 @@ func Preview(steps []Step, edges []Edge) []PreviewRow {
 
 // PreviewText is the preview as plain lines, one per step:
 //
-//	1. implement
-//	2. review  [reject -> 1 (max 3)]  [approve -> 3]
-//	3. gate
-//	4. ship  [done -> end]
+//  1. implement
+//  2. review  [reject -> 1 (max 3)]  [approve -> 3]
+//  3. gate
+//  4. ship  [done -> end]
 func PreviewText(steps []Step, edges []Edge) string {
 	var sb strings.Builder
 	for i, row := range Preview(steps, edges) {
