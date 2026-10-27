@@ -37,6 +37,10 @@ type Store interface {
 	SetPriority(ctx context.Context, id int64, p *int64) error
 	SetDue(ctx context.Context, id int64, due *string) error
 
+	// NotifyActivateBundleID is the terminal a notification click brings
+	// forward; "" when unset.
+	NotifyActivateBundleID(ctx context.Context) (string, error)
+
 	// Task dependencies: "task waits on blocker". Blockers and Blocking
 	// are read on every task response so an agent sees what is holding a
 	// task up (and what it holds up) without a second call; the writes

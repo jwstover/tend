@@ -217,13 +217,13 @@ func TestStepToolsWithUnknownStepRunReportIt(t *testing.T) {
 	}
 }
 
-func fakeNotifier(t *testing.T, err error) *[][2]string {
+func fakeNotifier(t *testing.T, err error) *[]Notification {
 	t.Helper()
-	var sent [][2]string
+	var sent []Notification
 	old := notifier
 	t.Cleanup(func() { notifier = old })
-	SetNotifier(func(_ context.Context, title, body string) error {
-		sent = append(sent, [2]string{title, body})
+	SetNotifier(func(_ context.Context, n Notification) error {
+		sent = append(sent, n)
 		return err
 	})
 	return &sent
@@ -238,17 +238,17 @@ func TestNotifyDeliversTrimmedTitleAndBody(t *testing.T) {
 	if !got.Delivered || got.Reason != "" {
 		t.Errorf("notify = %+v, want delivered", got)
 	}
-	if len(*sent) != 1 || (*sent)[0] != [2]string{"Found it", "see PR"} {
+	if len(*sent) != 1 || (*sent)[0] != (Notification{Title: "Found it", Body: "see PR"}) {
 		t.Errorf("sent = %q", *sent)
 	}
 
 	long := strings.Repeat("é", 3000)
 	callTool[notifyOut](t, cs, "notify", map[string]any{"title": long, "body": long})
 	last := (*sent)[len(*sent)-1]
-	if n := len([]rune(last[0])); n != 120 {
+	if n := len([]rune(last.Title)); n != 120 {
 		t.Errorf("title runes = %d, want 120", n)
 	}
-	if n := len([]rune(last[1])); n != 2000 {
+	if n := len([]rune(last.Body)); n != 2000 {
 		t.Errorf("body runes = %d, want 2000", n)
 	}
 }
@@ -287,5 +287,36 @@ func TestNotifyEmptyTitleIsAnError(t *testing.T) {
 	}
 	if len(*sent) != 0 {
 		t.Errorf("sent despite empty title: %q", *sent)
+	}
+}
+
+func TestNotifyPassesURLAndActivateThrough(t *testing.T) {
+	store := newFakeStore(task.Task{ID: 1, Title: "bound"})
+	store.notifyActivate = "com.apple.Terminal"
+	cs := dialStep(t, store, 1, seedStepRun(store))
+	sent := fakeNotifier(t, nil)
+
+	got := callTool[notifyOut](t, cs, "notify", map[string]any{"title": "PR", "url": " https://github.com/o/r/pull/1 "})
+	if !got.Delivered {
+		t.Fatalf("notify = %+v", got)
+	}
+	want := Notification{Title: "PR", URL: "https://github.com/o/r/pull/1", Activate: "com.apple.Terminal"}
+	if len(*sent) != 1 || (*sent)[0] != want {
+		t.Errorf("sent = %+v, want %+v", *sent, want)
+	}
+}
+
+func TestNotifyRefusesBadURL(t *testing.T) {
+	for _, bad := range []string{"ftp://x", "example.com", "https://", "javascript:alert(1)"} {
+		store := newFakeStore(task.Task{ID: 1, Title: "bound"})
+		cs := dialStep(t, store, 1, seedStepRun(store))
+		sent := fakeNotifier(t, nil)
+
+		if msg := callToolErr(t, cs, "notify", map[string]any{"title": "x", "url": bad}); !strings.Contains(msg, "url must be an http(s) URL") {
+			t.Errorf("url %q: error = %q", bad, msg)
+		}
+		if len(*sent) != 0 {
+			t.Errorf("url %q: sent despite bad url: %+v", bad, *sent)
+		}
 	}
 }
