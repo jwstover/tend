@@ -57,6 +57,7 @@ func helpGroups() []helpGroup {
 		}},
 		{"AGENTS", []helpEntry{
 			{"A", "open the agents view"},
+			{"X", "open the schedules view (p pause, r run now)"},
 			{"j / k", "select a session"},
 			{"⏎ / r", "join the selected session"},
 			{"dd", "kill it (headless: cancel run)"},

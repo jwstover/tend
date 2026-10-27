@@ -19,6 +19,7 @@ type keyMap struct {
 	Help           key.Binding
 	EditBody       key.Binding
 	Sessions       key.Binding // launch/resume a Claude Code session on the selected task
+	Schedules      key.Binding // open the Schedules view (schedules.go)
 	Agents         key.Binding // open the agents view: every session in the project (agents.go)
 	RunWorkflow    key.Binding // run a workflow on the selected task (workflowrun.go)
 	ViewRun        key.Binding // watch the selected task's workflow run (runview.go)
@@ -124,6 +125,7 @@ func defaultKeyMap() keyMap {
 		// `A` is archive only while the projects column is focused, which
 		// claims its keys first; from the task list it is free, and it is
 		// the one letter the view's name starts with.
+		Schedules:    key.NewBinding(key.WithKeys("X"), key.WithHelp("X", "schedules")),
 		Agents:       key.NewBinding(key.WithKeys("A"), key.WithHelp("A", "agents")),
 		RunWorkflow:  key.NewBinding(key.WithKeys("w"), key.WithHelp("w", "run workflow")),
 		ViewRun:      key.NewBinding(key.WithKeys("v"), key.WithHelp("v", "watch run")),

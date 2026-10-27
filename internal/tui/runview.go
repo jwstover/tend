@@ -317,8 +317,11 @@ func (rv runView) selected() (workflow.StepRun, bool) {
 // which view to go back to: the agents view, or the list.
 func (a *app) openRunView(run workflow.Run) tea.Cmd {
 	a.rvBack = modeList
-	if a.mode == modeAgents {
+	switch a.mode {
+	case modeAgents:
 		a.rvBack = modeAgents
+	case modeSchedules:
+		a.rvBack = modeSchedules
 	}
 	a.mode = modeRun
 	a.cancelPending = false
@@ -349,6 +352,10 @@ func (a *app) leaveRunView() tea.Cmd {
 	if a.rvBack == modeAgents {
 		a.startAgents()
 		return a.loadAgentSessions()
+	}
+	if a.rvBack == modeSchedules {
+		a.startSchedules()
+		return a.loadSchedules()
 	}
 	a.mode = modeList
 	a.resize()
