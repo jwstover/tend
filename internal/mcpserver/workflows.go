@@ -403,7 +403,7 @@ func registerWorkflowTools(srv *mcp.Server, store Store) {
 		FromStepID    int64  `json:"from_step_id" jsonschema:"the step the outcome leaves"`
 		Outcome       string `json:"outcome" jsonschema:"the outcome name, e.g. done, approve, reject; stored trimmed and lower-cased"`
 		ToStepID      int64  `json:"to_step_id" jsonschema:"the step the outcome leads to"`
-		MaxIterations *int64 `json:"max_iterations,omitempty" jsonschema:"how many times the target step may run within one run when reached this way, at least 1; omit for unbounded"`
+		MaxIterations *int64 `json:"max_iterations,omitempty" jsonschema:"how many times one run may follow this edge, at least 1; runs of the target reached over other edges do not count; omit for unbounded"`
 	}) (*mcp.CallToolResult, workflowGraphOut, error) {
 		e, err := store.SetEdge(ctx, in.FromStepID, in.Outcome, in.ToStepID, in.MaxIterations)
 		if err != nil {
