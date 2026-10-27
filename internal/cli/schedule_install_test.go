@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/jwstover/tend/internal/launchd"
+	"github.com/jwstover/tend/internal/systemd"
 )
 
 func runInstallCmd(t *testing.T, args ...string) (string, error) {
@@ -72,16 +73,60 @@ func TestScheduleInstallRefusesBuildCache(t *testing.T) {
 	}
 }
 
-func TestScheduleInstallNonDarwin(t *testing.T) {
+func TestScheduleInstallUnsupportedOS(t *testing.T) {
 	old := goos
-	goos = "linux"
+	goos = "windows"
 	t.Cleanup(func() { goos = old })
-	if _, err := runInstallCmd(t); err == nil || !strings.Contains(err.Error(), "macOS-only") {
+	if _, err := runInstallCmd(t); err == nil || !strings.Contains(err.Error(), "Linux (systemd)") {
 		t.Fatalf("install err = %v", err)
 	}
 	cmd := newScheduleUninstallCmd()
 	cmd.SetArgs(nil)
-	if err := cmd.ExecuteContext(context.Background()); err == nil || !strings.Contains(err.Error(), "macOS-only") {
+	if err := cmd.ExecuteContext(context.Background()); err == nil || !strings.Contains(err.Error(), "Linux (systemd)") {
 		t.Fatalf("uninstall err = %v", err)
+	}
+}
+
+func TestScheduleInstallLinux(t *testing.T) {
+	oldOS, oldInst, oldUn, oldExe := goos, systemdInstall, systemdUninstall, executablePath
+	goos = "linux"
+	t.Cleanup(func() { goos, systemdInstall, systemdUninstall, executablePath = oldOS, oldInst, oldUn, oldExe })
+	t.Setenv("PATH", "/x/bin:/usr/bin")
+	exe := filepath.Join(t.TempDir(), "tend")
+	if err := os.WriteFile(exe, nil, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	executablePath = func() (string, error) { return exe, nil }
+	systemdInstall = func(context.Context, systemd.Config) (string, error) {
+		t.Fatal("--print must not install")
+		return "", nil
+	}
+
+	out, err := runInstallCmd(t, "--print")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Type=oneshot", "ExecStart=", " schedule tick", "--db ", "Environment=PATH=/x/bin:/usr/bin", "OnCalendar=minutely"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+
+	var got systemd.Config
+	systemdInstall = func(_ context.Context, c systemd.Config) (string, error) { got = c; return "/u/systemd/user", nil }
+	out, err = runInstallCmd(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Executable == "" || !filepath.IsAbs(got.DBPath) || !strings.Contains(out, "/u/systemd/user") {
+		t.Errorf("cfg = %+v, out = %q", got, out)
+	}
+
+	called := false
+	systemdUninstall = func(context.Context) error { called = true; return nil }
+	cmd := newScheduleUninstallCmd()
+	cmd.SetArgs(nil)
+	if err := cmd.ExecuteContext(context.Background()); err != nil || !called {
+		t.Fatalf("uninstall err = %v, called = %v", err, called)
 	}
 }
