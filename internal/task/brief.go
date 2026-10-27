@@ -98,7 +98,11 @@ func SessionSystemPrompt(b SessionBrief) string {
 		fmt.Fprintf(&sb, "- Updated: %s\n", t.UpdatedAt.Local().Format("2006-01-02"))
 	}
 	if t.CompletedAt != nil {
-		fmt.Fprintf(&sb, "- Completed: %s\n", t.CompletedAt.Local().Format("2006-01-02"))
+		label := "Completed"
+		if t.State == StateCanceled {
+			label = "Canceled"
+		}
+		fmt.Fprintf(&sb, "- %s: %s\n", label, t.CompletedAt.Local().Format("2006-01-02"))
 	}
 	switch {
 	case b.Parent != nil:
@@ -135,7 +139,7 @@ func SessionSystemPrompt(b SessionBrief) string {
 		fmt.Fprintf(&sb, "\n### Blocked by (%d open)\n\n", open)
 		for _, d := range b.Blockers {
 			box := "[ ]"
-			if d.State == StateDone {
+			if d.State.Closed() {
 				box = "[x]"
 			}
 			fmt.Fprintf(&sb, "- %s %s\n", box, briefRef(d))

@@ -546,3 +546,45 @@ func TestParentEventMigrationRoundTrips(t *testing.T) {
 		t.Errorf("after the round trip: parent event=%v state trigger=%v, want both", sawParent, sawState)
 	}
 }
+
+const schemaBeforeCanceled = 18
+
+// Migration 00019 seeds the canceled state (tend task #672). Down parks
+// canceled tasks in someday first, or the FK on tasks.state refuses the
+// delete.
+func TestCanceledStateMigrationRoundTrips(t *testing.T) {
+	ctx := context.Background()
+	db := openAt(t, filepath.Join(t.TempDir(), "tend.db"), schemaBeforeCanceled)
+	provider := providerFor(t, db)
+
+	if _, err := provider.UpTo(ctx, schemaBeforeCanceled+1); err != nil {
+		t.Fatalf("migrating up to 00019: %v", err)
+	}
+	var order, terminal, hidden int64
+	if err := db.QueryRowContext(ctx, `SELECT sort_order, is_terminal, hidden_by_default FROM states WHERE name = 'canceled'`).Scan(&order, &terminal, &hidden); err != nil {
+		t.Fatalf("after up, canceled row: %v", err)
+	}
+	if order != 7 || terminal != 1 || hidden != 1 {
+		t.Errorf("canceled = order %d terminal %d hidden %d, want 7/1/1", order, terminal, hidden)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO tasks (title, state) VALUES ('dropped', 'canceled')`); err != nil {
+		t.Fatalf("seeding a canceled task: %v", err)
+	}
+
+	if _, err := provider.DownTo(ctx, schemaBeforeCanceled); err != nil {
+		t.Fatalf("migrating back down to 00018: %v", err)
+	}
+	if _, still := stateOrders(t, db)["canceled"]; still {
+		t.Error("after down, the canceled state row still exists")
+	}
+	var state string
+	if err := db.QueryRowContext(ctx, `SELECT state FROM tasks WHERE title = 'dropped'`).Scan(&state); err != nil {
+		t.Fatalf("after down, reading the task: %v", err)
+	}
+	if state != "someday" {
+		t.Errorf("after down, the canceled task is in %q, want someday", state)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("closing: %v", err)
+	}
+}

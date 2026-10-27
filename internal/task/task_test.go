@@ -33,12 +33,12 @@ func TestNormalizeDate(t *testing.T) {
 }
 
 func TestStateValid(t *testing.T) {
-	for _, s := range []State{StateInbox, StateTodo, StateDoing, StateReview, StateBlocked, StateDone, StateSomeday} {
+	for _, s := range []State{StateInbox, StateTodo, StateDoing, StateReview, StateBlocked, StateDone, StateCanceled, StateSomeday} {
 		if !s.Valid() {
 			t.Errorf("State(%q).Valid() = false, want true", s)
 		}
 	}
-	for _, s := range []State{"", "DONE", "archived", "in review", "in_review"} {
+	for _, s := range []State{"", "DONE", "cancelled", "archived", "in review", "in_review"} {
 		if s.Valid() {
 			t.Errorf("State(%q).Valid() = true, want false", s)
 		}
@@ -49,7 +49,7 @@ func TestStateLabel(t *testing.T) {
 	if got := StateReview.Label(); got != "in review" {
 		t.Errorf("StateReview.Label() = %q, want %q", got, "in review")
 	}
-	for _, s := range []State{StateInbox, StateTodo, StateDoing, StateBlocked, StateDone, StateSomeday} {
+	for _, s := range []State{StateInbox, StateTodo, StateDoing, StateBlocked, StateDone, StateCanceled, StateSomeday} {
 		if got := s.Label(); got != string(s) {
 			t.Errorf("State(%q).Label() = %q, want the name itself", s, got)
 		}
@@ -79,5 +79,29 @@ func TestNormalizeTitle(t *testing.T) {
 				t.Fatalf("NormalizeTitle(%q) = %q, want %q", tt.in, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestStateClosed(t *testing.T) {
+	for _, s := range []State{StateDone, StateCanceled} {
+		if !s.Closed() {
+			t.Errorf("State(%q).Closed() = false, want true", s)
+		}
+	}
+	for _, s := range []State{StateInbox, StateTodo, StateDoing, StateReview, StateBlocked, StateSomeday} {
+		if s.Closed() {
+			t.Errorf("State(%q).Closed() = true, want false", s)
+		}
+	}
+}
+
+func TestOpenBlockersSkipsCanceled(t *testing.T) {
+	open := OpenBlockers([]Task{
+		{ID: 1, State: StateDoing},
+		{ID: 2, State: StateDone},
+		{ID: 3, State: StateCanceled},
+	})
+	if len(open) != 1 || open[0].ID != 1 {
+		t.Errorf("OpenBlockers = %v, want task 1 only", open)
 	}
 }

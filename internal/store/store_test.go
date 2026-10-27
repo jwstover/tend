@@ -1790,3 +1790,55 @@ func TestListLiveWithCompletedIncludesDoneAndSomeday(t *testing.T) {
 		}
 	}
 }
+
+// Canceled is terminal and hidden: out of the live list, in the one that
+// includes completed work, stamped with completed_at, and never counted
+// as a finished child.
+func TestCanceledState(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	parent, _ := s.AddTask(ctx, "parent")
+	kid, err := s.AddChild(ctx, parent.ID, "kid")
+	if err != nil {
+		t.Fatalf("AddChild: %v", err)
+	}
+	if err := s.SetState(ctx, kid.ID, task.StateCanceled); err != nil {
+		t.Fatalf("SetState: %v", err)
+	}
+	live, err := s.ListLive(ctx, nil)
+	if err != nil {
+		t.Fatalf("ListLive: %v", err)
+	}
+	for _, x := range live {
+		if x.ID == kid.ID {
+			t.Error("a canceled task is in the live list")
+		}
+	}
+	all, err := s.ListLiveWithCompleted(ctx, nil)
+	if err != nil {
+		t.Fatalf("ListLiveWithCompleted: %v", err)
+	}
+	found := false
+	for _, x := range all {
+		if x.ID == kid.ID {
+			found = true
+			if x.State != task.StateCanceled || x.CompletedAt == nil {
+				t.Errorf("canceled task = state %q completed_at %v, want canceled with a close time", x.State, x.CompletedAt)
+			}
+		}
+	}
+	if !found {
+		t.Error("a canceled task is missing from the list that includes completed work")
+	}
+	counts, _ := s.ChildCounts(ctx)
+	if got := counts[parent.ID]; got.Done != 0 || got.Total != 1 {
+		t.Errorf("ChildCounts = %+v, want 0 done of 1", got)
+	}
+	if err := s.SetState(ctx, kid.ID, task.StateTodo); err != nil {
+		t.Fatalf("SetState: %v", err)
+	}
+	got, _ := s.GetTask(ctx, kid.ID)
+	if got.CompletedAt != nil {
+		t.Error("reopening a canceled task should clear completed_at")
+	}
+}

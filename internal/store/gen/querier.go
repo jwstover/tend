@@ -118,7 +118,7 @@ type Querier interface {
 	// Same idiom as ListChildCounts.
 	ListAllTaskTags(ctx context.Context) ([]ListAllTaskTagsRow, error)
 	// Batch load for the list view: per task, how many tasks it waits on and
-	// how many of those are still open (not done). Same idiom as
+	// how many of those are still open (not done or canceled). Same idiom as
 	// ListChildCounts -- one query for every visible row, not N+1.
 	ListBlockerCounts(ctx context.Context) ([]ListBlockerCountsRow, error)
 	// The tasks a task waits on, in the order they were recorded.
@@ -134,7 +134,7 @@ type Querier interface {
 	ListEventsBetween(ctx context.Context, arg ListEventsBetweenParams) ([]TaskEvent, error)
 	ListInboxTasks(ctx context.Context, projectID interface{}) ([]Task, error)
 	ListLiveTasks(ctx context.Context, projectID interface{}) ([]Task, error)
-	// Like ListLiveTasks but also surfaces completed (done) tasks and
+	// Like ListLiveTasks but also surfaces completed (done) tasks, canceled tasks and
 	// hidden-by-default states (someday), for when the list view has the
 	// completed section toggled on. Snoozed tasks stay hidden either way.
 	ListLiveWithCompletedTasks(ctx context.Context, projectID interface{}) ([]Task, error)
@@ -142,8 +142,8 @@ type Querier interface {
 	// non-null when the note is freestanding or its task was deleted.
 	ListLogEntriesBetween(ctx context.Context, arg ListLogEntriesBetweenParams) ([]ListLogEntriesBetweenRow, error)
 	ListLogEntriesForTask(ctx context.Context, taskID sql.NullInt64) ([]LogEntry, error)
-	// Every task not yet done, in every project and at any depth: the
-	// candidate list for the TUI's dependency picker. A done task cannot
+	// Every task not yet closed (done or canceled), in every project and at any depth: the
+	// candidate list for the TUI's dependency picker. A closed task cannot
 	// usefully block anything, so it is left out; someday and snoozed tasks
 	// stay in, since "wait for that someday thing" is a real dependency.
 	ListOpenTasks(ctx context.Context) ([]Task, error)

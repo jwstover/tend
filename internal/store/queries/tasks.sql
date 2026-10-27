@@ -34,7 +34,7 @@ WHERE s.is_terminal = 0
 ORDER BY s.sort_order, t.priority IS NULL, t.priority, t.id;
 
 -- name: ListLiveWithCompletedTasks :many
--- Like ListLiveTasks but also surfaces completed (done) tasks and
+-- Like ListLiveTasks but also surfaces completed (done) tasks, canceled tasks and
 -- hidden-by-default states (someday), for when the list view has the
 -- completed section toggled on. Snoozed tasks stay hidden either way.
 SELECT t.*
@@ -78,7 +78,7 @@ WHERE t.state = 'inbox'
 -- name: SetTaskState :exec
 UPDATE tasks
 SET state        = sqlc.arg(state),
-    completed_at = CASE WHEN sqlc.arg(state) = 'done' THEN datetime('now') ELSE NULL END,
+    completed_at = CASE WHEN sqlc.arg(state) = 'done' OR sqlc.arg(state) = 'canceled' THEN datetime('now') ELSE NULL END,
     updated_at   = datetime('now')
 WHERE id = sqlc.arg(id);
 

@@ -27,13 +27,14 @@ var (
 	tokAccentBg = token{"#1A2744", "#E9F0F7"}
 	tokLink     = token{"#1AB8E8", "#007A9E"}
 
-	tokInbox   = token{"#E8833A", "#C2410C"}
-	tokTodo    = token{"#8B98A8", "#5A6573"}
-	tokDoing   = token{"#F2C94C", "#A16207"}
-	tokReview  = token{"#58A6FF", "#2066AC"} // blue: handed off, waiting on eyes
-	tokBlocked = token{"#F85149", "#DC2626"}
-	tokDone    = token{"#6E7681", "#909090"} // gray: done recedes, it doesn't celebrate
-	tokSomeday = token{"#A371F7", "#4E46D7"}
+	tokInbox    = token{"#E8833A", "#C2410C"}
+	tokTodo     = token{"#8B98A8", "#5A6573"}
+	tokDoing    = token{"#F2C94C", "#A16207"}
+	tokReview   = token{"#58A6FF", "#2066AC"} // blue: handed off, waiting on eyes
+	tokBlocked  = token{"#F85149", "#DC2626"}
+	tokDone     = token{"#6E7681", "#909090"} // gray: done recedes, it doesn't celebrate
+	tokSomeday  = token{"#A371F7", "#4E46D7"}
+	tokCanceled = token{"#565E68", "#A8A8A8"} // muted gray, dimmer than done: closed without being done
 
 	tokComplete  = token{"#3FB950", "#16A34A"} // completion signals ONLY (▣, full N/M)
 	tokOverdue   = token{"#F85149", "#DC2626"}
@@ -51,7 +52,7 @@ type palette struct {
 	Border, Rule            color.Color
 	Accent, AccentBg, Link  color.Color
 
-	Inbox, Todo, Doing, Review, Blocked, Done, Someday color.Color
+	Inbox, Todo, Doing, Review, Blocked, Done, Canceled, Someday color.Color
 
 	Complete, Overdue, DueToday, DueFuture color.Color
 	P1, P2, P3, P4                         color.Color
@@ -66,7 +67,7 @@ func newPalette(isDark bool) palette {
 		Border: pick(tokBorder), Rule: pick(tokRule),
 		Accent: pick(tokAccent), AccentBg: pick(tokAccentBg), Link: pick(tokLink),
 		Inbox: pick(tokInbox), Todo: pick(tokTodo), Doing: pick(tokDoing), Review: pick(tokReview),
-		Blocked: pick(tokBlocked), Done: pick(tokDone), Someday: pick(tokSomeday),
+		Blocked: pick(tokBlocked), Done: pick(tokDone), Canceled: pick(tokCanceled), Someday: pick(tokSomeday),
 		Complete: pick(tokComplete), Overdue: pick(tokOverdue),
 		DueToday: pick(tokDueToday), DueFuture: pick(tokDueFuture),
 		P1: pick(tokP1), P2: pick(tokP2), P3: pick(tokP3), P4: pick(tokP4),
@@ -116,13 +117,14 @@ type glyphs struct {
 func unicodeGlyphs() glyphs {
 	return glyphs{
 		State: map[task.State]string{
-			task.StateInbox:   "●",
-			task.StateTodo:    "○",
-			task.StateDoing:   "◐",
-			task.StateReview:  "◎",
-			task.StateBlocked: "⊘",
-			task.StateDone:    "✓",
-			task.StateSomeday: "◇",
+			task.StateInbox:    "●",
+			task.StateTodo:     "○",
+			task.StateDoing:    "◐",
+			task.StateReview:   "◎",
+			task.StateBlocked:  "⊘",
+			task.StateDone:     "✓",
+			task.StateCanceled: "⊖",
+			task.StateSomeday:  "◇",
 		},
 		Session: map[task.SessionStatus]string{
 			task.SessionStarting: "◌",
@@ -182,13 +184,14 @@ func glyphsFor(name string) glyphs {
 func asciiGlyphs() glyphs {
 	return glyphs{
 		State: map[task.State]string{
-			task.StateInbox:   "*",
-			task.StateTodo:    "o",
-			task.StateDoing:   ">",
-			task.StateReview:  "?",
-			task.StateBlocked: "!",
-			task.StateDone:    "x",
-			task.StateSomeday: "~",
+			task.StateInbox:    "*",
+			task.StateTodo:     "o",
+			task.StateDoing:    ">",
+			task.StateReview:   "?",
+			task.StateBlocked:  "!",
+			task.StateDone:     "x",
+			task.StateCanceled: "-",
+			task.StateSomeday:  "~",
 		},
 		Session: map[task.SessionStatus]string{
 			task.SessionStarting: ".",
@@ -322,7 +325,7 @@ func newStyles(isDark bool) Styles {
 		QuotaWarn: fg(p.DueToday).Bold(true),
 		QuotaHot:  fg(p.Overdue).Bold(true),
 
-		SelBar:    fg(p.Accent).Bold(true),
+		SelBar:     fg(p.Accent).Bold(true),
 		Title:      fg(p.Fg),
 		TitleDone:  fg(p.Done).Strikethrough(true),
 		Caret:      fg(p.Muted),
@@ -348,13 +351,14 @@ func newStyles(isDark bool) Styles {
 		Faint:  fg(p.Faint),
 		Accent: fg(p.Accent),
 		State: map[task.State]lipgloss.Style{
-			task.StateInbox:   fg(p.Inbox),
-			task.StateTodo:    fg(p.Todo),
-			task.StateDoing:   fg(p.Doing),
-			task.StateReview:  fg(p.Review),
-			task.StateBlocked: fg(p.Blocked),
-			task.StateDone:    fg(p.Done),
-			task.StateSomeday: fg(p.Someday),
+			task.StateInbox:    fg(p.Inbox),
+			task.StateTodo:     fg(p.Todo),
+			task.StateDoing:    fg(p.Doing),
+			task.StateReview:   fg(p.Review),
+			task.StateBlocked:  fg(p.Blocked),
+			task.StateDone:     fg(p.Done),
+			task.StateCanceled: fg(p.Canceled),
+			task.StateSomeday:  fg(p.Someday),
 		},
 		Session: map[task.SessionStatus]lipgloss.Style{
 			// Reuses the workflow-state colors rather than inventing a

@@ -14,23 +14,27 @@ import (
 type State string
 
 const (
-	StateInbox   State = "inbox"
-	StateTodo    State = "todo"
-	StateDoing   State = "doing"
-	StateReview  State = "review" // finished on our side, waiting on someone else's eyes
-	StateBlocked State = "blocked"
-	StateDone    State = "done"
-	StateSomeday State = "someday"
+	StateInbox    State = "inbox"
+	StateTodo     State = "todo"
+	StateDoing    State = "doing"
+	StateReview   State = "review" // finished on our side, waiting on someone else's eyes
+	StateBlocked  State = "blocked"
+	StateDone     State = "done"
+	StateCanceled State = "canceled" // closed without being done
+	StateSomeday  State = "someday"
 )
 
 // Valid reports whether s is one of the seeded workflow states.
 func (s State) Valid() bool {
 	switch s {
-	case StateInbox, StateTodo, StateDoing, StateReview, StateBlocked, StateDone, StateSomeday:
+	case StateInbox, StateTodo, StateDoing, StateReview, StateBlocked, StateDone, StateCanceled, StateSomeday:
 		return true
 	}
 	return false
 }
+
+// Closed reports whether the state ends the task: done, or canceled.
+func (s State) Closed() bool { return s == StateDone || s == StateCanceled }
 
 // Label is the state's name as the UI shows it: the stored name, except
 // where a bare word would read oddly as a heading.
@@ -110,7 +114,7 @@ func (c BlockerCount) Blocked() bool { return c.Open > 0 }
 func OpenBlockers(blockers []Task) []Task {
 	var open []Task
 	for _, b := range blockers {
-		if b.State != StateDone {
+		if !b.State.Closed() {
 			open = append(open, b)
 		}
 	}

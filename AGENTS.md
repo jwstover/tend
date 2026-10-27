@@ -220,7 +220,7 @@ CREATE TABLE states (
   is_terminal       INTEGER NOT NULL DEFAULT 0,  -- done-like; excluded from the live view
   hidden_by_default INTEGER NOT NULL DEFAULT 0   -- e.g. someday/backlog; excluded from the live view
 );
--- Seed rows: inbox(0), todo(1), review(2), doing(3), blocked(4), done(5,terminal), someday(6,hidden)
+-- Seed rows: inbox(0), todo(1), review(2), doing(3), blocked(4), done(5,terminal), someday(6,hidden), canceled(7,terminal+hidden; migration 00019 — closed without being done)
 -- (review arrived in migration 00014; the list view shows it above doing)
 
 CREATE TABLE tasks (
@@ -239,6 +239,7 @@ CREATE TABLE tasks (
   snooze_until TEXT,                               -- ISO date; while set and in the future, hidden from the live view
   created_at, updated_at, completed_at TEXT
 );
+-- completed_at is the "closed at" stamp: set when state becomes done OR canceled, cleared on reopen.
 
 CREATE TABLE projects (          -- a workspace; every task belongs to exactly one (migration 00007). The TUI's
   id, name TEXT NOT NULL          -- third column scopes the list to the selected project.
@@ -360,7 +361,7 @@ Semantics:
 - **Sub-tasks** are `parent_id` self-references; the UI computes child completion for a progress indicator and gives sub-tasks the same detail-pane functionality as top-level tasks (body, log, sessions).
 - **Projects** are a hard grouping: every task has exactly one `project_id`, defaulting to `Unsorted` (id 1). Deleting a project reassigns its tasks to `Unsorted` inside a transaction (`Store.DeleteProject`); `Unsorted` itself cannot be deleted.
 - **Tags** are the soft, multi-valued labelling mechanism (`task_tags`), and are what the pre-00007 flat `project` string became.
-- **Dependencies** (`task_dependencies`) say a task waits on other tasks: each blocker must be done before the task can be worked on. A task can wait on several tasks, in any project, and several can wait on one. The store refuses self-dependency and cycles (`task.ErrSelfDependency`, `task.ErrDependencyCycle`); `Store.SetDependencies` is the wholesale replace (the `SetTags` shape) and `Store.BlockerCounts` the batch `{Open, Total}` map the list view renders from (the `ChildCounts` shape). Nothing changes a task's *state* automatically: `blocked` stays the user's call, and a task whose blockers are all done simply reads as free to start. Over MCP (`internal/mcpserver/tools.go`), `create_task` and `create_subtask` take an optional `depends_on` id list, `set_task_dependencies` replaces the list wholesale, `add_task_dependency` / `remove_task_dependency` edit one edge, and every task the tools return carries `depends_on`, `blocks` and a derived `is_blocked`.
+- **Dependencies** (`task_dependencies`) say a task waits on other tasks: each blocker must be closed (done or canceled) before the task can be worked on. A task can wait on several tasks, in any project, and several can wait on one. The store refuses self-dependency and cycles (`task.ErrSelfDependency`, `task.ErrDependencyCycle`); `Store.SetDependencies` is the wholesale replace (the `SetTags` shape) and `Store.BlockerCounts` the batch `{Open, Total}` map the list view renders from (the `ChildCounts` shape). Nothing changes a task's *state* automatically: `blocked` stays the user's call, and a task whose blockers are all done simply reads as free to start. Over MCP (`internal/mcpserver/tools.go`), `create_task` and `create_subtask` take an optional `depends_on` id list, `set_task_dependencies` replaces the list wholesale, `add_task_dependency` / `remove_task_dependency` edit one edge, and every task the tools return carries `depends_on`, `blocks` and a derived `is_blocked`.
 - **Long-form body** is the re-entry-cost killer: a task carries its own context so resuming it is free.
 - **`snooze_until`** defers a task out of the live view until its wake date.
 - **Live view** = tasks whose state has `is_terminal = 0` AND `hidden_by_default = 0` AND (`snooze_until` is null OR in the past).

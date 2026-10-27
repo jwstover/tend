@@ -82,7 +82,7 @@ func dependencyCandidates(t task.Task, open []task.Task, projects []task.Project
 		names[p.ID] = p.Name
 	}
 	row := func(c task.Task) dependencyRow {
-		r := dependencyRow{id: c.ID, title: c.Title, done: c.State == task.StateDone}
+		r := dependencyRow{id: c.ID, title: c.Title, done: c.State.Closed()}
 		if c.ProjectID != t.ProjectID {
 			r.project = names[c.ProjectID]
 		}
