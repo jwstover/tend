@@ -66,6 +66,8 @@ func newScheduleCmd(open openScheduleStore, dbPath func() string) *cobra.Command
 		newScheduleEnableCmd(open, true),
 		newScheduleRunNowCmd(open, dbPath),
 		newScheduleTickCmd(open, dbPath),
+		newScheduleInstallCmd(dbPath),
+		newScheduleUninstallCmd(),
 	)
 	return root
 }
