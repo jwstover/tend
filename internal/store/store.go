@@ -7,6 +7,7 @@ import (
 	"context"
 	"database/sql"
 	"embed"
+	"errors"
 	"fmt"
 	"io/fs"
 	"net/url"
@@ -944,6 +945,9 @@ func statusUpdatedAtParam(t time.Time) sql.NullString {
 // GetTask loads a single task by id.
 func (s *Store) GetTask(ctx context.Context, id int64) (task.Task, error) {
 	row, err := s.q.GetTask(ctx, id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return task.Task{}, fmt.Errorf("loading task %d: %w", id, task.ErrTaskNotFound)
+	}
 	if err != nil {
 		return task.Task{}, fmt.Errorf("loading task %d: %w", id, err)
 	}

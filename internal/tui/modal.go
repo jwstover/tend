@@ -24,6 +24,8 @@ const (
 	// by hand after a takeover (takeover.go): target is the step run, extra
 	// the outcome chosen, and the text is what the next step receives.
 	modalTakeoverDeliverable
+	// modalGotoTask collects a task id to jump to (gototask.go).
+	modalGotoTask
 )
 
 // modal is a centered floating input box. It owns presentation and text

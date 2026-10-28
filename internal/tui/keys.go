@@ -78,12 +78,14 @@ type keyMap struct {
 	ToggleCompleted key.Binding // C shows/hides the completed (done), canceled and someday sections
 
 	// List grouping: `g` opens the chord, the second key picks the grouping.
-	// `gg` keeps its vim meaning (top of the list) as the chord's fourth key.
+	// `gg` keeps its vim meaning (top of the list) as the chord's fourth key,
+	// and `gt` opens the go-to-task prompt (gototask.go).
 	GroupBy         key.Binding
 	GroupByState    key.Binding
 	GroupByPriority key.Binding
 	GroupByAgent    key.Binding
 	GoTop           key.Binding
+	GoToTask        key.Binding
 
 	ChangePriority key.Binding
 
@@ -191,6 +193,7 @@ func defaultKeyMap() keyMap {
 		GroupByPriority: key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "priority")),
 		GroupByAgent:    key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "agent status")),
 		GoTop:           key.NewBinding(key.WithKeys("g"), key.WithHelp("g", "top of list")),
+		GoToTask:        key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "go to task #")),
 
 		ChangePriority: key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "priority")),
 

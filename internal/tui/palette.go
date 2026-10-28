@@ -39,6 +39,14 @@ func (a app) paletteCommands() []paletteCommand {
 				}
 				return a.toggleProjects()
 			}},
+		{icon: "↪", label: "Go to task by id", hint: "gt", aliases: []string{"goto", "jump", "find"},
+			act: func(a app) (tea.Model, tea.Cmd) {
+				if a.mode != modeList {
+					a.status = flash{text: "go to task is list-view only"}
+					return a, nil
+				}
+				return a, a.openGotoTask()
+			}},
 		{icon: "✚", label: "New project", aliases: []string{"newproject", "mkproject"},
 			act: func(a app) (tea.Model, tea.Cmd) {
 				return a, a.openPrompt(promptNewProject, "new project: ", 0)
