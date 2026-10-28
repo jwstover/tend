@@ -48,6 +48,10 @@ func (s State) Label() string {
 // ErrEmptyTitle is returned when a captured title is blank.
 var ErrEmptyTitle = errors.New("task title is empty")
 
+// ErrTaskNotFound is returned when a task id doesn't resolve, so a caller
+// taking the id from the user can report a typo rather than a failure.
+var ErrTaskNotFound = errors.New("task not found")
+
 // Priority bounds: stored values 1 (highest, "A") through 4 ("D"); NULL
 // means unprioritized and sorts last.
 const (

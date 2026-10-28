@@ -948,7 +948,12 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if hadSel {
 				a.selectByID(sel.t.ID)
 			}
-			a.selectPending()
+			// A pending selection landing here (a branch just opened for a
+			// move or a go-to) puts a different task under the cursor, so the
+			// pane follows it.
+			if a.selectPending() {
+				cmd = tea.Batch(cmd, a.syncDetail(false))
+			}
 		}
 		if a.showDetail && msg.parentID == a.detailID {
 			if n, ok := a.selectedNode(); ok && n.t.ID == a.detailID {
@@ -1235,6 +1240,9 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.status = flash(msg)
 		return a, nil
 
+	case gotoTaskMsg:
+		return a.applyGotoTask(msg)
+
 	case errMsg:
 		a.loaded = true // an initial load failure shouldn't strand the loading frame
 		a.status = flash{text: msg.err.Error(), isErr: true}
@@ -1470,6 +1478,9 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			a.list.Select(0)
 			moveOffHeading(&a.list, 1)
 			return a, a.syncDetail(false)
+		}
+		if key.Matches(msg, a.keys.GoToTask) {
+			return a, a.openGotoTask()
 		}
 		return a, nil
 	}
@@ -1957,6 +1968,7 @@ func (a app) groupPanel() string {
 		{a.keys.GroupByPriority, a.styles.Priority[1]},
 		{a.keys.GroupByAgent, a.styles.Session[task.SessionWorking]},
 		{a.keys.GoTop, a.styles.PanelKey},
+		{a.keys.GoToTask, a.styles.PanelKey},
 		{a.keys.Cancel, a.styles.Dimmed},
 	}
 	entries := make([]panelEntry, 0, len(bindings))
@@ -2171,15 +2183,18 @@ func (a *app) selectByID(id int64) bool {
 	return false
 }
 
-// selectPending lands the cursor on the task a re-parent moved, once the
+// selectPending lands the cursor on the task a re-parent moved (or a
+// go-to asked for), once the
 // rebuild that made its new row visible has run. It runs after the
 // usual follow-the-selection reselect so the moved task wins over the
 // row that slid into its old place, and keeps waiting while the new
 // parent's children are still loading.
-func (a *app) selectPending() {
+func (a *app) selectPending() bool {
 	if a.pendingSelectID != 0 && a.selectByID(a.pendingSelectID) {
 		a.pendingSelectID = 0
+		return true
 	}
+	return false
 }
 
 // syncDetail points the detail pane at the task under the cursor, at
@@ -2525,6 +2540,8 @@ func (a app) submitModal() (tea.Model, tea.Cmd) {
 		// Empty is allowed: an empty deliverable passes the step's input
 		// along, as finish_step's own contract says.
 		return a, a.finishTakenOverStep(target, extra, value)
+	case modalGotoTask:
+		return a.submitGotoTask(value)
 	}
 	return a, nil
 }
