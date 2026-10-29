@@ -13,7 +13,7 @@ import (
 
 // dependencyRowIDs is the picker's visible rows, top to bottom, by task id.
 func dependencyRowIDs(m tea.Model) []int64 {
-	rows := m.(app).dependencyPickerMatches()
+	rows := m.(app).depPicker.matches()
 	out := make([]int64, 0, len(rows))
 	for _, r := range rows {
 		out = append(out, r.id)
@@ -88,7 +88,7 @@ func TestDependencyPickerListsOpenTasksAcrossProjects(t *testing.T) {
 
 	m = drive(t, m, keyPress('b'))
 	a := m.(app)
-	if !a.depPickerOpen {
+	if !a.depPicker.open {
 		t.Fatal("b should open the dependency picker")
 	}
 	if a.depPickerTaskID != subject.ID {
@@ -102,7 +102,7 @@ func TestDependencyPickerListsOpenTasksAcrossProjects(t *testing.T) {
 	if !a.depPickerChecked[foreign.ID] || a.depPickerChecked[local.ID] {
 		t.Errorf("checked = %v, want only the existing blocker #%d", a.depPickerChecked, foreign.ID)
 	}
-	rows := a.dependencyPickerMatches()
+	rows := a.depPicker.matches()
 	if rows[0].project != "elsewhere" {
 		t.Errorf("foreign row project label = %q, want elsewhere", rows[0].project)
 	}
@@ -139,7 +139,7 @@ func TestDependencyPickerTogglesAndStaysOpen(t *testing.T) {
 
 	m = drive(t, m, keyPress('1'))
 	a := m.(app)
-	if !a.depPickerOpen {
+	if !a.depPicker.open {
 		t.Fatal("toggling a row must leave the picker open")
 	}
 	if !a.depPickerChecked[blocker.ID] {
@@ -158,7 +158,7 @@ func TestDependencyPickerTogglesAndStaysOpen(t *testing.T) {
 	// Enter on the same (still selected) row removes it again.
 	m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	a = m.(app)
-	if !a.depPickerOpen {
+	if !a.depPicker.open {
 		t.Fatal("un-toggling must leave the picker open too")
 	}
 	if a.depPickerChecked[blocker.ID] {
@@ -209,7 +209,7 @@ func TestDependencyPickerCycleRefusalFlashesAndLeavesRowUnchecked(t *testing.T) 
 	if a.depPickerChecked[alpha.ID] {
 		t.Error("a refused edge must not check the row")
 	}
-	if !a.depPickerOpen {
+	if !a.depPicker.open {
 		t.Error("a refused edge should leave the picker open to try another row")
 	}
 	if got := blockerIDs(t, s, beta.ID); len(got) != 0 {
@@ -243,8 +243,8 @@ func TestDependencyPickerTypeToFilter(t *testing.T) {
 		t.Fatalf("rows = %v, want the three other tasks", got)
 	}
 	m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyDown})
-	if m.(app).depPickerSel != 1 {
-		t.Fatalf("sel after down = %d, want 1", m.(app).depPickerSel)
+	if m.(app).depPicker.sel != 1 {
+		t.Fatalf("sel after down = %d, want 1", m.(app).depPicker.sel)
 	}
 
 	for _, r := range "CHER" {
@@ -254,12 +254,12 @@ func TestDependencyPickerTypeToFilter(t *testing.T) {
 	if got := dependencyRowIDs(m); !int64sEqual(got, []int64{cherry.ID}) {
 		t.Fatalf("rows after typing CHER = %v, want just cherry #%d", got, cherry.ID)
 	}
-	if a.depPickerSel != 0 {
-		t.Errorf("sel after typing = %d, want reset to 0", a.depPickerSel)
+	if a.depPicker.sel != 0 {
+		t.Errorf("sel after typing = %d, want reset to 0", a.depPicker.sel)
 	}
 
 	m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyBackspace})
-	if got := m.(app).depPickerQuery; got != "CHE" {
+	if got := m.(app).depPicker.query; got != "CHE" {
 		t.Fatalf("query after backspace = %q, want CHE", got)
 	}
 
@@ -267,8 +267,8 @@ func TestDependencyPickerTypeToFilter(t *testing.T) {
 	// the filter survives the toggle.
 	m = drive(t, m, keyPress('1'))
 	a = m.(app)
-	if !a.depPickerOpen || a.depPickerQuery != "CHE" {
-		t.Errorf("after the toggle: open=%v query=%q, want the picker still up with its filter", a.depPickerOpen, a.depPickerQuery)
+	if !a.depPicker.open || a.depPicker.query != "CHE" {
+		t.Errorf("after the toggle: open=%v query=%q, want the picker still up with its filter", a.depPicker.open, a.depPicker.query)
 	}
 	if got := blockerIDs(t, s, subject.ID); !int64sEqual(got, []int64{cherry.ID}) {
 		t.Errorf("store blockers = %v, want [%d]", got, cherry.ID)

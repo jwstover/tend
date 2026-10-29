@@ -746,7 +746,7 @@ func (a app) submitEdgeOutcome(draft *edgeDraft, value string) (tea.Model, tea.C
 // on the draft's current target, or -- for a new edge -- the step after
 // its source, the linear default.
 func (a *app) openEdgeTargetPicker(draft *edgeDraft) {
-	a.wfPickerOpen, a.wfPickerKind, a.wfPickerStepID, a.wfPickerSel = true, wfPickEdgeTarget, draft.fromStepID, 0
+	a.wfPickerKind, a.wfPickerStepID = wfPickEdgeTarget, draft.fromStepID
 	want := draft.toStepID
 	if want == 0 {
 		for i, st := range a.wfSteps {
@@ -755,11 +755,17 @@ func (a *app) openEdgeTargetPicker(draft *edgeDraft) {
 			}
 		}
 	}
-	for i, o := range a.wfPickerOptions() {
+	opts := stepOptions(wfPickEdgeTarget, a.wfSteps)
+	a.wfPicker = picker[wfPickerOption]{
+		open: true, items: opts, numbered: true,
+		label: func(o wfPickerOption) string { return o.label },
+	}
+	for i, o := range opts {
 		if o.value == strconv.FormatInt(want, 10) {
-			a.wfPickerSel = i
+			a.wfPicker.sel = i
 		}
 	}
+	a.wfPicker.scroll(a.height)
 }
 
 // submitEdgeMax is the last stage: parse the bound (blank = unbounded)
@@ -799,18 +805,18 @@ func (a *app) submitEdgeMax(draft *edgeDraft, value string) tea.Cmd {
 
 // --- picker overlay ---
 
-// wfPickerOptions is the picker's rows for its current kind. For an edge
-// target the rows are the workflow's steps, numbered as the preview
-// numbers them, with the step id as the value.
-func (a app) wfPickerOptions() []wfPickerOption {
-	switch a.wfPickerKind {
+// stepOptions is the picker's rows for kind, called once at open time. For
+// an edge target the rows are the workflow's steps, numbered as the
+// preview numbers them, with the step id as the value.
+func stepOptions(kind wfPickerKind, steps []workflow.Step) []wfPickerOption {
+	switch kind {
 	case wfPickPermission:
 		return stepPermissionOptions
 	case wfPickAdvisor:
 		return stepAdvisorOptions
 	case wfPickEdgeTarget:
-		opts := make([]wfPickerOption, 0, len(a.wfSteps))
-		for _, st := range a.wfSteps {
+		opts := make([]wfPickerOption, 0, len(steps))
+		for _, st := range steps {
 			opts = append(opts, wfPickerOption{label: st.Name, value: strconv.FormatInt(st.ID, 10)})
 		}
 		return opts
@@ -819,9 +825,10 @@ func (a app) wfPickerOptions() []wfPickerOption {
 }
 
 // openWfPicker arms the picker for one step attribute, starting on the
-// step's current value so Enter is a no-op rather than a surprise.
+// step's current value so Enter is a no-op rather than a surprise. The
+// options are snapshotted now rather than recomputed per keystroke.
 func (a *app) openWfPicker(kind wfPickerKind, st workflow.Step) {
-	a.wfPickerOpen, a.wfPickerKind, a.wfPickerStepID, a.wfPickerSel = true, kind, st.ID, 0
+	a.wfPickerKind, a.wfPickerStepID = kind, st.ID
 	current := st.Model
 	switch kind {
 	case wfPickPermission:
@@ -829,30 +836,36 @@ func (a *app) openWfPicker(kind wfPickerKind, st workflow.Step) {
 	case wfPickAdvisor:
 		current = st.AdvisorModel
 	}
-	for i, o := range a.wfPickerOptions() {
+	opts := stepOptions(kind, a.wfSteps)
+	a.wfPicker = picker[wfPickerOption]{
+		open: true, items: opts, numbered: true,
+		label: func(o wfPickerOption) string { return o.label },
+	}
+	for i, o := range opts {
 		if o.value == current {
-			a.wfPickerSel = i
+			a.wfPicker.sel = i
 		}
 	}
+	a.wfPicker.scroll(a.height)
 }
 
 func (a *app) closeWfPicker() {
-	a.wfPickerOpen, a.wfPickerStepID, a.wfPickerSel = false, 0, 0
+	a.wfPickerStepID = 0
+	a.wfPicker = picker[wfPickerOption]{}
 }
 
 // handleWfPickerKey owns the keyboard while the picker is open: arrows or
 // ctrl-n/ctrl-p move, a digit picks directly, Enter applies, esc dismisses.
 func (a app) handleWfPickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	opts := a.wfPickerOptions()
+	kind, stepID := a.wfPickerKind, a.wfPickerStepID
 	apply := func(idx int) (tea.Model, tea.Cmd) {
-		kind, stepID := a.wfPickerKind, a.wfPickerStepID
+		o, ok := a.wfPicker.at(idx)
 		a.closeWfPicker()
-		st, ok := a.selectedStep()
-		if !ok || st.ID != stepID || idx < 0 || idx >= len(opts) {
+		st, selOk := a.selectedStep()
+		if !ok || !selOk || st.ID != stepID {
 			a.wfEdgeDraft = nil
 			return a, nil
 		}
-		o := opts[idx]
 		switch kind {
 		case wfPickEdgeTarget:
 			draft := a.wfEdgeDraft
@@ -887,28 +900,14 @@ func (a app) handleWfPickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		})
 	}
 
-	switch msg.String() {
-	case "esc":
+	action, idx := a.wfPicker.key(msg, a.height)
+	switch action {
+	case pickerCancel:
 		a.closeWfPicker()
 		a.wfEdgeDraft = nil
 		return a, nil
-	case "enter":
-		return apply(a.wfPickerSel)
-	case "up", "ctrl+p", "k":
-		if a.wfPickerSel > 0 {
-			a.wfPickerSel--
-		}
-		return a, nil
-	case "down", "ctrl+n", "j":
-		if a.wfPickerSel < len(opts)-1 {
-			a.wfPickerSel++
-		}
-		return a, nil
-	}
-	if len(msg.Text) == 1 && msg.Text[0] >= '1' && msg.Text[0] <= '9' {
-		if idx := int(msg.Text[0] - '1'); idx < len(opts) {
-			return apply(idx)
-		}
+	case pickerPick:
+		return apply(idx)
 	}
 	return a, nil
 }
@@ -916,19 +915,9 @@ func (a app) handleWfPickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 // wfPickerView renders the chooser box in the project picker's mould.
 func (a app) wfPickerView() string {
 	s, g := a.styles, a.styles.Glyphs
-	w := max(a.width, 20)
-	cb := s.CardBorder
-	hbar := strings.Repeat(g.RuleH, w-4)
-
-	row := func(content string) string {
-		gap := max(w-5-lipgloss.Width(content), 0)
-		return "  " + cb.Render(g.RuleV) + " " + content +
-			strings.Repeat(" ", gap) + cb.Render(g.RuleV)
-	}
-
 	name := ""
 	if st, ok := a.selectedStep(); ok {
-		name = truncTail(st.Name, max(w-30, 10), g.Ellipsis)
+		name = truncTail(st.Name, max(a.width-30, 10), g.Ellipsis)
 	}
 	var title string
 	switch {
@@ -941,24 +930,16 @@ func (a app) wfPickerView() string {
 	default:
 		title = s.Title.Render("model for ") + s.Dimmed.Render(name)
 	}
-	lines := []string{"  " + cb.Render(g.BoxTL+hbar+g.BoxTR)}
-	lines = append(lines, row(s.Accent.Bold(true).Render(g.CaretClosed+" ")+title))
-	lines = append(lines, "  "+cb.Render(g.TeeRight+hbar+g.TeeLeft))
-
-	opts := a.wfPickerOptions()
-	sel := min(a.wfPickerSel, len(opts)-1)
-	for i, o := range opts {
-		num := fmt.Sprintf("%d ", i+1)
-		var content string
-		if i == sel {
-			content = s.SelBar.Render(g.SelBar+" ") + s.Accent.Render(num) + s.Title.Render(o.label)
-		} else {
-			content = "  " + s.Muted.Render(num) + s.Dimmed.Render(o.label)
-		}
-		lines = append(lines, row(content))
-	}
-	lines = append(lines, "  "+cb.Render(g.BoxBL+hbar+g.BoxBR))
-	return strings.Join(lines, "\n")
+	return a.wfPicker.render(s, a.width, a.height, pickerView[wfPickerOption]{
+		icon:  s.Accent.Bold(true).Render(g.CaretClosed + " "),
+		title: title,
+		row: func(o wfPickerOption, selected bool, w int) string {
+			if selected {
+				return s.Title.Render(o.label)
+			}
+			return s.Dimmed.Render(o.label)
+		},
+	})
 }
 
 // --- view ---

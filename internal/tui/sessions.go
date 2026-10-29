@@ -37,85 +37,18 @@ func (a *app) openSessionPicker(msg sessionsForPickerMsg) tea.Cmd {
 	if len(msg.sessions) == 0 {
 		return a.openSessionCwdPrompt(msg.taskID, msg.label, a.defaultCwd(msg.sessions, msg.projectID))
 	}
-	a.sessionPickerOpen = true
 	a.sessionPickerTaskID = msg.taskID
 	a.sessionPickerProjectID = msg.projectID
 	a.sessionPickerLabel = msg.label
-	a.sessionPickerSessions = msg.sessions
-	a.sessionPickerQuery = ""
-	a.sessionPickerSel = 0
-	a.sessionPickerTop = 0
+	a.sessionPicker = picker[task.Session]{
+		open: true, items: msg.sessions, numbered: true, pinned: 1, maxRows: 10,
+		label: func(s task.Session) string { return s.Label },
+	}
 	return nil
 }
 
 func (a *app) closeSessionPicker() {
-	a.sessionPickerOpen = false
-	a.sessionPickerSessions = nil
-	a.sessionPickerQuery = ""
-	a.sessionPickerSel = 0
-	a.sessionPickerTop = 0
-}
-
-// sessionPickerMaxRows caps how many session rows the picker shows at
-// once. Past it the rows scroll under the highlight instead of the box
-// growing with the list: a task that has been worked on for a while has
-// dozens of sessions, and a box that tall runs off the screen (the
-// overlay splice in View keeps the bottom rows, so it was the title and
-// the "+ new session" row that vanished first).
-const sessionPickerMaxRows = 10
-
-// sessionPickerChrome is every row on screen other than the session rows
-// while the picker is open: the app header, the box's top border, title,
-// divider, filter and "+ new session" rows, the overflow indicator, the
-// bottom border, and the footer the splice leaves alone.
-const sessionPickerChrome = 9
-
-// sessionPickerMatches narrows the sessions to those whose label
-// fuzzy-matches the query (fuzzyFilter: substring hits first, then
-// in-order subsequence hits). An empty query keeps them all, newest first
-// as loaded.
-func (a app) sessionPickerMatches() []task.Session {
-	return fuzzyFilter(a.sessionPickerQuery, a.sessionPickerSessions,
-		func(s task.Session) string { return s.Label })
-}
-
-// sessionPickerVisible reports how many session rows the picker shows at
-// once: sessionPickerMaxRows, or fewer on a terminal too short for that
-// many plus the chrome. Before the first WindowSizeMsg the height is
-// unknown and only the cap applies.
-func (a app) sessionPickerVisible() int {
-	n := sessionPickerMaxRows
-	if a.height > 0 {
-		n = min(n, a.height-sessionPickerChrome)
-	}
-	return max(n, 1)
-}
-
-// sessionPickerWindow returns where the scroll window over n matching
-// sessions starts so that the highlight stays inside it: the window
-// moves only when the highlight would leave it, and never past the end
-// of the list. sel is the picker's row (0 for "+ new session", k for the
-// k-th session), top the window's current start, vis its size. Pure, so
-// the view can derive the same window the key handler stored — and
-// re-clamp it after a resize without a key press.
-func sessionPickerWindow(sel, top, n, vis int) int {
-	if i := sel - 1; i >= 0 {
-		if i < top {
-			top = i
-		}
-		if i >= top+vis {
-			top = i - vis + 1
-		}
-	}
-	return max(min(top, n-vis), 0)
-}
-
-// scrollSessionPicker settles the highlight and the window after a move
-// or a change to the filter: the highlight is clamped to the rows that
-// exist, and the window follows it.
-func (a *app) scrollSessionPicker(n int) {
-	a.sessionPickerSel = max(min(a.sessionPickerSel, n), 0)
-	a.sessionPickerTop = sessionPickerWindow(a.sessionPickerSel, a.sessionPickerTop, n, a.sessionPickerVisible())
+	a.sessionPicker = picker[task.Session]{}
 }
 
 // defaultCwd suggests where to launch a new session, most specific
@@ -160,62 +93,38 @@ func (a *app) openSessionCwdPrompt(taskID int64, label, defaultCwd string) tea.C
 
 // handleSessionPickerKey owns the keyboard while the picker is open. Row 0
 // is always "+ new session"; rows 1..N are the task's sessions that match
-// the typed filter, newest first, shown sessionPickerVisible at a time.
-// ↑/↓ (or ctrl+p/ctrl+n) move and scroll, ⏎ acts on the highlight, a
-// digit 1-9 jumps straight to that *visible* session row (the numbers
-// shown are the window's, like the other pickers), anything else typed
-// filters — a digit included, when no row carries that number — and esc
-// dismisses.
+// the typed filter, newest first, shown a window at a time. ↑/↓ (or
+// ctrl+p/ctrl+n) move and scroll, ⏎ acts on the highlight, a digit 1-9
+// jumps straight to that *visible* session row (the numbers shown are the
+// window's, like the other pickers), anything else typed filters — a digit
+// included, when no row carries that number — and esc dismisses.
 func (a app) handleSessionPickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	rows := a.sessionPickerMatches()
-	switch msg.String() {
-	case "esc":
+	action, idx := a.sessionPicker.key(msg, a.height)
+	switch action {
+	case pickerCancel:
 		a.closeSessionPicker()
 		return a, nil
-	case "enter":
-		return a.chooseSessionPickerRow(rows, a.sessionPickerSel)
-	case "up", "ctrl+p":
-		a.sessionPickerSel--
-		a.scrollSessionPicker(len(rows))
-		return a, nil
-	case "down", "ctrl+n":
-		a.sessionPickerSel++
-		a.scrollSessionPicker(len(rows))
-		return a, nil
-	case "backspace":
-		if r := []rune(a.sessionPickerQuery); len(r) > 0 {
-			a.sessionPickerQuery = string(r[:len(r)-1])
-		}
-		a.sessionPickerSel, a.sessionPickerTop = 0, 0
-		return a, nil
-	}
-	if len(msg.Text) == 1 && msg.Text[0] >= '1' && msg.Text[0] <= '9' {
-		top := sessionPickerWindow(a.sessionPickerSel, a.sessionPickerTop, len(rows), a.sessionPickerVisible())
-		if row := top + int(msg.Text[0]-'0'); row <= len(rows) {
-			return a.chooseSessionPickerRow(rows, row)
-		}
-	}
-	if msg.Text != "" {
-		a.sessionPickerQuery += msg.Text
-		a.sessionPickerSel, a.sessionPickerTop = 0, 0
+	case pickerPick:
+		return a.chooseSessionPickerRow(idx)
 	}
 	return a, nil
 }
 
-// chooseSessionPickerRow acts on a picker row over the matching sessions:
-// 0 launches a new session, anything else resumes the session at that
-// index. The new session's default cwd comes from every session the task
-// has, not the filtered ones — the filter narrows what to resume, not
-// where the task has been worked on.
-func (a app) chooseSessionPickerRow(rows []task.Session, row int) (tea.Model, tea.Cmd) {
+// chooseSessionPickerRow acts on a picker row: 0 (the pinned row) launches
+// a new session, anything else resumes the matching session at that index.
+// The new session's default cwd comes from every session the task has, not
+// the filtered ones — the filter narrows what to resume, not where the
+// task has been worked on.
+func (a app) chooseSessionPickerRow(row int) (tea.Model, tea.Cmd) {
 	taskID, projectID := a.sessionPickerTaskID, a.sessionPickerProjectID
-	label, sessions := a.sessionPickerLabel, a.sessionPickerSessions
+	label, sessions := a.sessionPickerLabel, a.sessionPicker.items
+	sess, ok := a.sessionPicker.at(row)
 	a.closeSessionPicker()
 	if row == 0 {
 		return a, a.openSessionCwdPrompt(taskID, label, a.defaultCwd(sessions, projectID))
 	}
-	if i := row - 1; i >= 0 && i < len(rows) {
-		return a, a.resumeGuardedCmd(rows[i])
+	if ok {
+		return a, a.resumeGuardedCmd(sess)
 	}
 	return a, nil
 }
@@ -842,81 +751,33 @@ func sessionStatusCell(s Styles, st task.SessionStatus) (string, lipgloss.Style)
 }
 
 // sessionPickerView renders the chooser box: a title row, the filter
-// prompt (the parent picker's), an always-present "+ new session" row,
-// then the matching sessions — at most sessionPickerVisible of them,
-// numbered within the window, with a row under them saying how many are
-// scrolled off either end — the selected one marked with the selection
-// bar. Same box as urlPickerView.
+// prompt, an always-present "+ new session" pinned row, then the matching
+// sessions in their scroll window, numbered within it, with a row under
+// them saying how many are scrolled off either end — the selected one
+// marked with the selection bar.
 func (a app) sessionPickerView() string {
 	s, g := a.styles, a.styles.Glyphs
-	w := max(a.width, 20)
-	cb := s.CardBorder
-	hbar := strings.Repeat(g.RuleH, w-4)
-
-	row := func(content string) string {
-		gap := max(w-5-lipgloss.Width(content), 0)
-		return "  " + cb.Render(g.RuleV) + " " + content +
-			strings.Repeat(" ", gap) + cb.Render(g.RuleV)
-	}
-
-	lines := []string{"  " + cb.Render(g.BoxTL+hbar+g.BoxTR)}
-	lines = append(lines, row(s.Accent.Bold(true).Render("⚡ ")+
-		s.Title.Render("claude sessions — ")+s.Muted.Render("type to filter · ⏎ or a digit picks")))
-	lines = append(lines, "  "+cb.Render(g.TeeRight+hbar+g.TeeLeft))
-	lines = append(lines, row(s.Accent.Bold(true).Render("❯ ")+
-		s.Title.Render(a.sessionPickerQuery)+s.Accent.Render("▏")))
-
-	newRowStyle := func(selected bool) string {
-		label := s.Accent.Render("+ new session")
-		if selected {
-			return s.SelBar.Render(g.SelBar+" ") + "  " + label
-		}
-		return "    " + s.Dimmed.Render("+ new session")
-	}
-	lines = append(lines, row(newRowStyle(a.sessionPickerSel == 0)))
-
-	rows := a.sessionPickerMatches()
-	if len(rows) == 0 {
-		lines = append(lines, row("  "+s.Muted.Render("no matching sessions")))
-	}
-	vis := a.sessionPickerVisible()
-	top := sessionPickerWindow(a.sessionPickerSel, a.sessionPickerTop, len(rows), vis)
-	end := min(top+vis, len(rows))
-
 	now := time.Now()
-	for i := top; i < end; i++ {
-		sess := rows[i]
-		num := fmt.Sprintf("%d ", i-top+1)
-		age := relTime(sess.LastActiveAt, now)
-		var content string
-		mark, markStyle := sessionStatusCell(s, sess.Status)
-		st := markStyle.Render(mark) + " "
-		if i+1 == a.sessionPickerSel {
-			content = s.SelBar.Render(g.SelBar+" ") + s.Accent.Render(num) + st +
-				s.Link.Render(sess.Label) + "  " + s.Muted.Render(age)
-		} else {
-			content = "  " + s.Muted.Render(num) + st + s.Dimmed.Render(sess.Label) +
-				"  " + s.Muted.Render(age)
-		}
-		lines = append(lines, row(content))
-	}
-	if more := sessionPickerMore(top, end, len(rows)); more != "" {
-		lines = append(lines, row("  "+s.Muted.Render(more)))
-	}
-	lines = append(lines, "  "+cb.Render(g.BoxBL+hbar+g.BoxBR))
-	return strings.Join(lines, "\n")
-}
-
-// sessionPickerMore is the overflow row's text for a window [top, end)
-// over n rows: how many rows are scrolled off above and below, each side
-// named only when it has some; "" when the window holds everything.
-func sessionPickerMore(top, end, n int) string {
-	var parts []string
-	if top > 0 {
-		parts = append(parts, fmt.Sprintf("↑ %d more", top))
-	}
-	if end < n {
-		parts = append(parts, fmt.Sprintf("↓ %d more", n-end))
-	}
-	return strings.Join(parts, "   ")
+	return a.sessionPicker.render(s, a.width, a.height, pickerView[task.Session]{
+		icon:  s.Accent.Bold(true).Render("⚡ "),
+		title: s.Title.Render("claude sessions — "),
+		hint:  s.Muted.Render("type to filter · ⏎ or a digit picks"),
+		pinned: func(i int, selected bool, w int) string {
+			label := s.Accent.Render("+ new session")
+			if selected {
+				return s.SelBar.Render(g.SelBar+" ") + "  " + label
+			}
+			return "    " + s.Dimmed.Render("+ new session")
+		},
+		row: func(sess task.Session, selected bool, w int) string {
+			age := relTime(sess.LastActiveAt, now)
+			mark, markStyle := sessionStatusCell(s, sess.Status)
+			st := markStyle.Render(mark) + " "
+			if selected {
+				return st + s.Link.Render(sess.Label) + "  " + s.Muted.Render(age)
+			}
+			return st + s.Dimmed.Render(sess.Label) + "  " + s.Muted.Render(age)
+		},
+		noMatch: "no matching sessions",
+	})
 }

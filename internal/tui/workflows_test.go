@@ -261,7 +261,7 @@ func TestWorkflowsEdgesEditorAuthorsReviewLoop(t *testing.T) {
 	m = typeText(t, m, "Approve")
 	m = drive(t, m, enter())
 	a = m.(app)
-	if !a.wfPickerOpen || a.wfPickerKind != wfPickEdgeTarget {
+	if !a.wfPicker.open || a.wfPickerKind != wfPickEdgeTarget {
 		t.Fatal("outcome ⏎ did not open the target step picker")
 	}
 	content = ansi.Strip(a.View().Content)
@@ -270,7 +270,7 @@ func TestWorkflowsEdgesEditorAuthorsReviewLoop(t *testing.T) {
 			t.Errorf("target picker missing %q:\n%s", want, content)
 		}
 	}
-	if got := a.wfPickerOptions()[a.wfPickerSel]; got.label != "gate" {
+	if got, _ := a.wfPicker.current(); got.label != "gate" {
 		t.Errorf("picker starts on %q, want the edge's current target gate", got.label)
 	}
 	m = drive(t, m, enter())
@@ -293,7 +293,7 @@ func TestWorkflowsEdgesEditorAuthorsReviewLoop(t *testing.T) {
 	m = drive(t, m, keyPress('n'))
 	m = typeText(t, m, "reject")
 	m = drive(t, m, enter())
-	if !m.(app).wfPickerOpen {
+	if !m.(app).wfPicker.open {
 		t.Fatal("n → outcome ⏎ did not open the target picker")
 	}
 	m = drive(t, m, keyPress('1'))
@@ -352,8 +352,8 @@ func TestWorkflowsEdgesEditorAuthorsReviewLoop(t *testing.T) {
 	m = drive(t, m, enter())
 	m = drive(t, m, esc())
 	a = m.(app)
-	if a.wfPickerOpen || a.wfEdgeDraft != nil || a.promptKind != promptNone {
-		t.Errorf("esc on the picker left state behind: picker=%v draft=%+v prompt=%v", a.wfPickerOpen, a.wfEdgeDraft, a.promptKind)
+	if a.wfPicker.open || a.wfEdgeDraft != nil || a.promptKind != promptNone {
+		t.Errorf("esc on the picker left state behind: picker=%v draft=%+v prompt=%v", a.wfPicker.open, a.wfEdgeDraft, a.promptKind)
 	}
 	if es, _ := s.ListEdges(ctx, wfID); len(es) != 4 {
 		t.Errorf("edges after an abandoned draft = %d, want 4", len(es))
@@ -466,7 +466,7 @@ func TestWorkflowsStepAttributesAndOrder(t *testing.T) {
 
 	// m → model picker, pick sonnet.
 	m = drive(t, m, keyPress('m'))
-	if !m.(app).wfPickerOpen || m.(app).wfPickerKind != wfPickModel {
+	if !m.(app).wfPicker.open || m.(app).wfPickerKind != wfPickModel {
 		t.Fatal("m did not open the model picker")
 	}
 	content := ansi.Strip(m.View().Content)
@@ -476,7 +476,7 @@ func TestWorkflowsStepAttributesAndOrder(t *testing.T) {
 		}
 	}
 	m = drive(t, m, keyPress('2'))
-	if m.(app).wfPickerOpen {
+	if m.(app).wfPicker.open {
 		t.Error("picker still open after a digit pick")
 	}
 	waitForSteps(t, s, w.ID, "model set", func(st []workflow.Step) bool {
@@ -488,7 +488,7 @@ func TestWorkflowsStepAttributesAndOrder(t *testing.T) {
 
 	// p → permission picker, arrow down to acceptEdits, ⏎.
 	m = drive(t, m, keyPress('p'))
-	if !m.(app).wfPickerOpen || m.(app).wfPickerKind != wfPickPermission {
+	if !m.(app).wfPicker.open || m.(app).wfPickerKind != wfPickPermission {
 		t.Fatal("p did not open the permission-mode picker")
 	}
 	m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyDown})
@@ -500,7 +500,7 @@ func TestWorkflowsStepAttributesAndOrder(t *testing.T) {
 
 	// a → advisor picker, pick fable.
 	m = drive(t, m, keyPress('a'))
-	if !m.(app).wfPickerOpen || m.(app).wfPickerKind != wfPickAdvisor {
+	if !m.(app).wfPicker.open || m.(app).wfPickerKind != wfPickAdvisor {
 		t.Fatal("a did not open the advisor picker")
 	}
 	content = ansi.Strip(m.View().Content)
@@ -510,7 +510,7 @@ func TestWorkflowsStepAttributesAndOrder(t *testing.T) {
 		}
 	}
 	m = drive(t, m, keyPress('1'))
-	if m.(app).wfPickerOpen {
+	if m.(app).wfPicker.open {
 		t.Error("picker still open after a digit pick")
 	}
 	waitForSteps(t, s, w.ID, "advisor set", func(st []workflow.Step) bool {
@@ -560,6 +560,52 @@ func TestWorkflowsStepAttributesAndOrder(t *testing.T) {
 	drive(t, m, keyPress('d'))
 	waitForSteps(t, s, w.ID, "step deleted", func(st []workflow.Step) bool {
 		return len(st) == 1 && st[0].ID == second.ID
+	})
+}
+
+// Typing fuzzy-filters the model picker's options, resets the cursor, and
+// a digit picks the visible match. j/k are filter text here, not
+// navigation -- the arrows still move.
+func TestWfPickerTypeToFilter(t *testing.T) {
+	m, s := newTestApp(t)
+	ctx := context.Background()
+	w, err := s.CreateWorkflow(ctx, "review loop", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AddStep(ctx, w.ID, "draft", workflow.StepAgent); err != nil {
+		t.Fatal(err)
+	}
+	m = openWorkflows(t, m)
+	m = drive(t, m, keyPress('l'))
+	m = drive(t, m, keyPress('m'))
+	if !m.(app).wfPicker.open {
+		t.Fatal("m did not open the model picker")
+	}
+
+	m = typeText(t, m, "onn")
+	a := m.(app)
+	matches := a.wfPicker.matches()
+	if len(matches) != 1 || matches[0].label != "sonnet" {
+		t.Fatalf("matches after typing onn = %+v, want just sonnet", matches)
+	}
+	if a.wfPicker.sel != 0 {
+		t.Errorf("sel after typing = %d, want reset to 0", a.wfPicker.sel)
+	}
+
+	// j is filter text in here, not navigation.
+	m = drive(t, m, keyPress('j'))
+	if got := m.(app).wfPicker.query; got != "onnj" {
+		t.Fatalf("query after j = %q, want onnj (j should type, not navigate)", got)
+	}
+	m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyBackspace})
+
+	m = drive(t, m, keyPress('1'))
+	if m.(app).wfPicker.open {
+		t.Error("digit on the filtered match should pick and close")
+	}
+	waitForSteps(t, s, w.ID, "model set", func(st []workflow.Step) bool {
+		return st[0].Model == "sonnet"
 	})
 }
 

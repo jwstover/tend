@@ -26,7 +26,7 @@ func selectTask(t *testing.T, m tea.Model, id int64) tea.Model {
 
 // parentRowLabels is the picker's visible rows, top to bottom.
 func parentRowLabels(m tea.Model) []string {
-	rows := m.(app).parentPickerMatches()
+	rows := m.(app).parentPicker.matches()
 	out := make([]string, 0, len(rows))
 	for _, r := range rows {
 		out = append(out, r.label)
@@ -57,7 +57,7 @@ func TestParentPickerLiftsChildToTopLevel(t *testing.T) {
 	m = selectTask(t, m, child.ID)
 
 	m = drive(t, m, keyPress('m'))
-	if !m.(app).parentPickerOpen {
+	if !m.(app).parentPicker.open {
 		t.Fatal("m should open the parent picker")
 	}
 	got := parentRowLabels(m)
@@ -67,7 +67,7 @@ func TestParentPickerLiftsChildToTopLevel(t *testing.T) {
 	}
 
 	m = drive(t, m, keyPress('1'))
-	if m.(app).parentPickerOpen {
+	if m.(app).parentPicker.open {
 		t.Error("picking a row should close the picker")
 	}
 	waitForTask(t, s, child.ID, "child lifted to top level", func(got task.Task) bool {
@@ -170,9 +170,9 @@ func TestParentPickerCandidatesExcludeSubtreeAndCurrentParent(t *testing.T) {
 	}
 }
 
-// Typing narrows the rows case-insensitively over the breadcrumb, resets
-// the cursor, and the digit shortcuts follow the visible order; backspace
-// widens again.
+// Typing fuzzy-filters the rows over the breadcrumb (substring hits first,
+// then in-order subsequence hits), resets the cursor, and the digit
+// shortcuts follow the visible order; backspace widens again.
 func TestParentPickerTypeToFilter(t *testing.T) {
 	ctx := context.Background()
 	m, s := newTestApp(t)
@@ -195,10 +195,11 @@ func TestParentPickerTypeToFilter(t *testing.T) {
 	// Move the cursor first so the reset on typing is observable. j is
 	// filter text in here, not navigation, so use the arrow.
 	m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyDown})
-	if m.(app).parentPickerSel != 1 {
-		t.Fatalf("sel after down = %d, want 1", m.(app).parentPickerSel)
+	if m.(app).parentPicker.sel != 1 {
+		t.Fatalf("sel after down = %d, want 1", m.(app).parentPicker.sel)
 	}
 
+	// A substring hit (case-insensitively): still the top tier under fuzzy.
 	for _, r := range "PIE" {
 		m = drive(t, m, keyPress(r))
 	}
@@ -206,12 +207,12 @@ func TestParentPickerTypeToFilter(t *testing.T) {
 	if got := parentRowLabels(m); len(got) != 1 || got[0] != "Apple pie" {
 		t.Fatalf("rows after typing PIE = %q, want just Apple pie", got)
 	}
-	if a.parentPickerSel != 0 {
-		t.Errorf("sel after typing = %d, want reset to 0", a.parentPickerSel)
+	if a.parentPicker.sel != 0 {
+		t.Errorf("sel after typing = %d, want reset to 0", a.parentPicker.sel)
 	}
 
 	m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyBackspace})
-	if got := m.(app).parentPickerQuery; got != "PI" {
+	if got := m.(app).parentPicker.query; got != "PI" {
 		t.Fatalf("query after backspace = %q, want PI", got)
 	}
 	if got := parentRowLabels(m); len(got) != 1 {
@@ -220,7 +221,7 @@ func TestParentPickerTypeToFilter(t *testing.T) {
 
 	// The digit picks by visible index, so 1 is the filtered hit.
 	m = drive(t, m, keyPress('1'))
-	if m.(app).parentPickerOpen {
+	if m.(app).parentPicker.open {
 		t.Fatal("digit should pick and close")
 	}
 	waitForTask(t, s, mover.ID, "mover nested under Apple pie", func(got task.Task) bool {
