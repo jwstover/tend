@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jwstover/tend/internal/usage"
 	"github.com/jwstover/tend/internal/workflow"
@@ -899,5 +900,61 @@ func TestDuplicateWorkflowCopiesStepsAndRemapsEdges(t *testing.T) {
 	// The original is untouched.
 	if orig, _ := s.ListEdges(ctx, w.ID); len(orig) != 2 {
 		t.Errorf("original has %d edges after duplication, want 2", len(orig))
+	}
+}
+
+// Telemetry events round-trip with their attributes, list in occurrence
+// order, and cascade away with the step run's task (tend task #31).
+func TestStepRunEvents(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	w := mustWorkflow(t, s, "fix a bug")
+	st := mustStep(t, s, w.ID, "fix")
+	run := mustRun(t, s, w.ID)
+	sr, err := s.CreateStepRun(ctx, workflow.StepRun{RunID: run.ID, StepID: st.ID})
+	if err != nil {
+		t.Fatalf("CreateStepRun: %v", err)
+	}
+	t0 := time.Date(2026, 9, 21, 12, 0, 0, 0, time.UTC)
+	evs := []workflow.StepEvent{
+		{Name: "api_error", StatusCode: 429, OccurredAt: t0.Add(time.Second)},
+		{
+			Name: "api_request", SessionID: "sess", Model: "m", QuerySource: "main", AgentName: "a",
+			Tokens:  usage.Tokens{Input: 1, Output: 2, CacheRead: 3, CacheCreation: 4},
+			CostUSD: 0.5, DurationMS: 90, OccurredAt: t0,
+			Attributes: map[string]string{"k": "v", "input_tokens": "1"},
+		},
+	}
+	if err := s.AddStepRunEvents(ctx, sr.ID, evs); err != nil {
+		t.Fatalf("AddStepRunEvents: %v", err)
+	}
+	got, err := s.ListStepRunEvents(ctx, sr.ID)
+	if err != nil {
+		t.Fatalf("ListStepRunEvents: %v", err)
+	}
+	if len(got) != 2 || got[0].Name != "api_request" || got[1].Name != "api_error" {
+		t.Fatalf("events = %+v, want api_request then api_error", got)
+	}
+	r := got[0]
+	if r.Tokens != evs[1].Tokens || r.CostUSD != 0.5 || r.DurationMS != 90 || r.SessionID != "sess" ||
+		r.QuerySource != "main" || r.AgentName != "a" || r.Attributes["k"] != "v" || !r.OccurredAt.Equal(t0) {
+		t.Errorf("round trip = %+v", r)
+	}
+	if got[1].StatusCode != 429 || len(got[1].Attributes) != 0 {
+		t.Errorf("api_error = %+v", got[1])
+	}
+	if err := s.AddStepRunEvents(ctx, 9999, evs[:1]); err == nil {
+		t.Error("AddStepRunEvents(unknown step run) = nil, want a foreign key error")
+	}
+
+	r2, err := s.GetRun(ctx, run.ID)
+	if err != nil {
+		t.Fatalf("GetRun: %v", err)
+	}
+	if err := s.DeleteTask(ctx, r2.TaskID); err != nil {
+		t.Fatalf("DeleteTask: %v", err)
+	}
+	if got, _ := s.ListStepRunEvents(ctx, sr.ID); len(got) != 0 {
+		t.Errorf("events after deleting the task = %d, want 0", len(got))
 	}
 }
