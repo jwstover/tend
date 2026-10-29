@@ -24,7 +24,39 @@ type usageMsg struct {
 	summary usage.Summary
 	entries []usage.Entry
 	skipped int
-	err     error
+	// breakdowns are the per-project/model/agent rollups the usage view
+	// shows, computed here with the summary so View never walks entries.
+	breakdowns usageBreakdowns
+	err        error
+}
+
+// usageBreakdowns are the usage view's grouped rollups.
+type usageBreakdowns struct{ byProject, byModel, byAgent []usage.BreakdownRow }
+
+// usageMsgFor rolls entries up as of now. It is pure so a test can build
+// a msg without a filesystem.
+func usageMsgFor(entries []usage.Entry, skipped int, now time.Time) usageMsg {
+	orUnknown := func(s string) string {
+		if s == "" {
+			return "(unknown)"
+		}
+		return s
+	}
+	return usageMsg{
+		summary: usage.Summarize(entries, now),
+		entries: entries,
+		skipped: skipped,
+		breakdowns: usageBreakdowns{
+			byProject: usage.Breakdown(entries, now, func(e usage.Entry) string { return orUnknown(e.Cwd) }),
+			byModel:   usage.Breakdown(entries, now, func(e usage.Entry) string { return orUnknown(e.Model) }),
+			byAgent: usage.Breakdown(entries, now, func(e usage.Entry) string {
+				if e.Sidechain {
+					return "sub-agent"
+				}
+				return "main"
+			}),
+		},
+	}
 }
 
 // pollUsage rescans the transcript tree at root, but only when a
@@ -51,11 +83,7 @@ func pollUsage(root string, prev *usage.Fingerprint) (usageMsg, usage.Fingerprin
 	}
 	// Rolled up here, on the poller's goroutine, and never in View: this
 	// walks every message on the machine.
-	return usageMsg{
-		summary: usage.Summarize(entries, time.Now()),
-		entries: entries,
-		skipped: skipped,
-	}, fp, true
+	return usageMsgFor(entries, skipped, time.Now()), fp, true
 }
 
 // runUsagePoller scans once straight away, so a view has a reading from
@@ -107,5 +135,6 @@ func (a app) applyUsage(msg usageMsg) app {
 		return a
 	}
 	a.usage, a.usageEntries, a.usageSkipped, a.usageLoaded = msg.summary, msg.entries, msg.skipped, true
+	a.usageBreakdowns = msg.breakdowns
 	return a
 }
