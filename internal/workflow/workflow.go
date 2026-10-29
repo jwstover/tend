@@ -16,6 +16,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/jwstover/tend/internal/usage"
 )
 
 // ErrEmptyName is returned when a workflow or step name is blank.
@@ -217,7 +219,11 @@ type Run struct {
 // Finished.
 // SessionExternalID is the claude --session-id of the agent session that
 // ran the step, "" for a gate. LogPath is the step's stream-json log
-// file, "" if none was written.
+// file, "" if none was written. Usage is what the step cost, summed
+// across every claude process that ran it; zero for a gate and for rows
+// written before it was recorded. Ephemeral5m and Ephemeral1h are always
+// zero here: the result event reports one cache-creation total and the
+// row stores the four counts claude gives, not the TTL split.
 type StepRun struct {
 	ID                int64
 	RunID             int64
@@ -234,6 +240,7 @@ type StepRun struct {
 	Outcome           string
 	Deliverable       string
 	LogPath           string
+	Usage             usage.Tokens
 	StartedAt         time.Time
 	EndedAt           *time.Time
 }
