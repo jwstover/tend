@@ -29,19 +29,66 @@ func matchesFilter(query, title string, tags []string) bool {
 	return true
 }
 
-// filterTasks narrows the top-level task slice to those matching query.
-// It runs before groupTasks so the filtered view keeps its headings.
-func filterTasks(query string, tasks []task.Task, tags map[int64][]string) []task.Task {
-	if strings.TrimSpace(query) == "" {
-		return tasks
-	}
-	out := make([]task.Task, 0, len(tasks))
+// filterView is the list's shape under an active `/` query: the top-level
+// tasks to show, and for each branch the sub-tasks that make it visible.
+//
+// A task is shown when it matches or something under it does. The ancestors
+// of a match that don't match themselves are dim: context only, so real
+// hits stand apart from scaffolding. Branches open for as long as the query
+// does, without touching the user's own expand set, so clearing the filter
+// restores the tree as they left it.
+type filterView struct {
+	top      []task.Task
+	children map[int64][]task.Task
+	expanded map[int64]bool
+	dim      map[int64]bool
+}
+
+// buildFilterView applies query across the whole loaded task slice, at any
+// depth. Only live sub-tasks are in tasks, so a closed one is not matched.
+func buildFilterView(query string, tasks []task.Task, tags map[int64][]string) filterView {
+	byParent := make(map[int64][]task.Task)
 	for _, t := range tasks {
-		if matchesFilter(query, t.Title, tags[t.ID]) {
-			out = append(out, t)
+		if t.ParentID != nil {
+			byParent[*t.ParentID] = append(byParent[*t.ParentID], t)
 		}
 	}
-	return out
+	fv := filterView{
+		children: make(map[int64][]task.Task),
+		expanded: make(map[int64]bool),
+		dim:      make(map[int64]bool),
+	}
+	// visit reports whether t or anything under it matches, recording the
+	// visible children as it unwinds. The seen set guards a corrupt cycle.
+	seen := make(map[int64]bool)
+	var visit func(t task.Task) bool
+	visit = func(t task.Task) bool {
+		if seen[t.ID] {
+			return false
+		}
+		seen[t.ID] = true
+		self := matchesFilter(query, t.Title, tags[t.ID])
+		var kept []task.Task
+		for _, c := range byParent[t.ID] {
+			if visit(c) {
+				kept = append(kept, c)
+			}
+		}
+		if len(kept) > 0 {
+			fv.children[t.ID] = kept
+			fv.expanded[t.ID] = true
+		}
+		if !self && len(kept) > 0 {
+			fv.dim[t.ID] = true
+		}
+		return self || len(kept) > 0
+	}
+	for _, t := range tasks {
+		if t.ParentID == nil && visit(t) {
+			fv.top = append(fv.top, t)
+		}
+	}
+	return fv
 }
 
 // startFilter begins editing the filter query, keeping any existing one.

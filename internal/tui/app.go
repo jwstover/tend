@@ -2157,8 +2157,13 @@ func (a *app) rebuildList() tea.Cmd {
 	// rendering, whereas a session marker is purely visual, so the
 	// renderer is the one thing that needs it.
 	a.list.SetDelegate(taskDelegate{styles: a.styles, sessions: a.sessionStatus, tags: a.tags, blockers: a.blockers})
-	sections := groupTasks(a.groupBy, filterTasks(a.filter, a.tasks, a.tags), a.sessionStatus, a.styles)
-	cmds := []tea.Cmd{a.list.SetItems(toGroupedItems(sections, a.counts, a.expanded, a.childCache))}
+	top, expanded, children, dim := a.tasks, a.expanded, a.childCache, map[int64]bool(nil)
+	if strings.TrimSpace(a.filter) != "" {
+		fv := buildFilterView(a.filter, a.tasks, a.tags)
+		top, expanded, children, dim = fv.top, fv.expanded, fv.children, fv.dim
+	}
+	sections := groupTasks(a.groupBy, top, a.sessionStatus, a.styles)
+	cmds := []tea.Cmd{a.list.SetItems(toGroupedItems(sections, a.counts, expanded, children, dim))}
 	for id := range a.expanded {
 		if _, ok := a.childCache[id]; !ok {
 			cmds = append(cmds, a.loadChildren(id))
