@@ -20,6 +20,7 @@ type listItem struct {
 	t           task.Task
 	done, total int64
 	expanded    bool
+	dim         bool // context ancestor of a filter match; see filterView
 }
 
 // FilterValue satisfies list.Item; the app owns filtering (filter.go).
@@ -35,6 +36,7 @@ type childItem struct {
 	depth       int // 1 for direct children; indentation = depth cells
 	done, total int64
 	expanded    bool
+	dim         bool
 }
 
 func (i childItem) FilterValue() string { return "" }
@@ -272,7 +274,7 @@ func appendSection(out []section, heading sectionItem, tasks []task.Task) []sect
 // below the parent, recursively; collapsed children surface only as the
 // N/M count.
 func toGroupedItems(sections []section, counts map[int64]task.ChildCount,
-	expanded map[int64]bool, children map[int64][]task.Task) []list.Item {
+	expanded map[int64]bool, children map[int64][]task.Task, dim map[int64]bool) []list.Item {
 	n := 0
 	for _, s := range sections {
 		n += len(s.tasks) + 2
@@ -284,7 +286,7 @@ func toGroupedItems(sections []section, counts map[int64]task.ChildCount,
 		}
 		items = append(items, s.sectionItem)
 		for _, t := range s.tasks {
-			items = appendTaskRows(items, t, counts, expanded, children)
+			items = appendTaskRows(items, t, counts, expanded, children, dim)
 		}
 	}
 	return items
@@ -293,17 +295,17 @@ func toGroupedItems(sections []section, counts map[int64]task.ChildCount,
 // appendTaskRows emits a top-level task row plus, when expanded, its
 // child rows.
 func appendTaskRows(items []list.Item, t task.Task, counts map[int64]task.ChildCount,
-	expanded map[int64]bool, children map[int64][]task.Task) []list.Item {
+	expanded map[int64]bool, children map[int64][]task.Task, dim map[int64]bool) []list.Item {
 	c := counts[t.ID]
 	_, loaded := children[t.ID]
 	items = append(items, listItem{
-		t: t, done: c.Done, total: c.Total,
+		t: t, done: c.Done, total: c.Total, dim: dim[t.ID],
 		// The caret reflects what's actually showing: a branch awaiting
 		// its first children load still reads closed.
 		expanded: expanded[t.ID] && c.Total > 0 && loaded,
 	})
 	if expanded[t.ID] {
-		items = appendChildRows(items, t.ID, 1, counts, expanded, children)
+		items = appendChildRows(items, t.ID, 1, counts, expanded, children, dim)
 	}
 	return items
 }
@@ -313,7 +315,7 @@ func appendTaskRows(items []list.Item, t task.Task, counts map[int64]task.ChildC
 // until their childrenLoadedMsg arrives.
 func appendChildRows(items []list.Item, parentID int64, depth int,
 	counts map[int64]task.ChildCount, expanded map[int64]bool,
-	children map[int64][]task.Task) []list.Item {
+	children map[int64][]task.Task, dim map[int64]bool) []list.Item {
 	for _, c := range children[parentID] {
 		cc := counts[c.ID]
 		_, loaded := children[c.ID]
@@ -323,7 +325,7 @@ func appendChildRows(items []list.Item, parentID int64, depth int,
 			done: cc.Done, total: cc.Total, expanded: exp,
 		})
 		if exp {
-			items = appendChildRows(items, c.ID, depth+1, counts, expanded, children)
+			items = appendChildRows(items, c.ID, depth+1, counts, expanded, children, dim)
 		}
 	}
 	return items
@@ -472,6 +474,7 @@ type rowSpec struct {
 	depth       int
 	done, total int64
 	expanded    bool
+	dim         bool
 }
 
 // gutterCells renders the three-cell front gutter every task row opens
@@ -557,7 +560,7 @@ func (d taskDelegate) renderTaskRow(r rowSpec, selected bool, width int) string 
 	lead := segWidth(segs)
 	titleW := max(width-lead-1-metaW, 1)
 	title := truncTail(t.Title, titleW, g.Ellipsis)
-	segs = append(segs, seg{title, d.titleStyle(t, r.depth, selected)})
+	segs = append(segs, seg{title, d.titleStyle(t, r.depth, r.dim, selected)})
 
 	// Gap, then the meta block flush right. With no meta block the gap
 	// alone pads the row to full width, so the selected-row background
@@ -580,9 +583,14 @@ func (d taskDelegate) renderTaskRow(r rowSpec, selected bool, width int) string 
 // titleStyle picks the title treatment. Sub-task titles dim so top-level
 // rows stay dominant — except under the cursor, which is the row being
 // read.
-func (d taskDelegate) titleStyle(t task.Task, depth int, selected bool) lipgloss.Style {
+func (d taskDelegate) titleStyle(t task.Task, depth int, dim, selected bool) lipgloss.Style {
 	s := d.styles
 	done := t.State.Closed()
+	if dim {
+		// A filter's context ancestor: never the dominant row, even at the
+		// top level, and even under the cursor.
+		return s.Dimmed
+	}
 	if depth == 0 {
 		if done {
 			return s.TitleDone
