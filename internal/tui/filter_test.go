@@ -124,6 +124,22 @@ func TestBuildFilterViewMatchesSubtasksUnderDimmedAncestors(t *testing.T) {
 		t.Errorf("expanded = %v, want ancestors open", fv.expanded)
 	}
 
+	// The dim flag reaches the rendered rows at every depth, not just the
+	// top-level one: the middle ancestor is a child row.
+	counts := map[int64]task.ChildCount{1: {Total: 1}, 3: {Total: 2}}
+	rowDim := make(map[int64]bool)
+	for _, it := range toGroupedItems(groupTasks(groupByState, fv.top, nil, Styles{}), counts, fv.expanded, fv.children, fv.dim) {
+		switch r := it.(type) {
+		case listItem:
+			rowDim[r.t.ID] = r.dim
+		case childItem:
+			rowDim[r.t.ID] = r.dim
+		}
+	}
+	if len(rowDim) != 3 || !rowDim[1] || !rowDim[3] || rowDim[4] {
+		t.Errorf("row dim = %v, want rows 1 and 3 dim, 4 not", rowDim)
+	}
+
 	// A matching parent is not dim, even when a child matches as well.
 	fv = buildFilterView("parent two", tasks, nil)
 	if len(fv.top) != 1 || fv.top[0].ID != 2 || fv.dim[2] {

@@ -321,7 +321,7 @@ func appendChildRows(items []list.Item, parentID int64, depth int,
 		_, loaded := children[c.ID]
 		exp := expanded[c.ID] && cc.Total > 0 && loaded
 		items = append(items, childItem{
-			t: c, depth: depth,
+			t: c, depth: depth, dim: dim[c.ID],
 			done: cc.Done, total: cc.Total, expanded: exp,
 		})
 		if exp {
