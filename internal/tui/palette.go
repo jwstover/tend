@@ -122,6 +122,11 @@ func (a app) paletteCommands() []paletteCommand {
 				a.startSchedules()
 				return a, a.loadSchedules()
 			}},
+		{icon: "⚙", label: "Settings", hint: ",", aliases: []string{"settings", "preferences", "config"},
+			act: func(a app) (tea.Model, tea.Cmd) {
+				a.startSettings()
+				return a, a.loadSettings()
+			}},
 		{icon: "⚡", label: "Run workflow on task", hint: "w", aliases: []string{"run"},
 			act: func(a app) (tea.Model, tea.Cmd) {
 				t, ok := a.selected()

@@ -1339,6 +1339,8 @@ func TestAddSubTaskAutoExpands(t *testing.T) {
 
 func TestPaletteFilterAndRun(t *testing.T) {
 	m, _ := newTestApp(t)
+	// The palette lists every command unclipped; give it room for all of them.
+	m = drive(t, m, tea.WindowSizeMsg{Width: 100, Height: 40})
 
 	m = drive(t, m, keyPress(':'))
 	if !m.(app).paletteOpen {

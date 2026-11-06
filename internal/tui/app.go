@@ -71,6 +71,10 @@ type Store interface {
 	DeleteProject(ctx context.Context, id int64) error
 	ActiveProjectID(ctx context.Context) (int64, error)
 	SetActiveProject(ctx context.Context, id int64) error
+	// Settings view (settings.go).
+	Setting(ctx context.Context, key string) (string, bool, error)
+	SetSetting(ctx context.Context, key, value string) error
+	ClearSetting(ctx context.Context, key string) error
 	SetPriority(ctx context.Context, id int64, p *int64) error
 	SetDue(ctx context.Context, id int64, due *string) error
 	SetTitle(ctx context.Context, id int64, title string) error
@@ -267,6 +271,7 @@ const (
 	modeRun       // watching one workflow run (runview.go)
 	modeAgents    // a project's agent sessions (agents.go)
 	modeSchedules // every workflow schedule (schedules.go)
+	modeSettings  // the user-facing settings (settings.go)
 )
 
 // pane identifies which column owns the keyboard. It replaces an earlier
@@ -733,6 +738,9 @@ type app struct {
 	// Schedules view (schedules.go).
 	sv schedulesView
 
+	// Settings view (settings.go).
+	stv settingsView
+
 	showDetail bool
 	focus      pane // which column owns j/k and the scroll keys
 	detail     viewport.Model
@@ -1047,6 +1055,13 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return a, settle
 
+	case settingsLoadedMsg:
+		settle := a.liveReloadSettled()
+		if a.mode == modeSettings {
+			a.applySettings(msg)
+		}
+		return a, settle
+
 	case agentDetailLoadedMsg:
 		if a.mode == modeAgents {
 			a.applyAgentDetail(msg)
@@ -1152,6 +1167,8 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, a.loadAgentSessions()
 		case modeSchedules:
 			return a, a.loadSchedules()
+		case modeSettings:
+			return a, a.loadSettings()
 		}
 		return a, a.loadTasks(a.mode)
 
@@ -1457,6 +1474,9 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if a.mode == modeSchedules {
 		return a.handleSchedulesKey(msg)
 	}
+	if a.mode == modeSettings {
+		return a.handleSettingsKey(msg)
+	}
 
 	// A pending `c` chord consumes the next key: a state key applies it,
 	// anything else cancels.
@@ -1623,6 +1643,10 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, a.keys.Schedules):
 		a.startSchedules()
 		return a, a.loadSchedules()
+
+	case key.Matches(msg, a.keys.Settings):
+		a.startSettings()
+		return a, a.loadSettings()
 
 	case key.Matches(msg, a.keys.Note):
 		return a, a.modal.Open(modalLog, true, "note", 0, "")
@@ -2575,6 +2599,8 @@ func (a app) submitModal() (tea.Model, tea.Cmd) {
 		return a, a.finishTakenOverStep(target, extra, value)
 	case modalGotoTask:
 		return a.submitGotoTask(value)
+	case modalSettingValue:
+		return a.submitSettingValue(extra, value)
 	}
 	return a, nil
 }
@@ -2596,6 +2622,8 @@ func (a app) reloadCmd() tea.Cmd {
 		return a.loadRunView(a.rv.runID)
 	case modeSchedules:
 		return a.loadSchedules()
+	case modeSettings:
+		return a.loadSettings()
 	}
 	return tea.Batch(a.loadScoped(), a.loadProjects())
 }
@@ -2842,6 +2870,9 @@ func (a app) View() tea.View {
 	case modeSchedules:
 		splits = nil
 		body = a.schedulesBody()
+	case modeSettings:
+		splits = nil
+		body = a.settingsBody()
 	default:
 		body = a.listBody()
 	}
@@ -2954,6 +2985,8 @@ func (a app) headerLine() string {
 		left += s.HeaderView.Render("agents")
 	case modeSchedules:
 		left += s.HeaderView.Render("schedules")
+	case modeSettings:
+		left += s.HeaderView.Render("settings")
 	default:
 		left += s.HeaderView.Render("live")
 		// State is the default and needs no announcing; any other grouping
@@ -3201,6 +3234,9 @@ func (a app) footer() string {
 	}
 	if a.mode == modeSchedules {
 		hints = a.schedulesHints()
+	}
+	if a.mode == modeSettings {
+		hints = a.settingsHints()
 	}
 	return a.hintLine(hints)
 }
