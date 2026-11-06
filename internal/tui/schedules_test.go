@@ -45,10 +45,15 @@ func TestSchedulesViewListsTogglesAndLeaves(t *testing.T) {
 		t.Fatalf("mode %v rows %d; want the schedules view with one row", a.mode, len(a.sv.rows))
 	}
 	view := ansi.Strip(a.View().Content)
-	for _, want := range []string{"nightly", "wf-nightly", "task for nightly", "*/15 * * * *", "in "} {
+	for _, want := range []string{"nightly", "wf-nightly", "task for nightly", "*/15 * * * *"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("view lacks %q:\n%s", want, view)
 		}
+	}
+	// The next-run column is relative to the wall clock: within a minute of a
+	// quarter hour relFuture says "now" rather than "in Nm".
+	if !strings.Contains(view, "in ") && !strings.Contains(view, "now") {
+		t.Errorf("view lacks a next-run time (\"in …\" or \"now\"):\n%s", view)
 	}
 
 	m = drive(t, m, keyPress('p'))
