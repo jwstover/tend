@@ -215,39 +215,48 @@ func TestDBChangedDefersWhilePromptOpen(t *testing.T) {
 	}
 }
 
-// Same for a `/` filter being typed: the list owns the keyboard, and a
-// rebuild under it would reset what the user has typed so far.
-func TestDBChangedDefersWhileFiltering(t *testing.T) {
+// A `/` filter being typed is app-owned state, so a live reload applies
+// at once, under the query, and keeps what the user has typed.
+func TestDBChangedAppliesUnderFilter(t *testing.T) {
 	ctx := context.Background()
 	m, s := newTestApp(t)
 	if _, err := s.AddTask(ctx, "alpha"); err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	if _, err := s.AddTask(ctx, "beta"); err != nil {
 		t.Fatalf("AddTask: %v", err)
 	}
 	m = drive(t, m, refreshMsg{})
 
 	m = drive(t, m, keyPress('/'))
 	m = drive(t, m, keyPress('a'))
-	if !m.(app).list.SettingFilter() {
-		t.Fatal("list is not in filter-setting state")
+	m = drive(t, m, keyPress('l'))
+	if !m.(app).filtering || m.(app).filter != "al" {
+		t.Fatalf("filter state = %v %q", m.(app).filtering, m.(app).filter)
+	}
+	out := ansi.Strip(m.View().Content)
+	if strings.Contains(out, "beta") {
+		t.Errorf("filter did not hide beta:\n%s", out)
 	}
 	if _, err := s.AddTask(ctx, "another alpha"); err != nil {
 		t.Fatalf("AddTask: %v", err)
 	}
 	m = drive(t, m, dbChangedMsg{})
-	if !m.(app).liveReloadDeferred {
-		t.Error("change while filtering was not deferred")
+	if !strings.Contains(ansi.Strip(m.View().Content), "another alpha") {
+		t.Errorf("reload not applied under filter:\n%s", ansi.Strip(m.View().Content))
 	}
 
-	m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyEscape})
+	m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	a := m.(app)
-	if a.list.SettingFilter() {
-		t.Fatal("esc did not leave filter-setting state")
+	if a.filtering || a.filter != "al" {
+		t.Errorf("enter should keep the filter and release the keyboard: %v %q", a.filtering, a.filter)
 	}
-	if a.liveReloadDeferred {
-		t.Error("deferred reload still pending after the filter closed")
+	m = drive(t, m, tea.KeyPressMsg{Code: tea.KeyEscape})
+	if m.(app).filter != "" {
+		t.Error("esc did not clear the filter")
 	}
-	if !strings.Contains(ansi.Strip(m.View().Content), "another alpha") {
-		t.Errorf("deferred reload not applied after esc:\n%s", ansi.Strip(m.View().Content))
+	if !strings.Contains(ansi.Strip(m.View().Content), "beta") {
+		t.Error("clearing the filter did not restore beta")
 	}
 }
 

@@ -20,17 +20,10 @@ type listItem struct {
 	t           task.Task
 	done, total int64
 	expanded    bool
-	tags        []string // carried on the item so `/` can match tag text
 }
 
-// FilterValue feeds the list's built-in `/` filtering.
-func (i listItem) FilterValue() string {
-	v := i.t.Title
-	for _, tag := range i.tags {
-		v += " " + tag
-	}
-	return v
-}
+// FilterValue satisfies list.Item; the app owns filtering (filter.go).
+func (i listItem) FilterValue() string { return "" }
 
 func (i listItem) rowTask() task.Task { return i.t }
 
@@ -44,8 +37,6 @@ type childItem struct {
 	expanded    bool
 }
 
-// An empty FilterValue keeps child rows out of `/` results: filtering
-// matches top-level tasks only, like the section headings.
 func (i childItem) FilterValue() string { return "" }
 
 func (i childItem) rowTask() task.Task { return i.t }
@@ -59,8 +50,7 @@ type rowItem interface {
 // sectionItem is a non-selectable heading row that labels the group below
 // it: the heading's text plus the glyph and color it wears, resolved when
 // the grouping ran (see groupTasks) so the renderer needn't know which
-// grouping produced it. An empty FilterValue keeps headings out of `/`
-// filter results.
+// grouping produced it.
 type sectionItem struct {
 	label string
 	glyph string
@@ -282,7 +272,7 @@ func appendSection(out []section, heading sectionItem, tasks []task.Task) []sect
 // below the parent, recursively; collapsed children surface only as the
 // N/M count.
 func toGroupedItems(sections []section, counts map[int64]task.ChildCount,
-	expanded map[int64]bool, children map[int64][]task.Task, tags map[int64][]string) []list.Item {
+	expanded map[int64]bool, children map[int64][]task.Task) []list.Item {
 	n := 0
 	for _, s := range sections {
 		n += len(s.tasks) + 2
@@ -294,7 +284,7 @@ func toGroupedItems(sections []section, counts map[int64]task.ChildCount,
 		}
 		items = append(items, s.sectionItem)
 		for _, t := range s.tasks {
-			items = appendTaskRows(items, t, counts, expanded, children, tags)
+			items = appendTaskRows(items, t, counts, expanded, children)
 		}
 	}
 	return items
@@ -303,11 +293,11 @@ func toGroupedItems(sections []section, counts map[int64]task.ChildCount,
 // appendTaskRows emits a top-level task row plus, when expanded, its
 // child rows.
 func appendTaskRows(items []list.Item, t task.Task, counts map[int64]task.ChildCount,
-	expanded map[int64]bool, children map[int64][]task.Task, tags map[int64][]string) []list.Item {
+	expanded map[int64]bool, children map[int64][]task.Task) []list.Item {
 	c := counts[t.ID]
 	_, loaded := children[t.ID]
 	items = append(items, listItem{
-		t: t, done: c.Done, total: c.Total, tags: tags[t.ID],
+		t: t, done: c.Done, total: c.Total,
 		// The caret reflects what's actually showing: a branch awaiting
 		// its first children load still reads closed.
 		expanded: expanded[t.ID] && c.Total > 0 && loaded,
@@ -825,6 +815,6 @@ func newTaskList(styles Styles) list.Model {
 	l.SetShowTitle(false)
 	l.SetShowStatusBar(false)
 	l.SetShowHelp(false)
-	l.SetFilteringEnabled(true)
+	l.SetFilteringEnabled(false)
 	return l
 }

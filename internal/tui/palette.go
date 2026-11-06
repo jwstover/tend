@@ -5,7 +5,6 @@ import (
 	"slices"
 	"strings"
 
-	"charm.land/bubbles/v2/list"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 )
@@ -143,7 +142,7 @@ func (a app) paletteCommands() []paletteCommand {
 					a.mode = modeList
 					cmd = a.loadTasks(modeList)
 				}
-				a.list.SetFilterState(list.Filtering)
+				a.startFilter()
 				return a, cmd
 			}},
 		{icon: "≡", label: "Go to list", aliases: []string{"list", "tasks"},

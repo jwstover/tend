@@ -36,7 +36,7 @@ func helpGroups() []helpGroup {
 		{"CAPTURE & FIND", []helpEntry{
 			{"n", "quick-add to inbox"},
 			{"a", "add sub-task"},
-			{"/", "search the list"},
+			{"/", "filter by title + tags"},
 			{": / ctrl+p", "command palette"},
 		}},
 		{"PROCESS", []helpEntry{
