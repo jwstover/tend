@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"charm.land/bubbles/v2/list"
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/jwstover/tend/internal/task"
@@ -103,9 +102,7 @@ func (a app) applyGotoTask(msg gotoTaskMsg) (tea.Model, tea.Cmd) {
 		a.showCompleted = true
 		notes = append(notes, "completed shown")
 	}
-	if a.list.FilterState() != list.Unfiltered {
-		a.list.ResetFilter()
-	}
+	a.filter, a.filtering = "", false
 	for _, id := range msg.ancestors {
 		a.expanded[id] = true
 	}

@@ -567,6 +567,11 @@ type app struct {
 	// All row, otherwise the selected project.
 	projectFilter *int64
 
+	// filter is the `/` query (title + tags, see filter.go) and filtering
+	// says the user is mid-typing it. The query survives project switches.
+	filter    string
+	filtering bool
+
 	// Projects column state. projectCursor indexes the rendered rows, so
 	// 0 is the synthetic All row and a project sits at its index + 1.
 	// activeProjectID is the capture target mirrored from the settings
@@ -1397,11 +1402,9 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	// While typing a `/` filter, the list owns the keyboard.
-	if a.list.SettingFilter() {
-		var cmd tea.Cmd
-		a.list, cmd = a.list.Update(msg)
-		return a, cmd
+	// While typing a `/` filter, it owns the keyboard.
+	if a.filtering {
+		return a.handleFilterKey(msg)
 	}
 
 	// A pending confirmation consumes the next key: `y` runs it, anything
@@ -1554,10 +1557,8 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return a, tea.Quit
 
 	case key.Matches(msg, a.keys.Back):
-		if a.list.FilterState() != list.Unfiltered {
-			var cmd tea.Cmd
-			a.list, cmd = a.list.Update(msg) // clears the filter
-			return a, cmd
+		if a.filter != "" && a.mode == modeList {
+			return a, a.clearFilter()
 		}
 		// Triage leaves before the detail toggle: the pane isn't visible
 		// there, so closing it first would be an invisible esc.
@@ -1845,7 +1846,12 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return a, cmd
 	}
 
-	// Let the list handle navigation (j/k, g/G, /, paging).
+	if msg.String() == "/" && a.mode == modeList {
+		a.startFilter()
+		return a, nil
+	}
+
+	// Let the list handle navigation (j/k, g/G, paging).
 	var cmd tea.Cmd
 	a.list, cmd = a.list.Update(msg)
 	return a, tea.Batch(cmd, a.syncDetail(false))
@@ -2151,8 +2157,8 @@ func (a *app) rebuildList() tea.Cmd {
 	// rendering, whereas a session marker is purely visual, so the
 	// renderer is the one thing that needs it.
 	a.list.SetDelegate(taskDelegate{styles: a.styles, sessions: a.sessionStatus, tags: a.tags, blockers: a.blockers})
-	sections := groupTasks(a.groupBy, a.tasks, a.sessionStatus, a.styles)
-	cmds := []tea.Cmd{a.list.SetItems(toGroupedItems(sections, a.counts, a.expanded, a.childCache, a.tags))}
+	sections := groupTasks(a.groupBy, filterTasks(a.filter, a.tasks, a.tags), a.sessionStatus, a.styles)
+	cmds := []tea.Cmd{a.list.SetItems(toGroupedItems(sections, a.counts, a.expanded, a.childCache))}
 	for id := range a.expanded {
 		if _, ok := a.childCache[id]; !ok {
 			cmds = append(cmds, a.loadChildren(id))
@@ -2578,12 +2584,12 @@ func (a app) loadScoped() tea.Cmd {
 }
 
 // inputBusy reports whether the user is mid-input somewhere a list rebuild
-// would trample: typing a `/` filter, in a text prompt, or in the note
+// would trample: in a text prompt, or in the note
 // modal. Live updates are held back for the duration (see dbChangedMsg).
 // The pickers and palette are deliberately not included: they overlay the
 // list rather than editing it, and their own state is keyed by id.
 func (a app) inputBusy() bool {
-	return a.list.SettingFilter() || a.promptKind != promptNone || a.modal.Active()
+	return a.promptKind != promptNone || a.modal.Active()
 }
 
 // liveReload issues the reload a dbChangedMsg asks for and marks it in
@@ -2926,6 +2932,13 @@ func (a app) headerLine() string {
 		if a.groupBy != groupByState {
 			left += s.HeaderSep.Render("  ·  ") + s.CountLabel.Render("by "+a.groupBy.String())
 		}
+		if a.filtering || a.filter != "" {
+			q := "/" + a.filter
+			if a.filtering {
+				q += "▏"
+			}
+			left += s.HeaderSep.Render("  ·  ") + s.HeaderView.Render(q)
+		}
 	}
 	// Name the project the view is scoped to. The projects column usually
 	// says this, but it hides on a narrow terminal and triage never shows
@@ -3087,7 +3100,7 @@ func (a app) footer() string {
 	}
 	hints := [][2]string{
 		{"j/k", "move"}, {"]", "detail"}, {"n", "add"}, {"c", "state"},
-		{"/", "search"}, {":", "palette"}, {"i", "triage"}, {"?", "help"}, {"q", "quit"},
+		{"/", "filter"}, {":", "palette"}, {"i", "triage"}, {"?", "help"}, {"q", "quit"},
 	}
 	_, _, _, full := a.paneWidths()
 	switch {
