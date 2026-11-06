@@ -44,6 +44,12 @@ var (
 	tokP2        = token{"#E3B341", "#C66A00"}
 	tokP3        = token{"#58A6FF", "#2066AC"}
 	tokP4        = token{"#6E7681", "#767676"} // D: quiet; spec only names 1–3
+
+	// Diff viewer (diffrender.go): row backgrounds for added/removed lines
+	// and the cursor row's tint over a context line.
+	tokDiffAddBg = token{"#12261E", "#DAFBE1"}
+	tokDiffDelBg = token{"#2D1517", "#FFEBE9"}
+	tokDiffCurBg = token{"#1F2A3A", "#DCE8F5"}
 )
 
 // palette is the token table resolved for the active terminal background.
@@ -56,6 +62,8 @@ type palette struct {
 
 	Complete, Overdue, DueToday, DueFuture color.Color
 	P1, P2, P3, P4                         color.Color
+
+	DiffAddBg, DiffDelBg, DiffCurBg color.Color
 }
 
 func newPalette(isDark bool) palette {
@@ -71,6 +79,7 @@ func newPalette(isDark bool) palette {
 		Complete: pick(tokComplete), Overdue: pick(tokOverdue),
 		DueToday: pick(tokDueToday), DueFuture: pick(tokDueFuture),
 		P1: pick(tokP1), P2: pick(tokP2), P3: pick(tokP3), P4: pick(tokP4),
+		DiffAddBg: pick(tokDiffAddBg), DiffDelBg: pick(tokDiffDelBg), DiffCurBg: pick(tokDiffCurBg),
 	}
 }
 
@@ -274,6 +283,13 @@ type Styles struct {
 	Session  map[task.SessionStatus]lipgloss.Style
 	Priority map[int64]lipgloss.Style
 
+	// Diff viewer rows (diffrender.go). The fold carets are Glyphs.CaretClosed
+	// and CaretOpen, which already have unicode, nerd and ascii sets.
+	DiffAdd, DiffDel, DiffCursor lipgloss.Style // row backgrounds; cursor tints context rows
+	DiffHunk, DiffGutter         lipgloss.Style
+	DiffFileHeader, DiffSection  lipgloss.Style
+	DiffChroma                   string // chroma style name for syntax colors
+
 	// Detail pane.
 	DetailID    lipgloss.Style // "#7" — muted
 	DetailLabel lipgloss.Style // "tags" / "due" / "pri" — muted
@@ -377,6 +393,15 @@ func newStyles(isDark bool) Styles {
 			3: fg(p.P3),
 			4: fg(p.P4),
 		},
+
+		DiffAdd:        lipgloss.NewStyle().Background(p.DiffAddBg),
+		DiffDel:        lipgloss.NewStyle().Background(p.DiffDelBg),
+		DiffCursor:     lipgloss.NewStyle().Background(p.DiffCurBg),
+		DiffHunk:       fg(p.Muted),
+		DiffGutter:     fg(p.Faint),
+		DiffFileHeader: fg(p.Fg).Bold(true),
+		DiffSection:    fg(p.Accent).Bold(true),
+		DiffChroma:     map[bool]string{true: "github-dark", false: "github"}[isDark],
 
 		DetailID:    fg(p.Muted),
 		DetailLabel: fg(p.Muted),
