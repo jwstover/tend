@@ -65,10 +65,22 @@ func (a *app) refilter() tea.Cmd {
 		id = r.rowTask().ID
 	}
 	cmd := a.rebuildList()
-	if id != 0 {
-		a.selectByID(id)
+	if id == 0 || !a.selectByID(id) {
+		a.selectFirstTask()
 	}
 	return tea.Batch(cmd, a.syncDetail(false))
+}
+
+// selectFirstTask puts the cursor on the first task row, for when the
+// previously selected task is no longer visible. The rebuilt list's cursor
+// is just an index and may be sitting on a heading or past the end.
+func (a *app) selectFirstTask() {
+	for i, it := range a.list.VisibleItems() {
+		if _, ok := it.(rowItem); ok {
+			a.list.Select(i)
+			return
+		}
+	}
 }
 
 // handleFilterKey edits the query while the filter owns the keyboard:
