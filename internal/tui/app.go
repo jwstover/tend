@@ -1311,6 +1311,15 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// live update behind it.
 		return a, a.liveReloadSettled()
 
+	case diffToolReadyMsg:
+		return a.runDiffTool(msg)
+
+	case diffToolFinishedMsg:
+		if msg.err != nil {
+			a.status = flash{text: "diff tool: " + msg.err.Error(), isErr: true}
+		}
+		return a, nil
+
 	case editorFinishedMsg:
 		if msg.err != nil {
 			os.Remove(msg.path)
@@ -1847,6 +1856,12 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, a.keys.LinkBranch) && a.mode == modeList:
 		if t, ok := a.selected(); ok {
 			return a, a.openLinkPickerFor(t)
+		}
+		return a, nil
+
+	case key.Matches(msg, a.keys.DiffTool) && a.mode == modeList:
+		if t, ok := a.selected(); ok {
+			return a, a.openDiffToolCmd(t)
 		}
 		return a, nil
 

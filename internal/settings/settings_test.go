@@ -60,3 +60,19 @@ func TestValidate(t *testing.T) {
 		t.Error("want ErrUnknownKey")
 	}
 }
+
+func TestDiffToolOffersEveryPreset(t *testing.T) {
+	e, _ := Lookup(KeyDiffTool)
+	want := []string{"delta", "difftastic", "tig", "diffnav", "diffview", "lazygit", "but", "less"}
+	if len(e.Choices) != len(want) {
+		t.Fatalf("choices = %v", e.Choices)
+	}
+	for i, c := range want {
+		if e.Choices[i] != c {
+			t.Fatalf("choices = %v", e.Choices)
+		}
+	}
+	if !strings.Contains(e.Description, "committed work only") {
+		t.Errorf("description should say committed work only: %q", e.Description)
+	}
+}
