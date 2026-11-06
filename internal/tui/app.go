@@ -52,6 +52,8 @@ type Store interface {
 	Blockers(ctx context.Context, taskID int64) ([]task.Task, error)
 	Blocking(ctx context.Context, taskID int64) ([]task.Task, error)
 	ListOpenTasks(ctx context.Context) ([]task.Task, error)
+	// Global task search (search.go): title, tags and body across every project and state.
+	SearchTasks(ctx context.Context, query string, limit int) ([]task.Task, error)
 	AddDependency(ctx context.Context, taskID, dependsOnID int64) error
 	RemoveDependency(ctx context.Context, taskID, dependsOnID int64) error
 	SessionStatuses(ctx context.Context) (map[int64]task.SessionStatus, error)
@@ -704,7 +706,14 @@ type app struct {
 	wfRunPickerWorkflows []workflow.Workflow
 	wfRunPickerQuery     string
 	wfRunPickerSel       int
-	wfRunPending         *workflowRunRequest
+
+	// Global task search overlay (search.go): searchQuery is the typed text,
+	// searchResults the matches for it and searchSel the highlighted one.
+	searchOpen    bool
+	searchQuery   string
+	searchResults []task.Task
+	searchSel     int
+	wfRunPending  *workflowRunRequest
 
 	// Run view (runview.go): the run being watched, with the task's other
 	// runs in its sidebar. runsCache is the detail pane's WORKFLOWS source,
@@ -1248,6 +1257,9 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case gotoTaskMsg:
 		return a.applyGotoTask(msg)
 
+	case searchResultsMsg:
+		return a.applySearchResults(msg)
+
 	case errMsg:
 		a.loaded = true // an initial load failure shouldn't strand the loading frame
 		a.status = flash{text: msg.err.Error(), isErr: true}
@@ -1321,6 +1333,11 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// An open session picker swallows all keys.
 	if a.sessionPickerOpen {
 		return a.handleSessionPickerKey(msg)
+	}
+
+	// The task search overlay too.
+	if a.searchOpen {
+		return a.handleSearchKey(msg)
 	}
 
 	// As does the workflow-run picker.
@@ -1484,6 +1501,10 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		if key.Matches(msg, a.keys.GoToTask) {
 			return a, a.openGotoTask()
+		}
+		if key.Matches(msg, a.keys.SearchTasks) {
+			a.openSearch()
+			return a, nil
 		}
 		return a, nil
 	}
@@ -1975,6 +1996,7 @@ func (a app) groupPanel() string {
 		{a.keys.GroupByAgent, a.styles.Session[task.SessionWorking]},
 		{a.keys.GoTop, a.styles.PanelKey},
 		{a.keys.GoToTask, a.styles.PanelKey},
+		{a.keys.SearchTasks, a.styles.PanelKey},
 		{a.keys.Cancel, a.styles.Dimmed},
 	}
 	entries := make([]panelEntry, 0, len(bindings))
@@ -2841,7 +2863,7 @@ func (a app) View() tea.View {
 	// body rows. A panel taller than the screen loses its top rows, like
 	// the design's splice.
 	if a.paletteOpen || a.helpOpen || a.urlPickerOpen || a.sessionPickerOpen ||
-		a.projectPickerOpen || a.parentPickerOpen || a.depPickerOpen || a.wfPickerOpen || a.wfRunPickerOpen ||
+		a.projectPickerOpen || a.parentPickerOpen || a.depPickerOpen || a.wfPickerOpen || a.wfRunPickerOpen || a.searchOpen ||
 		a.gatePickerOpen || a.takeover.open || a.retry.open {
 		box := a.paletteView()
 		switch {
@@ -2861,6 +2883,8 @@ func (a app) View() tea.View {
 			box = a.wfPickerView()
 		case a.wfRunPickerOpen:
 			box = a.workflowRunPickerView()
+		case a.searchOpen:
+			box = a.searchView()
 		case a.gatePickerOpen:
 			box = a.gatePickerView()
 		case a.takeover.open:

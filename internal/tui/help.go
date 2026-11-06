@@ -31,6 +31,7 @@ func helpGroups() []helpGroup {
 			{"C", "show / hide completed, canceled + someday"},
 			{"g", "group by state/priority/agent"},
 			{"gt", "go to task by id"},
+			{"gf", "search all tasks (title, tags, body)"},
 			{"o / O", "open link(s) in body + log"},
 		}},
 		{"CAPTURE & FIND", []helpEntry{

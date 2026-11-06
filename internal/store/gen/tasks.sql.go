@@ -482,6 +482,76 @@ func (q *Queries) ListProjectTasks(ctx context.Context, projectID int64) ([]Task
 	return items, nil
 }
 
+const searchTasks = `-- name: SearchTasks :many
+SELECT t.id, t.title, t.body_md, t.state, t.parent_id, t.priority, t.due, t.snooze_until, t.created_at, t.updated_at, t.completed_at, t.project_id
+FROM tasks t
+WHERE (instr(lower(t.title), lower(?1)) > 0 OR instr(lower(t.body_md), lower(?1)) > 0
+       OR EXISTS (SELECT 1 FROM task_tags tt JOIN tags g ON g.id = tt.tag_id
+                  WHERE tt.task_id = t.id AND instr(lower(g.name), lower(?1)) > 0))
+  AND (instr(lower(t.title), lower(?2)) > 0 OR instr(lower(t.body_md), lower(?2)) > 0
+       OR EXISTS (SELECT 1 FROM task_tags tt JOIN tags g ON g.id = tt.tag_id
+                  WHERE tt.task_id = t.id AND instr(lower(g.name), lower(?2)) > 0))
+  AND (instr(lower(t.title), lower(?3)) > 0 OR instr(lower(t.body_md), lower(?3)) > 0
+       OR EXISTS (SELECT 1 FROM task_tags tt JOIN tags g ON g.id = tt.tag_id
+                  WHERE tt.task_id = t.id AND instr(lower(g.name), lower(?3)) > 0))
+ORDER BY instr(lower(t.title), lower(?1)) > 0 DESC, t.updated_at DESC, t.id DESC
+LIMIT ?4
+`
+
+type SearchTasksParams struct {
+	Term1   string
+	Term2   string
+	Term3   string
+	MaxRows int64
+}
+
+// Global search: every task in every project, whatever its state (done,
+// canceled, someday and snoozed included), whose title, body or a tag
+// contains the terms, case-insensitively. Up to three terms (an unused
+// slot is ”), and a task must match all of them; each term may hit any
+// of the three fields. instr, not LIKE, so a typed % or _ is literal.
+// Title hits sort first, then newest.
+func (q *Queries) SearchTasks(ctx context.Context, arg SearchTasksParams) ([]Task, error) {
+	rows, err := q.db.QueryContext(ctx, searchTasks,
+		arg.Term1,
+		arg.Term2,
+		arg.Term3,
+		arg.MaxRows,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Task{}
+	for rows.Next() {
+		var i Task
+		if err := rows.Scan(
+			&i.ID,
+			&i.Title,
+			&i.BodyMd,
+			&i.State,
+			&i.ParentID,
+			&i.Priority,
+			&i.Due,
+			&i.SnoozeUntil,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.CompletedAt,
+			&i.ProjectID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const setTaskBody = `-- name: SetTaskBody :exec
 UPDATE tasks
 SET body_md    = ?,
