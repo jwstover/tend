@@ -157,3 +157,24 @@ WHERE id = sqlc.arg(id);
 -- name: DeleteTask :exec
 DELETE FROM tasks
 WHERE id = ?;
+
+-- name: SearchTasks :many
+-- Global search: every task in every project, whatever its state (done,
+-- canceled, someday and snoozed included), whose title, body or a tag
+-- contains the terms, case-insensitively. Up to three terms (an unused
+-- slot is ''), and a task must match all of them; each term may hit any
+-- of the three fields. instr, not LIKE, so a typed % or _ is literal.
+-- Title hits sort first, then newest.
+SELECT t.*
+FROM tasks t
+WHERE (instr(lower(t.title), lower(sqlc.arg(term1))) > 0 OR instr(lower(t.body_md), lower(sqlc.arg(term1))) > 0
+       OR EXISTS (SELECT 1 FROM task_tags tt JOIN tags g ON g.id = tt.tag_id
+                  WHERE tt.task_id = t.id AND instr(lower(g.name), lower(sqlc.arg(term1))) > 0))
+  AND (instr(lower(t.title), lower(sqlc.arg(term2))) > 0 OR instr(lower(t.body_md), lower(sqlc.arg(term2))) > 0
+       OR EXISTS (SELECT 1 FROM task_tags tt JOIN tags g ON g.id = tt.tag_id
+                  WHERE tt.task_id = t.id AND instr(lower(g.name), lower(sqlc.arg(term2))) > 0))
+  AND (instr(lower(t.title), lower(sqlc.arg(term3))) > 0 OR instr(lower(t.body_md), lower(sqlc.arg(term3))) > 0
+       OR EXISTS (SELECT 1 FROM task_tags tt JOIN tags g ON g.id = tt.tag_id
+                  WHERE tt.task_id = t.id AND instr(lower(g.name), lower(sqlc.arg(term3))) > 0))
+ORDER BY instr(lower(t.title), lower(?1)) > 0 DESC, t.updated_at DESC, t.id DESC
+LIMIT sqlc.arg(max_rows);

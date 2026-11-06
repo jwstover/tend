@@ -86,6 +86,7 @@ type keyMap struct {
 	GroupByAgent    key.Binding
 	GoTop           key.Binding
 	GoToTask        key.Binding
+	SearchTasks     key.Binding
 
 	ChangePriority key.Binding
 
@@ -194,6 +195,7 @@ func defaultKeyMap() keyMap {
 		GroupByAgent:    key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "agent status")),
 		GoTop:           key.NewBinding(key.WithKeys("g"), key.WithHelp("g", "top of list")),
 		GoToTask:        key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "go to task #")),
+		SearchTasks:     key.NewBinding(key.WithKeys("f"), key.WithHelp("f", "search all tasks")),
 
 		ChangePriority: key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "priority")),
 

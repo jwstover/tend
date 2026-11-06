@@ -38,13 +38,22 @@ func (a app) paletteCommands() []paletteCommand {
 				}
 				return a.toggleProjects()
 			}},
-		{icon: "↪", label: "Go to task by id", hint: "gt", aliases: []string{"goto", "jump", "find"},
+		{icon: "↪", label: "Go to task by id", hint: "gt", aliases: []string{"goto", "jump"},
 			act: func(a app) (tea.Model, tea.Cmd) {
 				if a.mode != modeList {
 					a.status = flash{text: "go to task is list-view only"}
 					return a, nil
 				}
 				return a, a.openGotoTask()
+			}},
+		{icon: "⌕", label: "Search all tasks", hint: "gf", aliases: []string{"search", "find"},
+			act: func(a app) (tea.Model, tea.Cmd) {
+				if a.mode != modeList {
+					a.status = flash{text: "search is list-view only"}
+					return a, nil
+				}
+				a.openSearch()
+				return a, nil
 			}},
 		{icon: "✚", label: "New project", aliases: []string{"newproject", "mkproject"},
 			act: func(a app) (tea.Model, tea.Cmd) {

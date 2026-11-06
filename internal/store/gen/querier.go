@@ -202,6 +202,13 @@ type Querier interface {
 	// runner reads it to tell the step what went wrong before ClaimRun clears
 	// it. The caller turns zero rows into ErrRunNotFailed.
 	RetryRun(ctx context.Context, id int64) (int64, error)
+	// Global search: every task in every project, whatever its state (done,
+	// canceled, someday and snoozed included), whose title, body or a tag
+	// contains the terms, case-insensitively. Up to three terms (an unused
+	// slot is ''), and a task must match all of them; each term may hit any
+	// of the three fields. instr, not LIKE, so a typed % or _ is literal.
+	// Title hits sort first, then newest.
+	SearchTasks(ctx context.Context, arg SearchTasksParams) ([]Task, error)
 	SetProjectArchived(ctx context.Context, arg SetProjectArchivedParams) error
 	// '' clears the default working directory; see migration 00010.
 	SetProjectCwd(ctx context.Context, arg SetProjectCwdParams) error
