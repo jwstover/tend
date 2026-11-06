@@ -158,7 +158,8 @@ tend/
 │   │   ├── vcs.go                 #   Client (Runner exec seam): IsGitButler, Branches, Base, BranchExists, CommittedDiff, UncommittedDiff; ErrNoGit/ErrNoBut/ErrBranchNotFound/ErrNotARepo
 │   │   ├── diff.go                #   Diff/File/Hunk/Line — domain-free diff model
 │   │   ├── parse.go               #   ParseUnified: `git diff` output → Diff
-│   │   └── butjson.go             #   ParseButDiff: `but diff <id> --json` → Diff
+│   │   ├── butjson.go             #   ParseButDiff: `but diff <id> --json` → Diff
+│   │   └── trailers.go            #   TaskCommits/TaskCommitDiffs: a task's commits found by their `Tend-Task: <id>` trailer, one diff per commit (the fallback when a linked branch is gone)
 │   ├── jira/                    # I/O EDGE — the only package that talks to the Jira REST API / keychain
 │   │   ├── jira.go               #   URL parsing, issue summary fetch (bounded timeout, degrades to the bare key)
 │   │   └── keyring.go             #   credential storage via the OS keychain
