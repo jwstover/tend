@@ -100,8 +100,12 @@ type Querier interface {
 	GetStep(ctx context.Context, id int64) (WorkflowStep, error)
 	GetStepRun(ctx context.Context, id int64) (WorkflowStepRun, error)
 	GetTask(ctx context.Context, id int64) (Task, error)
+	GetTaskBranch(ctx context.Context, arg GetTaskBranchParams) (TaskBranch, error)
 	GetWorkflow(ctx context.Context, id int64) (Workflow, error)
 	GetWorkflowByName(ctx context.Context, name string) (Workflow, error)
+	// OR IGNORE so linking a branch that is already linked is a no-op; the
+	// store reads the row back either way.
+	LinkBranch(ctx context.Context, arg LinkBranchParams) error
 	// Half of Store.DeleteStep: a step that has run (or is running) within a
 	// run in a non-terminal state cannot be removed under it.
 	ListActiveRunIDsForStep(ctx context.Context, stepID int64) ([]int64, error)
@@ -177,6 +181,8 @@ type Querier interface {
 	ListSteps(ctx context.Context, workflowID int64) ([]WorkflowStep, error)
 	ListTags(ctx context.Context) ([]Tag, error)
 	ListTagsForTask(ctx context.Context, taskID int64) ([]string, error)
+	// Oldest link first.
+	ListTaskBranches(ctx context.Context, taskID int64) ([]TaskBranch, error)
 	// Comments in this file stay ASCII-only: sqlc v1.31.1 corrupts any query
 	// that uses alias.* when its comment block contains non-ASCII (a
 	// byte-vs-rune offset bug in star expansion; one em dash yields SELECp).
@@ -186,6 +192,7 @@ type Querier interface {
 	// Half of Store.DeleteProject's transaction: project_id carries no foreign
 	// key (see 00007's comment), so orphan prevention is explicit here.
 	ReassignProjectTasks(ctx context.Context, arg ReassignProjectTasksParams) error
+	RelinkBranch(ctx context.Context, arg RelinkBranchParams) (int64, error)
 	RemoveDependency(ctx context.Context, arg RemoveDependencyParams) error
 	RenameProject(ctx context.Context, arg RenameProjectParams) error
 	RenameWorkflow(ctx context.Context, arg RenameWorkflowParams) error
@@ -278,6 +285,7 @@ type Querier interface {
 	SetTasksProject(ctx context.Context, arg SetTasksProjectParams) error
 	SetWorkflowDescription(ctx context.Context, arg SetWorkflowDescriptionParams) error
 	TouchSession(ctx context.Context, id int64) error
+	UnlinkBranch(ctx context.Context, arg UnlinkBranchParams) error
 	UpdateSchedule(ctx context.Context, arg UpdateScheduleParams) (Schedule, error)
 	UpdateSessionLabel(ctx context.Context, arg UpdateSessionLabelParams) error
 	UpdateStep(ctx context.Context, arg UpdateStepParams) error

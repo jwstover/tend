@@ -87,6 +87,14 @@ type Task struct {
 	ProjectID   int64
 }
 
+type TaskBranch struct {
+	ID        int64
+	TaskID    int64
+	RepoPath  string
+	Branch    string
+	CreatedAt string
+}
+
 type TaskDependency struct {
 	TaskID      int64
 	DependsOnID int64

@@ -114,6 +114,7 @@ tend/
 │   │   ├── session.go        #   Session, SessionStatus — a Claude Code session bound to a task
 │   │   ├── event.go          #   Event (activity log), Summarize (standup aggregation)
 │   │   ├── log.go            #   LogEntry (manual standup notes), StandupMarkdown rendering
+│   │   ├── branch.go          #   BranchLink — a task's explicit link to a branch in a repo; Normalize*
 │   │   └── brief.go          #   SessionBrief + SessionSystemPrompt — the task-context block an interactive session's system prompt carries
 │   ├── workflow/              # DOMAIN — agent workflows: types + rules, zero I/O. A sibling of task, not a tenant (own vocabulary).
 │   │   ├── workflow.go        #   Workflow, Step (StepKind agent/gate), Edge, Run (RunState + Terminal), StepRun; Normalize*; the Err* values
@@ -129,6 +130,7 @@ tend/
 │   │   ├── gen/                #   sqlc OUTPUT — generated; never hand-edited
 │   │   ├── store.go            #   Store: wraps generated Queries, returns domain types, owns transactions
 │   │   ├── schedules.go          #   schedules CRUD, DueSchedules, ClaimSchedule (the CAS that turns a due schedule into a pending run), StartScheduleNow, ScheduleRunContext
+│   │   ├── branches.go          #   task_branches: LinkBranch/UnlinkBranch/TaskBranches/RelinkBranch
 │   │   ├── projects.go / tags.go / dependencies.go / workflows.go   #   per-area Store methods (dependencies.go: AddDependency with the cycle check, Blockers/Blocking, BlockerCounts; workflows.go: definitions, runs, step runs, ClaimRun, FinishStepRun, …)
 │   │   └── watch.go            #   Watcher: PRAGMA data_version poller behind the TUI's live reload
 │   ├── agent/                  # I/O EDGE — the only package that shells out to `claude`/`tmux`
@@ -293,6 +295,15 @@ CREATE TABLE task_dependencies ( -- "task_id cannot be worked on until depends_o
   PRIMARY KEY (task_id, depends_on_id)    -- NOT tied to the `blocked` state: the state is what the user says, the rows
 );                                -- are what the graph says, and the TUI derives "waiting on N" from them.
 
+CREATE TABLE task_branches (     -- explicit task <-> branch links (migration 00020), the only source the diff views
+  id, task_id                      -- trust: no branch-name detection. Cascades with the task, like agent_sessions.
+    REFERENCES tasks ON DELETE CASCADE,
+  repo_path TEXT NOT NULL,         -- absolute path of the repo (or worktree) the branch lives in; filepath.Clean'd
+  branch TEXT NOT NULL,            -- trimmed branch name
+  created_at,
+  UNIQUE (task_id, repo_path, branch)
+);                                 -- TODO(owner): merge-base + head SHAs, so a merged branch's diff stays viewable.
+
 CREATE TABLE settings (          -- key/value bag for state that must outlive a TUI process. First tenant:
   key TEXT PRIMARY KEY,           -- active_project_id, so a bare-shell `tend add` can read the last TUI selection;
                                   -- also notify_activate_bundle_id (the terminal a click brings forward; unset = Ghostty).
@@ -409,6 +420,7 @@ Semantics:
 - **Projects** are a hard grouping: every task has exactly one `project_id`, defaulting to `Unsorted` (id 1). Deleting a project reassigns its tasks to `Unsorted` inside a transaction (`Store.DeleteProject`); `Unsorted` itself cannot be deleted.
 - **Tags** are the soft, multi-valued labelling mechanism (`task_tags`), and are what the pre-00007 flat `project` string became.
 - **Dependencies** (`task_dependencies`) say a task waits on other tasks: each blocker must be closed (done or canceled) before the task can be worked on. A task can wait on several tasks, in any project, and several can wait on one. The store refuses self-dependency and cycles (`task.ErrSelfDependency`, `task.ErrDependencyCycle`); `Store.SetDependencies` is the wholesale replace (the `SetTags` shape) and `Store.BlockerCounts` the batch `{Open, Total}` map the list view renders from (the `ChildCounts` shape). Nothing changes a task's *state* automatically: `blocked` stays the user's call, and a task whose blockers are all done simply reads as free to start. Over MCP (`internal/mcpserver/tools.go`), `create_task` and `create_subtask` take an optional `depends_on` id list, `set_task_dependencies` replaces the list wholesale, `add_task_dependency` / `remove_task_dependency` edit one edge, and every task the tools return carries `depends_on`, `blocks` and a derived `is_blocked`.
+- **Branch links** (`task_branches`) say which branches a task's work is on, in which repo. Links are explicit: `Store.LinkBranch` (idempotent; returns the existing link), `UnlinkBranch`, `TaskBranches` (oldest first) and `RelinkBranch` (the "branch is missing, re-link" flow, refusing a name the task already links with `task.ErrBranchLinkTaken`). `task.BranchLink` normalizes on the way in (`NormalizeBranch` trims, `NormalizeRepoPath` trims and cleans; blanks are `task.ErrEmptyBranch`/`ErrEmptyRepoPath`). Linking writes no `task_events` row (a new `kind` would mean a table rebuild).
 - **Long-form body** is the re-entry-cost killer: a task carries its own context so resuming it is free.
 - **`snooze_until`** defers a task out of the live view until its wake date.
 - **Live view** = tasks whose state has `is_terminal = 0` AND `hidden_by_default = 0` AND (`snooze_until` is null OR in the past).
