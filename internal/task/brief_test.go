@@ -207,3 +207,15 @@ func TestSessionSystemPromptCapsLog(t *testing.T) {
 		t.Errorf("prompt kept an entry past the cap\n---\n%s", got)
 	}
 }
+
+func TestSessionSystemPromptBranchInstructions(t *testing.T) {
+	got := SessionSystemPrompt(SessionBrief{Task: Task{ID: 793, Title: "x"}})
+	for _, want := range []string{
+		"mcp__tend__link_branch", "mcp__tend__list_task_branches", "`but branch new`",
+		"`Tend-Task: 793` trailer",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("brief missing %q:\n%s", want, got)
+		}
+	}
+}

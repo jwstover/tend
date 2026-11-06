@@ -99,5 +99,10 @@ type Store interface {
 	UpdateSchedule(ctx context.Context, sc workflow.Schedule, now time.Time) (workflow.Schedule, error)
 	DeleteSchedule(ctx context.Context, id int64) error
 
+	// The branch-link tools (branches.go), available to every session.
+	LinkBranch(ctx context.Context, taskID int64, repo, branch string) (task.BranchLink, error)
+	UnlinkBranch(ctx context.Context, taskID int64, repo, branch string) error
+	TaskBranches(ctx context.Context, taskID int64) ([]task.BranchLink, error)
+
 	Close() error
 }

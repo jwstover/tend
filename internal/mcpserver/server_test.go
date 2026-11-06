@@ -34,6 +34,7 @@ type fakeStore struct {
 	stepRuns  map[int64]workflow.StepRun
 	runs      map[int64]workflow.Run
 	schedules map[int64]workflow.Schedule
+	branches  []task.BranchLink
 
 	notifyActivate string
 
@@ -777,6 +778,7 @@ func dialStep(t *testing.T, store Store, taskID, stepRunID int64) *mcp.ClientSes
 	registerTools(srv, store, taskID)
 	registerWorkflowTools(srv, store)
 	registerRunTools(srv, store, taskID)
+	registerBranchTools(srv, store, taskID)
 	registerScheduleTools(srv, store, taskID)
 	if stepRunID != 0 {
 		registerStepTools(srv, store, stepRunID)

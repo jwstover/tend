@@ -427,7 +427,7 @@ func (r *Runner) startStep(ctx context.Context, run workflow.Run, wf workflow.Wo
 	// The hand-off contract goes in the system prompt, not prompt_md, so
 	// no author has to remember it; recorded on the row like the prompt.
 	sr.SystemPrompt = workflow.StepSystemPrompt(workflow.HandoffContext{
-		Workflow: wf.Name, Step: step.Name, Iteration: data.Iteration, Outcomes: data.Outcomes,
+		TaskID: run.TaskID, Workflow: wf.Name, Step: step.Name, Iteration: data.Iteration, Outcomes: data.Outcomes,
 	})
 	sr.SessionExternalID, err = agent.NewSessionID()
 	if err != nil {
