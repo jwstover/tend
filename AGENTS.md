@@ -23,7 +23,7 @@ Releases are automated. Every commit subject **must** follow Conventional Commit
 ```
 
 - **Types:** `feat` (user-visible feature → minor bump), `fix` (bug fix → patch bump), `refactor`, `docs`, `test`, `chore`, `ci`, `build`, `perf`. Only `feat`, `fix`, and breaking changes appear in the CHANGELOG and trigger a release.
-- **Scopes** (optional, lowercase): `tui`, `cli`, `store`, `task`, `workflow`, `runner`, `agent`, `sessions`, `mcp`, `jira`, `ci`. Omit when a change spans layers.
+- **Scopes** (optional, lowercase): `tui`, `cli`, `store`, `task`, `workflow`, `runner`, `agent`, `sessions`, `mcp`, `jira`, `vcs`, `ci`. Omit when a change spans layers.
 - **Breaking changes:** append `!` after the type/scope (`feat(cli)!: …`) or add a `BREAKING CHANGE:` footer. Pre-1.0, these bump the **minor** version, not the major.
 - **Keep the existing body style:** a narrative body explaining the *why*, plus the `Co-Authored-By:` trailer. Conventional Commits only constrains the subject line.
 - **Releases run via release-please** (see §11): merging to `main` updates a release PR with the CHANGELOG and version bump; merging that PR tags and publishes. **Never hand-edit `CHANGELOG.md` or create tags manually.**
@@ -85,6 +85,9 @@ Every feature decision defers to this principle. If a feature adds friction to c
   - `tmux` — wraps `claude` so a session can be backgrounded and later reattached (including from a second `tend` process). Runs on a dedicated `-L tend` socket with a generated config; never touches the user's own tmux server or config.
 - `github.com/modelcontextprotocol/go-sdk` — the official Go MCP SDK, used by `internal/mcpserver` to expose task read/write tools to a running `claude` session over stdio.
 - `terminal-notifier` (optional) — makes the `notify` step tool's desktop notifications clickable (`-open <url>`, or `-activate <bundle id>` to bring the terminal forward). Without it `internal/notify` falls back to `osascript`, which still notifies but whose click does nothing useful. After every `brew install`/`brew upgrade` it must be registered once, or macOS never lists it under Notifications and refuses to send (Homebrew's build is ad-hoc signed): `/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$(brew --prefix)/Cellar/terminal-notifier/<version>/terminal-notifier.app"`.
+
+**Version-control layer (diff adapter)**
+- No Go dependency — `internal/vcs` shells out to `git` and, in a GitButler workspace, `but`, each an optional capability: a missing binary surfaces as `vcs.ErrNoGit` / `vcs.ErrNoBut` and callers degrade quietly. Read-only commands only (`status`, `diff`); never `but push` or any write.
 
 **Jira integration**
 - `net/http` (stdlib) — a single GET per pasted issue URL, bounded by a short timeout.
@@ -149,6 +152,11 @@ tend/
 │   │   └── prompt_schedule.go      #   PromptSchedule data for a scheduled run's templates ({{.Schedule.*}}), built from Store.ScheduleRunContext
 │   ├── launchd/                 # I/O EDGE — the only package that writes the launchd plist and runs launchctl (macOS; stdlib only)
 │   │   └── launchd.go             #   Plist (StartInterval 60, RunAtLoad) / Install / Uninstall for the `tend schedule tick` agent
+│   ├── vcs/                     # I/O EDGE — the only package that runs `git`/`but`; read-only (stdlib only)
+│   │   ├── vcs.go                 #   Client (Runner exec seam): IsGitButler, Branches, Base, BranchExists, CommittedDiff, UncommittedDiff; ErrNoGit/ErrNoBut/ErrBranchNotFound/ErrNotARepo
+│   │   ├── diff.go                #   Diff/File/Hunk/Line — domain-free diff model
+│   │   ├── parse.go               #   ParseUnified: `git diff` output → Diff
+│   │   └── butjson.go             #   ParseButDiff: `but diff <id> --json` → Diff
 │   ├── jira/                    # I/O EDGE — the only package that talks to the Jira REST API / keychain
 │   │   ├── jira.go               #   URL parsing, issue summary fetch (bounded timeout, degrades to the bare key)
 │   │   └── keyring.go             #   credential storage via the OS keychain
@@ -212,11 +220,12 @@ cli ──┬──→ store ──→ task, workflow ──→ (nothing)
       ├──→ mcpserver ──→ task, workflow   (its own Store interface, satisfied by *store.Store)
       ├──→ runner ──→ agent, workflow, task   (its own Store interface; the one package that *runs* claude/tmux commands)
       ├──→ agent   (process control: claude/tmux, hook parsing, session-id/mcp-config generation)
+      ├──→ vcs     (git/but diff adapter; depends on nothing)
       ├──→ launchd (the schedule-tick launchd agent: plist + launchctl)
       ├──→ notify  (desktop notifications; wired into mcpserver by `tend mcp`)
       └──→ jira    (REST + keychain)
 
-tui ──┴──→ store, agent, jira, workflow, usage, runner (Launch/Resume/RestartStep, plus Tick/QuotaGuard for the backup schedule ticker)   (same rules — tui never touches SQL, exec, or HTTP directly outside these)
+tui ──┴──→ store, agent, jira, vcs, workflow, usage, runner (Launch/Resume/RestartStep, plus Tick/QuotaGuard for the backup schedule ticker)   (same rules — tui never touches SQL, exec, or HTTP directly outside these)
 ```
 
 - `task` and `workflow` (the two domain packages) know nothing about SQLite, exec, or HTTP. `workflow` is a sibling of `task`, not part of it: a workflow has its own vocabulary (Step, Edge, Run, StepRun) and is bound to a task only per run.
@@ -224,6 +233,7 @@ tui ──┴──→ store, agent, jira, workflow, usage, runner (Launch/Resum
 - `agent` is the only package that builds `claude`/`tmux` commands or parses Claude Code hook payloads; it never runs a command itself, so it stays testable without a real terminal.
 - `usage` reads claude's own on-disk artifacts — session transcripts and a step's stream-json log — and imports only the standard library, so `agent`, `tui` and `cli` may all import it. It never shells out: running `claude` is `agent`'s job.
 - `runner` is where those commands get *run* outside a terminal handoff: it executes headless steps (`agent.RunHeadless`) and starts tmux sessions, behind an `Exec` seam so its transition logic is tested against a fake. It declares its own `Store` interface and depends on `agent`, `workflow` and `task`, never on `store`, `tui` or `cli`.
+- `vcs` is the only package that runs `git` or `but`; it is read-only, returns its own `Diff` model, and imports only the standard library. Like `agent` it takes an exec seam (`Runner`) so parsing and argv building are tested without real binaries.
 - `jira` is the only package that calls the Jira REST API or touches the OS keychain.
 - `mcpserver` depends on `task` and declares its own `Store` interface (same "accept interfaces, return structs" convention as `cli`) rather than importing `store` directly.
 - `tui` and `cli` consume `store`/`agent`/`jira`/`mcpserver` through interfaces they declare, plus `task` types. They never touch SQL, exec, or HTTP directly.
