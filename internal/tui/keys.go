@@ -35,6 +35,7 @@ type keyMap struct {
 	Delete         key.Binding // first `d` of the `dd` delete chord
 	MoveProject    key.Binding // move the selected task to another project
 	MoveParent     key.Binding // move the selected task under another task, or to the top level
+	LinkBranch     key.Binding // pick the branches the selected task's work is on (linkpicker.go)
 	Dependencies   key.Binding // pick which tasks the selected one waits on (dependencypicker.go)
 	Archive        key.Binding // archive/restore the selected project
 	ToggleArchived key.Binding // show/hide archived projects in the projects column
@@ -149,6 +150,7 @@ func defaultKeyMap() keyMap {
 		// `b` is free in the list: SetBlocked's `b` only fires inside the
 		// `c` chord and in triage, neither of which reaches this binding.
 		Dependencies: key.NewBinding(key.WithKeys("b"), key.WithHelp("b", "blocked by")),
+		LinkBranch:   key.NewBinding(key.WithKeys("L"), key.WithHelp("L", "link branch")),
 		Archive:      key.NewBinding(key.WithKeys("A"), key.WithHelp("A", "archive")),
 		// `C` reveals the hidden population everywhere: completed tasks in
 		// the list, ended sessions in the agents view, and here the

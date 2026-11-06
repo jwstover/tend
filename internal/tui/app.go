@@ -23,6 +23,7 @@ import (
 	"github.com/jwstover/tend/internal/runner"
 	"github.com/jwstover/tend/internal/task"
 	"github.com/jwstover/tend/internal/usage"
+	"github.com/jwstover/tend/internal/vcs"
 	"github.com/jwstover/tend/internal/workflow"
 )
 
@@ -56,6 +57,11 @@ type Store interface {
 	SearchTasks(ctx context.Context, query string, limit int) ([]task.Task, error)
 	AddDependency(ctx context.Context, taskID, dependsOnID int64) error
 	RemoveDependency(ctx context.Context, taskID, dependsOnID int64) error
+	// Branch links (linkpicker.go): the explicit task <-> branch links the diff views trust.
+	TaskBranches(ctx context.Context, taskID int64) ([]task.BranchLink, error)
+	LinkBranch(ctx context.Context, taskID int64, repo, branch string) (task.BranchLink, error)
+	UnlinkBranch(ctx context.Context, taskID int64, repo, branch string) error
+	RelinkBranch(ctx context.Context, id int64, newBranch string) error
 	SessionStatuses(ctx context.Context) (map[int64]task.SessionStatus, error)
 	CountInbox(ctx context.Context, projectID *int64) (int64, error)
 	SetState(ctx context.Context, id int64, st task.State) error
@@ -809,6 +815,11 @@ type app struct {
 	depPickerRows    []dependencyRow
 	depPickerChecked map[int64]bool
 
+	// Branch link picker overlay (linkpicker.go).
+	lp linkPicker
+	// vcs runs git/but for the picker and the diff views; tests replace it.
+	vcs VCS
+
 	urlPickerOpen bool
 	urlPickerURLs []link
 	urlPickerSel  int
@@ -876,6 +887,7 @@ func newApp(ctx context.Context, s Store, dbPath string) app {
 		blockingCache:   make(map[int64][]task.Task),
 		runsCache:       make(map[int64][]runSummary),
 		startCwd:        wd,
+		vcs:             vcs.New(),
 		detail:          viewport.New(),
 		prompt:          textinput.New(),
 		modal:           newModal(),
@@ -1253,6 +1265,18 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case dependencyToggledMsg:
 		return a, a.applyDependencyToggle(msg)
 
+	case linkPickerLoadedMsg:
+		a.openLinkPicker(msg)
+		return a, nil
+
+	case linkToggledMsg:
+		a.applyLinkToggle(msg)
+		return a, nil
+
+	case linkRelinkedMsg:
+		a.status = flash{kind: flashEdit, text: fmt.Sprintf("#%d re-linked to %s", msg.task.ID, msg.branch)}
+		return a, a.loadLinkPicker(a.lp.task, a.lp.extra, true)
+
 	case refreshMsg:
 		a.status = msg.status
 		// A full reload supersedes any live update still waiting its turn.
@@ -1340,6 +1364,11 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// And the dependency picker.
 	if a.depPickerOpen {
 		return a.handleDependencyPickerKey(msg)
+	}
+
+	// And the branch link picker, unless its repo prompt modal is up.
+	if a.lp.open && !a.modal.Active() {
+		return a.handleLinkPickerKey(msg)
 	}
 
 	// And a step attribute picker (workflows view).
@@ -1812,6 +1841,12 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, a.keys.Dependencies) && a.mode == modeList:
 		if t, ok := a.selected(); ok {
 			return a, a.loadDependencyCandidates(t)
+		}
+		return a, nil
+
+	case key.Matches(msg, a.keys.LinkBranch) && a.mode == modeList:
+		if t, ok := a.selected(); ok {
+			return a, a.openLinkPickerFor(t)
 		}
 		return a, nil
 
@@ -2597,6 +2632,8 @@ func (a app) submitModal() (tea.Model, tea.Cmd) {
 		// Empty is allowed: an empty deliverable passes the step's input
 		// along, as finish_step's own contract says.
 		return a, a.finishTakenOverStep(target, extra, value)
+	case modalLinkRepo:
+		return a.submitLinkRepo(target, value)
 	case modalGotoTask:
 		return a.submitGotoTask(value)
 	case modalSettingValue:
@@ -2894,7 +2931,7 @@ func (a app) View() tea.View {
 	// body rows. A panel taller than the screen loses its top rows, like
 	// the design's splice.
 	if a.paletteOpen || a.helpOpen || a.urlPickerOpen || a.sessionPickerOpen ||
-		a.projectPickerOpen || a.parentPickerOpen || a.depPickerOpen || a.wfPickerOpen || a.wfRunPickerOpen || a.searchOpen ||
+		a.projectPickerOpen || a.parentPickerOpen || a.depPickerOpen || a.lp.open || a.wfPickerOpen || a.wfRunPickerOpen || a.searchOpen ||
 		a.gatePickerOpen || a.takeover.open || a.retry.open {
 		box := a.paletteView()
 		switch {
@@ -2910,6 +2947,8 @@ func (a app) View() tea.View {
 			box = a.parentPickerView()
 		case a.depPickerOpen:
 			box = a.dependencyPickerView()
+		case a.lp.open:
+			box = a.linkPickerView()
 		case a.wfPickerOpen:
 			box = a.wfPickerView()
 		case a.wfRunPickerOpen:
