@@ -76,6 +76,7 @@ type Querier interface {
 	// written ahead of the handoff (CreateSession), and a broken launch must
 	// not leave it behind as a phantom.
 	DeleteSession(ctx context.Context, id int64) error
+	DeleteSetting(ctx context.Context, key string) error
 	DeleteStep(ctx context.Context, id int64) error
 	DeleteTask(ctx context.Context, id int64) error
 	DeleteWorkflow(ctx context.Context, id int64) error

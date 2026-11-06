@@ -124,6 +124,7 @@ tend/
 │   │   ├── status.go          #   RunState.SessionStatus — maps a live run into the agent-session status vocabulary the TUI renders
 │   │   ├── cron.go            #   ParseCron / Next: the five-field cron expression, evaluated in local time
 │   │   └── schedule.go        #   Schedule, ScheduleClaim, ScheduleRunContext (what a scheduled run knows of its schedule), ErrScheduleBusy
+│   ├── settings/              # DOMAIN — the registry of user-facing preferences stored in the settings table: zero I/O, stdlib only (`settings.go`: Entry/Kind, Entries/Lookup, Validate)
 │   ├── store/                 # PERSISTENCE — the ONLY place SQL lives.
 │   │   ├── migrations/        #   *.sql, embedded via embed.FS, applied by goose on startup
 │   │   ├── queries/           #   *.sql — input to sqlc (tasks, projects, tags, sessions, events, logs, settings, workflows)
@@ -222,6 +223,7 @@ cli ──┬──→ store ──→ task, workflow ──→ (nothing)
       ├──→ mcpserver ──→ task, workflow   (its own Store interface, satisfied by *store.Store)
       ├──→ runner ──→ agent, workflow, task   (its own Store interface; the one package that *runs* claude/tmux commands)
       ├──→ agent   (process control: claude/tmux, hook parsing, session-id/mcp-config generation)
+      ├──→ settings (preference registry + validation; depends on nothing, may import vcs later for the diff-tool presets)
       ├──→ vcs     (git/but diff adapter; depends on nothing)
       ├──→ launchd (the schedule-tick launchd agent: plist + launchctl)
       ├──→ notify  (desktop notifications; wired into mcpserver by `tend mcp`)
@@ -304,9 +306,12 @@ CREATE TABLE task_branches (     -- explicit task <-> branch links (migration 00
   UNIQUE (task_id, repo_path, branch)
 );                                 -- TODO(owner): merge-base + head SHAs, so a merged branch's diff stays viewable.
 
-CREATE TABLE settings (          -- key/value bag for state that must outlive a TUI process. First tenant:
-  key TEXT PRIMARY KEY,           -- active_project_id, so a bare-shell `tend add` can read the last TUI selection;
-                                  -- also notify_activate_bundle_id (the terminal a click brings forward; unset = Ghostty).
+CREATE TABLE settings (          -- key/value bag for state that must outlive a TUI process: internal state
+  key TEXT PRIMARY KEY,           -- (active_project_id, so a bare-shell `tend add` can read the last TUI selection)
+                                  -- and user preferences. The preferences are listed by internal/settings (diff_tool,
+                                  -- notify_activate_bundle_id: the terminal a click brings forward; unset = Ghostty);
+                                  -- internal keys are not in that registry. Store.Setting/SetSetting/ClearSetting are
+                                  -- generic and never validate; internal/settings.Validate does.
   value TEXT NOT NULL
 );
 
