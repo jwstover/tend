@@ -50,6 +50,7 @@ func helpGroups() []helpGroup {
 			{"P", "move to project"},
 			{"m", "move to parent"},
 			{"b", "edit dependencies (blocked by)"},
+			{"L", "link branches to the task (ctrl+o: other repo)"},
 			{"u", "set due (triage)"},
 			{"R", "rename task"},
 			{"e", "edit body in $EDITOR"},
