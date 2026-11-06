@@ -14,6 +14,9 @@ import (
 const (
 	FinishStepTool      = "mcp__tend__finish_step"
 	GetWorkflowStepTool = "mcp__tend__get_workflow_step"
+	// LinkBranchTool records a task <-> branch link (tend task #793); the
+	// step prompt asks for it right after a branch is created.
+	LinkBranchTool = "mcp__tend__link_branch"
 )
 
 // FallbackAllowed reports whether a step that exits without calling
@@ -39,6 +42,9 @@ func FallbackAllowed(outcomes []string) bool {
 // and the outcomes finish_step accepts (the step's edge outcomes, or
 // just done when it has none -- the same set get_workflow_step reports).
 type HandoffContext struct {
+	// TaskID is the task the run is bound to; the block's Tend-Task commit
+	// trailer instruction names it. Zero leaves that instruction out.
+	TaskID    int64
 	Workflow  string
 	Step      string
 	Iteration int64
@@ -69,8 +75,21 @@ func StepSystemPrompt(h HandoffContext) string {
 	sb.WriteString("\n\n")
 	fmt.Fprintf(&sb, "%s does not end your session; call it once, when the work is done, then finish your turn normally. ", FinishStepTool)
 	sb.WriteString("Do not skip it, and do not substitute a shell command or a message for it: a step that exits without calling it is treated as not having done its job.\n\n")
+	sb.WriteString(branchLinkRule(h.TaskID))
+	sb.WriteString("\n\n")
 	sb.WriteString(dbWriteRule)
 	return sb.String()
+}
+
+// branchLinkRule asks a step to record the branches it creates and to mark
+// its commits with the task's id, so the diff views can find the work.
+func branchLinkRule(taskID int64) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "When you create a git branch (or a GitButler branch with `but branch new`) for this task's work, call %s with its name. ", LinkBranchTool)
+	if taskID != 0 {
+		fmt.Fprintf(&sb, "End the commit messages for this task's work with a `Tend-Task: %d` trailer.", taskID)
+	}
+	return strings.TrimSpace(sb.String())
 }
 
 // dbWriteRule closes the way a step with bypassPermissions was seen to
@@ -91,7 +110,7 @@ const dbWriteRule = "tend's MCP tools are the only way to read or change tend's 
 // then searches again and again instead of calling what it loaded. The
 // tool ids are exact, so one load is enough, and the hint says so.
 const deferredToolsHint = "These tool ids are exact. If they are not in your tool list yet, load them once by name " +
-	"(a deferred-tool search for `select:" + FinishStepTool + "," + GetWorkflowStepTool + "`); " +
+	"(a deferred-tool search for `select:" + FinishStepTool + "," + GetWorkflowStepTool + "," + LinkBranchTool + "`); " +
 	"a search result that lists a tool means it is now callable, so call it directly. Never search for the same tool twice."
 
 // NudgePrompt is the one follow-up turn the runner sends to a step's

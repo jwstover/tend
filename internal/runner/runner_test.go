@@ -232,7 +232,7 @@ func TestRunTwoStepLinearWorkflow(t *testing.T) {
 
 	// The hand-off contract rides in the system prompt, built per step
 	// and recorded on the row; the author's prompt is left alone.
-	wantSys := workflow.StepSystemPrompt(workflow.HandoffContext{Workflow: "ship it", Step: "implement", Iteration: 1, Outcomes: []string{"done"}})
+	wantSys := workflow.StepSystemPrompt(workflow.HandoffContext{TaskID: f.tk.ID, Workflow: "ship it", Step: "implement", Iteration: 1, Outcomes: []string{"done"}})
 	if reqs[0].StepRun.SystemPrompt != wantSys || impl.SystemPrompt != wantSys {
 		t.Errorf("implement system prompt = %q (recorded %q), want %q", reqs[0].StepRun.SystemPrompt, impl.SystemPrompt, wantSys)
 	}

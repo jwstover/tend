@@ -63,3 +63,21 @@ func TestNudgePrompt(t *testing.T) {
 		t.Error("nudge for an edgeless step should offer done")
 	}
 }
+
+// The block asks for the branch link and the Tend-Task trailer with the
+// real task id, and the deferred-tools hint loads the link tool too.
+func TestStepSystemPromptBranchLinking(t *testing.T) {
+	got := StepSystemPrompt(HandoffContext{TaskID: 793, Workflow: "w", Step: "s", Iteration: 1})
+	for _, want := range []string{
+		LinkBranchTool, "mcp__tend__link_branch", "`but branch new`",
+		"`Tend-Task: 793` trailer",
+		"select:mcp__tend__finish_step,mcp__tend__get_workflow_step,mcp__tend__link_branch",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("system prompt missing %q:\n%s", want, got)
+		}
+	}
+	if none := StepSystemPrompt(HandoffContext{Workflow: "w", Step: "s", Iteration: 1}); strings.Contains(none, "Tend-Task") {
+		t.Errorf("no task id should leave the trailer out:\n%s", none)
+	}
+}

@@ -68,7 +68,10 @@ func SessionSystemPrompt(b SessionBrief) string {
 	sb.WriteString("The task is laid out below; treat it as the context for this session and do not ask the user to restate it. ")
 	sb.WriteString("The details are a snapshot from when the session started. The tend MCP tools (mcp__tend__get_current_task, mcp__tend__list_subtasks, ")
 	sb.WriteString("mcp__tend__append_task_body, mcp__tend__set_task_state, mcp__tend__create_subtask, ...) read and change the live task; ")
-	sb.WriteString("record progress and decisions by appending to the task body, since log entries are the user's.\n\n")
+	sb.WriteString("record progress and decisions by appending to the task body, since log entries are the user's. ")
+	// TODO(owner): list the already-linked branches in the facts below; today the preamble points at the tool instead.
+	sb.WriteString("When you create a git branch (or a GitButler branch with `but branch new`) for this task's work, call mcp__tend__link_branch with its name; mcp__tend__list_task_branches shows what is already linked. ")
+	fmt.Fprintf(&sb, "End the commit messages for this task's work with a `Tend-Task: %d` trailer.\n\n", t.ID)
 
 	fmt.Fprintf(&sb, "## Task #%d: %s\n\n", t.ID, t.Title)
 	fmt.Fprintf(&sb, "- State: %s\n", t.State.Label())
