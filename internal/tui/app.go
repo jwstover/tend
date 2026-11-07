@@ -1173,14 +1173,14 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// syncDetail does when the view is left. The agents view is all
 		// session markers, and tails its log the same way.
 		if !msg.changed {
-			return a, a.diffLoad()
+			return a, tea.Batch(a.diffLoad(), a.runDiffLoad())
 		}
 		if a.mode == modeStandup || a.mode == modeWorkflows {
 			return a, nil
 		}
 		switch a.mode {
 		case modeRun:
-			return a, a.loadRunView(a.rv.runID)
+			return a, tea.Batch(a.loadRunView(a.rv.runID), a.runDiffLoad())
 		case modeAgents:
 			return a, a.loadAgentSessions()
 		case modeSchedules:
@@ -1194,6 +1194,9 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// A result for a task that is no longer selected is dropped.
 		if n, ok := a.selectedNode(); ok && n.t.ID == msg.taskID {
 			a.dp.Apply(msg)
+		}
+		if a.mode == modeRun {
+			a.rv.dp.Apply(msg)
 		}
 		return a, nil
 

@@ -100,6 +100,7 @@ func helpGroups() []helpGroup {
 			{"j / k", "switch run / select step / scroll"},
 			{"h / l", "runs ← steps → log panes"},
 			{"v", "raw stream-json / rendered log"},
+			{"d", "log / diff tab (diff keys in the log pane)"},
 			{"p / cc", "pause, resume or retry / cancel the run"},
 			{"a / A / x", "approve / approve w/ message / reject gate"},
 			{"o", "pick any gate outcome (ctrl+⏎ with message)"},
