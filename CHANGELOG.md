@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.5.0](https://github.com/jwstover/tend/compare/v0.4.0...v0.5.0) (2026-11-07)
+
+
+### Features
+
+* **mcp:** add branch-link tools and tell sessions to use them ([#162](https://github.com/jwstover/tend/issues/162)) ([a70b43c](https://github.com/jwstover/tend/commit/a70b43cad08884cd20be32693fa0db465ae27a49))
+* **store:** add a settings registry and generic settings storage ([#160](https://github.com/jwstover/tend/issues/160)) ([f23c5d5](https://github.com/jwstover/tend/commit/f23c5d5a2a7e01b718ed0131aadc65531cb1862e))
+* **store:** link a task to a branch in storage ([#158](https://github.com/jwstover/tend/issues/158)) ([d7ff5c9](https://github.com/jwstover/tend/commit/d7ff5c939c912f71840200f19a3a532520400fb5))
+* **tui:** add a branch link picker ([#165](https://github.com/jwstover/tend/issues/165)) ([212b213](https://github.com/jwstover/tend/commit/212b213f99b04162669e605c94a968072bab16f4))
+* **tui:** add a Diff tab to the detail pane ([#168](https://github.com/jwstover/tend/issues/168)) ([67ce567](https://github.com/jwstover/tend/commit/67ce5678ed01b043391ce4b9e349c1f303b199d6))
+* **tui:** add a global task search overlay on gf ([#159](https://github.com/jwstover/tend/issues/159)) ([5e24a47](https://github.com/jwstover/tend/commit/5e24a4771c865cc4d8e04ade219692a8ab3d32c0))
+* **tui:** add a Settings view ([#164](https://github.com/jwstover/tend/issues/164)) ([1dc6b10](https://github.com/jwstover/tend/commit/1dc6b10316c2774121a2e6e3e273e8d403f79d3b))
+* **tui:** add the diff row model and renderer ([#161](https://github.com/jwstover/tend/issues/161)) ([4efca3e](https://github.com/jwstover/tend/commit/4efca3eabaee5dda52bd3fdbb2c038369d11f752))
+* **tui:** fold files and jump between hunks in the Diff tab ([#169](https://github.com/jwstover/tend/issues/169)) ([24abcbd](https://github.com/jwstover/tend/commit/24abcbd51aecb8a2ff153f2788a3178c338a2f4e))
+* **tui:** lay out the Settings view as a sectioned form ([#167](https://github.com/jwstover/tend/issues/167)) ([7005227](https://github.com/jwstover/tend/commit/70052275992a46e5d429fa2e21e850a6864e5b24))
+* **tui:** match sub-tasks in the filter under dimmed context ancestors ([#157](https://github.com/jwstover/tend/issues/157)) ([1cfdf5d](https://github.com/jwstover/tend/commit/1cfdf5d4da37f0065bc6f4f1388375f163b80e31))
+* **tui:** open a task's branch diff in an external tool with D ([#166](https://github.com/jwstover/tend/issues/166)) ([61c5e41](https://github.com/jwstover/tend/commit/61c5e413eded3c69c85d9a2a95b54ca03fd40624))
+* **tui:** replace the Bubbles / filter with an app-owned title/tag filter ([#153](https://github.com/jwstover/tend/issues/153)) ([a639235](https://github.com/jwstover/tend/commit/a6392356c758a412071e6c89611464317c000bdb))
+* **tui:** show the task's diff at workflow review gates ([#170](https://github.com/jwstover/tend/issues/170)) ([34cb090](https://github.com/jwstover/tend/commit/34cb09021d2307d9c05f64995ca44ae7716a402e))
+* **vcs:** add a read-only git/but adapter and diff model ([#155](https://github.com/jwstover/tend/issues/155)) ([a37290e](https://github.com/jwstover/tend/commit/a37290ece7beae121f7dac792956d0f8a522cc0e))
+* **vcs:** find a task's commits by Tend-Task trailer ([#163](https://github.com/jwstover/tend/issues/163)) ([b4bc388](https://github.com/jwstover/tend/commit/b4bc3884f9e34668c18952e182c8fe09d874bf21))
+
+
+### Bug Fixes
+
+* **tui:** fall back to the first task when a filter hides the selection ([#156](https://github.com/jwstover/tend/issues/156)) ([dd01214](https://github.com/jwstover/tend/commit/dd01214475035ee9207a11edca68013a5454ff13))
+
 ## [0.4.0](https://github.com/jwstover/tend/compare/v0.3.0...v0.4.0) (2026-11-06)
 
 
