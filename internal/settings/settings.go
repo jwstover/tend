@@ -36,7 +36,10 @@ var ErrUnknownKey = errors.New("unknown setting")
 
 // Entry describes one user-facing setting.
 type Entry struct {
-	Key         string
+	Key string
+	// Section groups entries under a heading in the Settings view; entries
+	// of one section are listed next to each other.
+	Section     string
 	Label       string
 	Description string
 	Kind        Kind
@@ -53,6 +56,7 @@ type Entry struct {
 var entries = []Entry{
 	{
 		Key:         KeyDiffTool,
+		Section:     "Diff viewer",
 		Label:       "Diff tool",
 		Description: "Full-screen tool for viewing a task's diff: a preset name or a command template using {base}, {head} and {repo}. External tools see refs only, so they show committed work only; uncommitted work is in the Diff tab.",
 		Kind:        KindChoice,
@@ -63,6 +67,7 @@ var entries = []Entry{
 	},
 	{
 		Key:         KeyNotifyActivate,
+		Section:     "Notifications",
 		Label:       "Notification terminal",
 		Description: "Bundle id of the terminal a notification click brings forward when it has no URL.",
 		Kind:        KindText,

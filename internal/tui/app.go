@@ -888,6 +888,7 @@ func newApp(ctx context.Context, s Store, dbPath string) app {
 		runsCache:       make(map[int64][]runSummary),
 		startCwd:        wd,
 		vcs:             vcs.New(),
+		stv:             settingsView{input: newSettingsInput()},
 		detail:          viewport.New(),
 		prompt:          textinput.New(),
 		modal:           newModal(),
@@ -1339,6 +1340,10 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	if a.promptKind != promptNone {
 		a.prompt, cmd = a.prompt.Update(msg)
+		cmds = append(cmds, cmd)
+	}
+	if a.mode == modeSettings && a.stv.editing {
+		a.stv.input, cmd = a.stv.input.Update(msg)
 		cmds = append(cmds, cmd)
 	}
 	a.list, cmd = a.list.Update(msg)
@@ -2480,6 +2485,7 @@ func (a *app) resize() {
 	}
 	a.list.SetSize(listWidth, a.bodyHeight)
 	a.modal.SetSize(a.width, a.height)
+	a.stv.input.SetWidth(a.settingsFieldWidth() - 1) // its cursor takes a cell
 }
 
 // --- prompt ---
@@ -2651,8 +2657,6 @@ func (a app) submitModal() (tea.Model, tea.Cmd) {
 		return a.submitLinkRepo(target, value)
 	case modalGotoTask:
 		return a.submitGotoTask(value)
-	case modalSettingValue:
-		return a.submitSettingValue(extra, value)
 	}
 	return a, nil
 }
@@ -2696,7 +2700,7 @@ func (a app) loadScoped() tea.Cmd {
 // The pickers and palette are deliberately not included: they overlay the
 // list rather than editing it, and their own state is keyed by id.
 func (a app) inputBusy() bool {
-	return a.promptKind != promptNone || a.modal.Active()
+	return a.promptKind != promptNone || a.modal.Active() || (a.mode == modeSettings && a.stv.editing)
 }
 
 // liveReload issues the reload a dbChangedMsg asks for and marks it in
@@ -3088,6 +3092,15 @@ func (a app) headerLine() string {
 			noun = "schedule"
 		}
 		right = s.CountNum.Render(fmt.Sprintf("%d", len(a.sv.rows))) + s.CountLabel.Render(" "+noun) + "  "
+	case a.mode == modeSettings:
+		// What differs from the defaults, the "modified" count of a settings page.
+		set := 0
+		for _, r := range a.stv.rows {
+			if r.set {
+				set++
+			}
+		}
+		right = s.CountNum.Render(fmt.Sprintf("%d", set)) + s.CountLabel.Render(" customized") + "  "
 	case a.mode == modeAgents:
 		noun := "sessions"
 		if len(a.av.rows) == 1 {

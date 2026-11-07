@@ -172,6 +172,10 @@ func staticCursors(a *app) {
 	ms := a.modal.area.Styles()
 	ms.Cursor.Blink = false
 	a.modal.area.SetStyles(ms)
+
+	ss := a.stv.input.Styles()
+	ss.Cursor.Blink = false
+	a.stv.input.SetStyles(ss)
 }
 
 func TestAppRendersLiveTasks(t *testing.T) {
