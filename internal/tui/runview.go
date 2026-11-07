@@ -279,7 +279,21 @@ type runView struct {
 	raw    bool // `v`: raw stream-json lines rather than the rendering
 	log    runLog
 	vp     viewport.Model
+
+	// tab is what the right-hand pane shows: the step log or the task's
+	// diff. dp is the same diffPane the detail pane's Diff tab uses, kept
+	// on the watched run's task.
+	tab rvTab
+	dp  diffPane
 }
+
+// rvTab is the run view's right-hand pane tab.
+type rvTab int
+
+const (
+	rvTabLog rvTab = iota
+	rvTabDiff
+)
 
 // runLog is the selected step's log as read so far. offset is the byte
 // past the last complete line consumed, so a tail re-read picks up where
@@ -342,8 +356,40 @@ func (a *app) switchRun(run workflow.Run) tea.Cmd {
 	a.rv.stepRuns, a.rv.cursor, a.rv.follow = nil, 0, true
 	a.rv.runnerGone = false
 	a.rv.log = runLog{}
+	a.rv.dp.Reset(run.TaskID)
 	a.renderRunLog()
-	return a.loadRunView(run.ID)
+	return tea.Batch(a.loadRunView(run.ID), a.runDiffLoad())
+}
+
+// runDiffLoad loads the watched run's task's diff when the Diff tab is
+// showing and no load is already in flight.
+// TODO(owner): record HEAD at run start, so the diff can be "since the run began".
+func (a *app) runDiffLoad() tea.Cmd {
+	if a.mode != modeRun || a.rv.tab != rvTabDiff || a.rv.dp.loading {
+		return nil
+	}
+	if a.rv.run.TaskID != a.rv.dp.taskID {
+		a.rv.dp.Reset(a.rv.run.TaskID)
+	}
+	a.rv.dp.loading = true
+	return loadDiffCmd(a.ctx, a.store, a.vcs, a.rv.run.TaskID, a.rv.dp.sel)
+}
+
+// handleRunDiffKey gives the Diff tab its keys while the right pane is
+// focused. h on a folded header is not handled, so it walks back to the steps.
+func (a *app) handleRunDiffKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
+	if a.rv.tab != rvTabDiff || a.rv.focus != rvPaneLog {
+		return nil, false
+	}
+	handled, reload, focusList := a.rv.dp.HandleKey(msg.String())
+	if !handled || focusList {
+		return nil, false
+	}
+	if reload {
+		a.rv.dp.loading = false
+		return a.runDiffLoad(), true
+	}
+	return nil, true
 }
 
 // leaveRunView returns to the view `v` was pressed in.
@@ -674,6 +720,10 @@ func (a app) handleRunViewKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return a, nil
 	}
 
+	if cmd, ok := a.handleRunDiffKey(msg); ok {
+		return a, cmd
+	}
+
 	switch {
 	case key.Matches(msg, a.keys.Quit) && msg.String() != "q":
 		return a, tea.Quit
@@ -694,6 +744,15 @@ func (a app) handleRunViewKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return a, nil
 	case key.Matches(msg, a.keys.Note):
 		return a, a.modal.Open(modalLog, true, "note", 0, "")
+
+	case msg.String() == "d":
+		if a.rv.tab == rvTabLog {
+			a.rv.tab = rvTabDiff
+		} else {
+			a.rv.tab = rvTabLog
+		}
+		a.resize()
+		return a, a.runDiffLoad()
 
 	// h / l walk the panes: runs → steps → log and back. tab keeps its
 	// steps ↔ log flip (from the sidebar it lands on the steps).
@@ -1291,6 +1350,7 @@ func (a *app) sizeRunViewport() {
 	_, _, logW := a.runViewWidths()
 	a.rv.vp.SetWidth(max(logW, 10))
 	a.rv.vp.SetHeight(max(a.bodyHeight-runLogHeadingRows, 1))
+	a.rv.dp.SetSize(max(logW, 10), max(a.bodyHeight-runLogHeadingRows-1, 1))
 }
 
 // runLogHeadingRows is the blank line plus heading above the log.
@@ -1305,6 +1365,9 @@ func (a app) runViewBody() string {
 	side := fitPane(a.runSidebarLines(sideW), sideW, h, a.runSidebarScroll(h, sideW))
 	steps := fitPane(a.runStepsLines(stepsW), stepsW, h, a.runStepsScroll(h, stepsW))
 	log := fitPane(append(a.runLogHeading(logW), strings.Split(a.rv.vp.View(), "\n")...), logW, h, 0)
+	if a.rv.tab == rvTabDiff {
+		log = fitPane(append([]string{"", a.runTabBar(logW)}, strings.Split(a.rv.dp.View(a.styles), "\n")...), logW, h, 0)
+	}
 	divider := func(focused bool) string {
 		style := a.styles.Rule
 		if focused {
@@ -1508,6 +1571,22 @@ func (a app) runLogHeading(width int) []string {
 	return []string{"", heading + strings.Repeat(" ", gap) + s.Faint.Render(mode)}
 }
 
+// runTabBar is the right pane's `Log | Diff +N −M` line.
+func (a app) runTabBar(width int) string {
+	s := a.styles
+	on, off := s.Accent.Bold(true).Underline(true), s.Muted
+	logT, diffT := off.Render("Log"), off.Render("Diff")
+	if a.rv.tab == rvTabLog {
+		logT = on.Render("Log")
+	} else {
+		diffT = on.Render("Diff")
+	}
+	if sum := a.rv.dp.Summary(); sum != "" {
+		diffT += " " + s.Muted.Render(sum)
+	}
+	return ansi.Truncate("  "+logT+s.Muted.Render("  |  ")+diffT+s.Faint.Render("   d"), width, s.Glyphs.Ellipsis)
+}
+
 // runViewHints is the footer for the view, per focused pane.
 func (a app) runViewHints() [][2]string {
 	var hints [][2]string
@@ -1515,7 +1594,7 @@ func (a app) runViewHints() [][2]string {
 	case rvPaneRuns:
 		hints = [][2]string{{"j/k", "switch run"}, {"l", "to steps"}}
 	case rvPaneLog:
-		hints = [][2]string{{"j/k", "scroll"}, {"h", "to steps"}}
+		hints = [][2]string{{"j/k", "scroll"}, {"h", "to steps"}, {"d", "log / diff"}}
 	default:
 		hints = [][2]string{{"j/k", "steps"}, {"h/l", "runs / log"}}
 	}

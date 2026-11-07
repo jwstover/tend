@@ -14,6 +14,7 @@ import (
 	"github.com/jwstover/tend/internal/runner"
 	"github.com/jwstover/tend/internal/store"
 	"github.com/jwstover/tend/internal/task"
+	"github.com/jwstover/tend/internal/vcs"
 	"github.com/jwstover/tend/internal/workflow"
 )
 
@@ -1051,5 +1052,110 @@ func TestViewRunWithNoRunsFlashes(t *testing.T) {
 	a := m.(app)
 	if a.mode != modeList || !strings.Contains(a.status.text, "no workflow runs") {
 		t.Errorf("mode=%v status=%+v, want a no-runs flash in the list", a.mode, a.status)
+	}
+}
+
+// runDiffApp opens the run view on a gate-waiting run whose task links a
+// branch with a canned diff.
+func runDiffApp(t *testing.T) (tea.Model, *store.Store, liveRun) {
+	t.Helper()
+	ctx := context.Background()
+	stubRunnerAlive(t, true)
+	m, s := newTestApp(t)
+	l := newLiveRun(t, s, workflow.RunRunning)
+	l.atGate(t, s)
+	if _, err := s.LinkBranch(ctx, l.tk.ID, "/r", "b"); err != nil {
+		t.Fatal(err)
+	}
+	a := m.(app)
+	a.vcs = &diffVCS{committed: map[string]vcs.Diff{"b": oneFile("a.go", 30, 3)}}
+	m = drive(t, a, tea.WindowSizeMsg{Width: 140, Height: 40})
+	m = drive(t, m, refreshMsg{})
+	m = openRun(t, m)
+	return m, s, l
+}
+
+func TestRunViewDiffTabSwitchesAndMoves(t *testing.T) {
+	m, _, _ := runDiffApp(t)
+	m = drive(t, m, keyPress('d'))
+	a := m.(app)
+	if a.rv.tab != rvTabDiff {
+		t.Fatalf("tab = %v after d, want the diff", a.rv.tab)
+	}
+	if got := ansi.Strip(a.View().Content); !strings.Contains(got, "Diff +1 −0") {
+		t.Errorf("diff tab bar lacks the summary:\n%s", got)
+	}
+	// l to the log pane, then the cursor keys are the diff pane's.
+	m = drive(t, m, keyPress('l'))
+	before := m.(app).rv.dp.cursor
+	m = drive(t, m, keyPress('j'))
+	if a := m.(app); a.rv.dp.cursor != before+1 || a.rv.focus != rvPaneLog {
+		t.Errorf("cursor %d focus %v after j, want %d with the log pane kept", a.rv.dp.cursor, a.rv.focus, before+1)
+	}
+	// J jumps to a file header and Z folds: the same keys as the detail pane.
+	m = drive(t, m, keyPress('Z'))
+	if a := m.(app); len(a.rv.dp.folded) == 0 {
+		t.Error("Z did not fold the files")
+	}
+	m = drive(t, m, keyPress('d'))
+	if m.(app).rv.tab != rvTabLog {
+		t.Error("d did not return to the log")
+	}
+}
+
+func TestRunViewGateKeysDecideOnDiffTab(t *testing.T) {
+	ctx := context.Background()
+	m, s, l := runDiffApp(t)
+	m = drive(t, m, keyPress('d'))
+	m = drive(t, m, keyPress('l'))
+	m = drive(t, m, keyPress('a'))
+	waitFor(t, "gate approved from the diff tab", func() bool {
+		sr, err := s.GetStepRun(ctx, l.stepRun.ID)
+		return err == nil && sr.Finished() && sr.Outcome == "approve"
+	})
+	_ = m
+}
+
+func TestRunViewRejectOpensFeedbackOnDiffTab(t *testing.T) {
+	m, _, _ := runDiffApp(t)
+	m = drive(t, m, keyPress('d'))
+	m = drive(t, m, keyPress('l'))
+	m = drive(t, m, keyPress('x'))
+	if a := m.(app); !a.modal.Active() {
+		t.Errorf("x on the diff tab did not open the feedback modal; status %+v", a.status)
+	}
+}
+
+func TestRunViewDiffNoLinkAndSwitchReloads(t *testing.T) {
+	ctx := context.Background()
+	stubRunnerAlive(t, true)
+	m, s := newTestApp(t)
+	l := newLiveRun(t, s, workflow.RunRunning)
+	latest, err := s.CreateRun(ctx, l.wf.ID, l.tk.ID, "/tmp/repo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m = drive(t, m, tea.WindowSizeMsg{Width: 140, Height: 40})
+	m = drive(t, m, refreshMsg{})
+	m = openRun(t, m)
+	m = drive(t, m, keyPress('d'))
+	if got := ansi.Strip(m.View().Content); !strings.Contains(got, "no branch linked") {
+		t.Errorf("unlinked task's diff tab lacks the message:\n%s", got)
+	}
+	if a := m.(app); a.rv.runID != latest.ID {
+		t.Fatalf("watching run %d, want %d", a.rv.runID, latest.ID)
+	}
+	// Link a branch, then switch run in the sidebar: the diff reloads.
+	if _, err := s.LinkBranch(ctx, l.tk.ID, "/r", "b"); err != nil {
+		t.Fatal(err)
+	}
+	a := m.(app)
+	a.vcs = &diffVCS{committed: map[string]vcs.Diff{"b": oneFile("a.go", 30, 3)}}
+	m = a
+	m = drive(t, m, keyPress('h'))
+	m = drive(t, m, keyPress('j'))
+	a = m.(app)
+	if a.rv.runID != l.run.ID || a.rv.dp.state != diffReady {
+		t.Errorf("run %d diff state %v after switching, want run %d with the diff reloaded", a.rv.runID, a.rv.dp.state, l.run.ID)
 	}
 }
