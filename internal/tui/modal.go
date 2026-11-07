@@ -26,9 +26,6 @@ const (
 	modalTakeoverDeliverable
 	// modalGotoTask collects a task id to jump to (gototask.go).
 	modalGotoTask
-	// modalSettingValue collects a text or custom value for a setting
-	// (settings.go): extra is the setting key.
-	modalSettingValue
 )
 
 // modal is a centered floating input box. It owns presentation and text
