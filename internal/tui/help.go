@@ -24,9 +24,9 @@ func helpGroups() []helpGroup {
 	return []helpGroup{
 		{"NAVIGATE", []helpEntry{
 			{"j / k", "down / up"},
-			{"gg / G", "top / bottom"},
+			{"gg / G", "top / bottom (diff: } { J K Z jump)"},
 			{"⏎ / tab", "expand / collapse children"},
-			{"l / h", "expand / collapse branch"},
+			{"l / h", "expand / collapse branch (diff: fold)"},
 			{"] tab B", "detail pane; its Task/Diff tab; next branch"},
 			{"C", "show / hide completed, canceled + someday"},
 			{"g", "group by state/priority/agent"},

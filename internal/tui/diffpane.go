@@ -109,7 +109,8 @@ type diffPane struct {
 	notice   string
 	loading  bool // a load is in flight
 	rows     []Row
-	folded   map[string]bool // per file path; folding itself is #802
+	folded   map[string]bool // per file path; kept across reloads and link switches
+	diffs    [2]vcs.Diff     // committed, uncommitted: what rows are built from
 	cursor   int
 	offset   int
 	added    int
@@ -166,6 +167,7 @@ func (p *diffPane) Apply(m diffLoadedMsg) bool {
 	p.selLabel = m.link.Branch
 	p.rows, p.added, p.removed = nil, 0, 0
 	if m.state == diffReady {
+		p.diffs = [2]vcs.Diff{m.committed, m.uncommitted}
 		p.rows = BuildRows(m.committed, m.uncommitted, p.folded)
 		for _, d := range []vcs.Diff{m.committed, m.uncommitted} {
 			for _, f := range d.Files {
@@ -184,10 +186,11 @@ func (p *diffPane) Apply(m diffLoadedMsg) bool {
 	return true
 }
 
-// HandleKey moves the cursor. handled reports whether the key was the
-// pane's; reload that the selected link changed and the diff must be
-// loaded again.
-func (p *diffPane) HandleKey(k string) (handled, reload bool) {
+// HandleKey moves the cursor and folds files. handled reports whether the key
+// was the pane's; reload that the selected link changed and the diff must be
+// loaded again; focusList that `h` was pressed on a folded header, so the app
+// should give focus back to the list.
+func (p *diffPane) HandleKey(k string) (handled, reload, focusList bool) {
 	switch k {
 	case "j", "down":
 		p.move(1)
@@ -203,18 +206,130 @@ func (p *diffPane) HandleKey(k string) (handled, reload bool) {
 	case "G", "end":
 		p.cursor = len(p.rows) - 1
 		p.ensureVisible()
+	case "}":
+		p.jump(RowHunkHeader, 1)
+	case "{":
+		p.jump(RowHunkHeader, -1)
+	case "J":
+		p.jump(RowFileHeader, 1)
+	case "K":
+		p.jump(RowFileHeader, -1)
+	case "h":
+		return true, false, !p.foldCurrent()
+	case "l":
+		p.unfoldCurrent()
+	case "Z":
+		p.toggleAll()
 	case "B":
 		if len(p.links) > 1 {
 			p.cycleLink()
-			return true, true
+			return true, true, false
 		}
-	case "l":
-		// Unfolding arrives with #802. Swallowed so it never reaches the
-		// list's expand.
 	default:
-		return false, false
+		return false, false, false
 	}
-	return true, false
+	return true, false, false
+}
+
+// jump moves to the next (dir 1) or previous (dir -1) row of kind, and stays
+// put when there is none.
+func (p *diffPane) jump(kind RowKind, dir int) {
+	for i := p.cursor + dir; i >= 0 && i < len(p.rows); i += dir {
+		if p.rows[i].Kind == kind {
+			p.cursor = i
+			p.ensureVisible()
+			return
+		}
+	}
+}
+
+// refold rebuilds the rows after a fold change and lands the cursor on the
+// header of the file at (path, sec).
+func (p *diffPane) refold(path string, sec int) {
+	rel := p.cursor - p.offset
+	p.rows = BuildRows(p.diffs[0], p.diffs[1], p.folded)
+	p.cursor = 0
+	for i, r := range p.rows {
+		if r.Kind == RowFileHeader && r.Path == path && r.Section == sec {
+			p.cursor = i
+			break
+		}
+	}
+	p.offset = p.cursor - rel
+	p.ensureVisible()
+}
+
+func (p *diffPane) setFolded(path string, v bool) {
+	if p.folded == nil {
+		p.folded = map[string]bool{}
+	}
+	if v {
+		p.folded[path] = true
+	} else {
+		delete(p.folded, path)
+	}
+}
+
+// foldCurrent folds the file under the cursor and lands on its header. It
+// reports false, changing nothing, when the cursor is not in an unfolded file
+// (a folded header, a section heading, a notice for no changes).
+func (p *diffPane) foldCurrent() bool {
+	if p.state != diffReady || p.cursor >= len(p.rows) {
+		return false
+	}
+	r := p.rows[p.cursor]
+	if r.Path == "" || (r.Kind == RowFileHeader && r.Folded) {
+		return false
+	}
+	p.setFolded(r.Path, true)
+	p.refold(r.Path, r.Section)
+	return true
+}
+
+// unfoldCurrent unfolds a folded header under the cursor; anywhere else it
+// does nothing.
+func (p *diffPane) unfoldCurrent() {
+	if p.state != diffReady || p.cursor >= len(p.rows) {
+		return
+	}
+	r := p.rows[p.cursor]
+	if r.Kind != RowFileHeader || !r.Folded {
+		return
+	}
+	p.setFolded(r.Path, false)
+	p.refold(r.Path, r.Section)
+}
+
+// toggleAll folds every file, or unfolds every file when all are folded.
+func (p *diffPane) toggleAll() {
+	if p.state != diffReady || p.cursor >= len(p.rows) {
+		return
+	}
+	all, any := true, false
+	var paths []string
+	for _, r := range p.rows {
+		if r.Kind == RowFileHeader {
+			any = true
+			paths = append(paths, r.Path)
+			all = all && r.Folded
+		}
+	}
+	if !any {
+		return
+	}
+	cur := p.rows[p.cursor]
+	for _, path := range paths {
+		p.setFolded(path, !all)
+	}
+	if cur.Path == "" {
+		anchor, rel := AnchorAt(p.rows, p.cursor), p.cursor-p.offset
+		p.rows = BuildRows(p.diffs[0], p.diffs[1], p.folded)
+		p.cursor = FindRow(p.rows, anchor)
+		p.offset = p.cursor - rel
+		p.ensureVisible()
+		return
+	}
+	p.refold(cur.Path, cur.Section)
 }
 
 // cycleLink selects the next link, wrapping.
@@ -366,8 +481,12 @@ func (a *app) handleDetailTabKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool)
 	if a.detailTab != tabDiff {
 		return *a, nil, false
 	}
-	handled, reload := a.dp.HandleKey(msg.String())
+	handled, reload, focusList := a.dp.HandleKey(msg.String())
 	if !handled {
+		return *a, nil, false
+	}
+	if focusList {
+		// Today's `h`: not handled here, so the global switch moves focus.
 		return *a, nil, false
 	}
 	if reload {
