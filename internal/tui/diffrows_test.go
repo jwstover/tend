@@ -96,6 +96,15 @@ func TestFindRow(t *testing.T) {
 		t.Fatalf("no row %s %v %d", path, kind, newNo)
 		return -1
 	}
+	oldIdx := func(path string, oldNo int) int {
+		for i, r := range rows {
+			if r.Path == path && r.Code() && r.OldNo == oldNo {
+				return i
+			}
+		}
+		t.Fatalf("no row %s old %d", path, oldNo)
+		return -1
+	}
 	hdr := func(path string) int { return idx(path, RowFileHeader, 0) }
 
 	tests := []struct {
@@ -106,6 +115,7 @@ func TestFindRow(t *testing.T) {
 		{"exact add", Anchor{Path: "a.go", NewNo: 11, Kind: RowAdd}, idx("a.go", RowAdd, 11)},
 		{"exact del", Anchor{Path: "a.go", OldNo: 11, Kind: RowDel}, idx("a.go", RowDel, 0)},
 		{"nearest in hunk", Anchor{Path: "a.go", OldNo: 11, NewNo: 13, Kind: RowContext}, idx("a.go", RowContext, 12)},
+		{"context line found by its old number after an edit above", Anchor{Path: "a.go", OldNo: 12, NewNo: 14, Kind: RowContext}, oldIdx("a.go", 12)},
 		{"nearest in the covering hunk only", Anchor{Path: "b.go", NewNo: 51, Kind: RowAdd}, idx("b.go", RowContext, 51)},
 		{"no covering hunk goes to header", Anchor{Path: "b.go", OldNo: 20, NewNo: 20, Kind: RowAdd}, hdr("b.go")},
 		{"file gone goes to 0", Anchor{Path: "zzz.go", NewNo: 3, Kind: RowAdd}, 0},

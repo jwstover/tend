@@ -178,6 +178,9 @@ func FindRow(rows []Row, a Anchor) int {
 		if i := findExact(rows, a, sameSec); i >= 0 {
 			return i
 		}
+		if i := findByOldNo(rows, a, sameSec); i >= 0 {
+			return i
+		}
 		if i := findNearest(rows, a, sameSec); i >= 0 {
 			return i
 		}
@@ -204,6 +207,21 @@ func findHeader(rows []Row, a Anchor, sameSec bool) int {
 func findExact(rows []Row, a Anchor, sameSec bool) int {
 	for i, r := range rows {
 		if r.Code() && secOK(r, a, sameSec) && r.Kind == a.Kind && r.OldNo == a.OldNo && r.NewNo == a.NewNo {
+			return i
+		}
+	}
+	return -1
+}
+
+// findByOldNo finds a context or removed line by its old number alone. Both
+// are lines of the base, so an edit above them shifts their new numbers but
+// not their old ones: the common reload, where the cursor must not slide.
+func findByOldNo(rows []Row, a Anchor, sameSec bool) int {
+	if a.OldNo == 0 || (a.Kind != RowContext && a.Kind != RowDel) {
+		return -1
+	}
+	for i, r := range rows {
+		if r.Kind == a.Kind && secOK(r, a, sameSec) && r.OldNo == a.OldNo {
 			return i
 		}
 	}
