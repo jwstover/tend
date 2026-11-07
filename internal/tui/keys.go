@@ -38,6 +38,13 @@ type keyMap struct {
 	DiffTool       key.Binding // open the linked branch's diff in an external tool (difftool.go)
 	DetailTab      key.Binding // tab/shift+tab with the detail pane focused: Task / Diff (diffpane.go)
 	DiffBranch     key.Binding // B on the Diff tab: cycle the linked branch
+	DiffNextHunk   key.Binding // } on the Diff tab
+	DiffPrevHunk   key.Binding // { on the Diff tab
+	DiffNextFile   key.Binding // J on the Diff tab
+	DiffPrevFile   key.Binding // K on the Diff tab
+	DiffFold       key.Binding // h on the Diff tab: fold the file
+	DiffUnfold     key.Binding // l on a folded header
+	DiffFoldAll    key.Binding // Z on the Diff tab
 	LinkBranch     key.Binding // pick the branches the selected task's work is on (linkpicker.go)
 	Dependencies   key.Binding // pick which tasks the selected one waits on (dependencypicker.go)
 	Archive        key.Binding // archive/restore the selected project
@@ -155,11 +162,18 @@ func defaultKeyMap() keyMap {
 		Dependencies: key.NewBinding(key.WithKeys("b"), key.WithHelp("b", "blocked by")),
 		// `D` is also the Workflows view's Duplicate; that view is
 		// dispatched before the global switch, so the two never meet.
-		DiffTool:   key.NewBinding(key.WithKeys("D"), key.WithHelp("D", "diff tool")),
-		DetailTab:  key.NewBinding(key.WithKeys("tab", "shift+tab"), key.WithHelp("tab", "task / diff tab")),
-		DiffBranch: key.NewBinding(key.WithKeys("B"), key.WithHelp("B", "next branch")),
-		LinkBranch: key.NewBinding(key.WithKeys("L"), key.WithHelp("L", "link branch")),
-		Archive:    key.NewBinding(key.WithKeys("A"), key.WithHelp("A", "archive")),
+		DiffTool:     key.NewBinding(key.WithKeys("D"), key.WithHelp("D", "diff tool")),
+		DetailTab:    key.NewBinding(key.WithKeys("tab", "shift+tab"), key.WithHelp("tab", "task / diff tab")),
+		DiffBranch:   key.NewBinding(key.WithKeys("B"), key.WithHelp("B", "next branch")),
+		DiffNextHunk: key.NewBinding(key.WithKeys("}"), key.WithHelp("}", "next hunk")),
+		DiffPrevHunk: key.NewBinding(key.WithKeys("{"), key.WithHelp("{", "previous hunk")),
+		DiffNextFile: key.NewBinding(key.WithKeys("J"), key.WithHelp("J", "next file")),
+		DiffPrevFile: key.NewBinding(key.WithKeys("K"), key.WithHelp("K", "previous file")),
+		DiffFold:     key.NewBinding(key.WithKeys("h"), key.WithHelp("h", "fold file")),
+		DiffUnfold:   key.NewBinding(key.WithKeys("l"), key.WithHelp("l", "unfold file")),
+		DiffFoldAll:  key.NewBinding(key.WithKeys("Z"), key.WithHelp("Z", "fold / unfold all")),
+		LinkBranch:   key.NewBinding(key.WithKeys("L"), key.WithHelp("L", "link branch")),
+		Archive:      key.NewBinding(key.WithKeys("A"), key.WithHelp("A", "archive")),
 		// `C` reveals the hidden population everywhere: completed tasks in
 		// the list, ended sessions in the agents view, and here the
 		// archived projects -- the only way to find one again to restore it.

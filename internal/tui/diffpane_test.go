@@ -151,7 +151,7 @@ func TestDiffPaneBCyclesLinks(t *testing.T) {
 	if l, _ := p.SelectedLink(); l.ID != 2 {
 		t.Fatalf("selected %d, want the newest (2)", l.ID)
 	}
-	if handled, reload := p.HandleKey("B"); !handled || !reload {
+	if handled, reload, _ := p.HandleKey("B"); !handled || !reload {
 		t.Fatal("B should be handled and ask for a reload")
 	}
 	if l, _ := p.SelectedLink(); l.ID != 1 {
@@ -272,10 +272,21 @@ func TestDiffTabKeysDoNotReachTheList(t *testing.T) {
 	if a.focus != paneDetail {
 		t.Error("focus left the detail pane")
 	}
-	// h still gives focus back to the list.
+	// h folds the file first, and only on the folded header gives focus back
+	// to the list; l then never reaches the list's expand either.
+	m = drive(t, m, keyPress('h'))
+	a = m.(app)
+	if a.focus != paneDetail || !a.dp.rows[a.dp.cursor].Folded {
+		t.Fatalf("first h: focus %v, row %+v; want a fold in place", a.focus, a.dp.rows[a.dp.cursor])
+	}
+	m = drive(t, m, keyPress('l'))
+	if m.(app).dp.rows[m.(app).dp.cursor].Folded || m.(app).expanded[id] {
+		t.Error("l should unfold the header and nothing else")
+	}
+	m = drive(t, m, keyPress('h'))
 	m = drive(t, m, keyPress('h'))
 	if m.(app).focus == paneDetail {
-		t.Error("h did not return focus to the list")
+		t.Error("h on a folded header did not return focus to the list")
 	}
 }
 
@@ -315,5 +326,153 @@ func TestIdlePollTickRefreshesTheDiffTab(t *testing.T) {
 	// ... but not while one is in flight.
 	if _, cmd := m.(app).Update(sessionsPolledMsg{}); cmd != nil {
 		t.Error("a second reload started while one was in flight")
+	}
+}
+
+// threeFiles is three one-hunk files a.go, b.go, c.go (b has two hunks).
+func threeFiles() vcs.Diff {
+	d := vcs.Diff{}
+	for _, name := range []string{"a.go", "b.go", "c.go"} {
+		f := oneFile(name, 4, 2).Files[0]
+		if name == "b.go" {
+			f.Hunks = append(f.Hunks, f.Hunks[0])
+		}
+		d.Files = append(d.Files, f)
+	}
+	return d
+}
+
+func foldedPane(t *testing.T) *diffPane {
+	t.Helper()
+	p := newPane(30)
+	p.Apply(readyMsg(7, threeFiles()))
+	return p
+}
+
+func rowOf(p *diffPane, kind RowKind, path string, nth int) int {
+	for i, r := range p.rows {
+		if r.Kind == kind && (path == "" || r.Path == path) {
+			if nth == 0 {
+				return i
+			}
+			nth--
+		}
+	}
+	return -1
+}
+
+func TestDiffPaneJumps(t *testing.T) {
+	p := foldedPane(t)
+	var hunks, files []int
+	for i, r := range p.rows {
+		switch r.Kind {
+		case RowHunkHeader:
+			hunks = append(hunks, i)
+		case RowFileHeader:
+			files = append(files, i)
+		}
+	}
+	if len(hunks) != 4 || len(files) != 3 {
+		t.Fatalf("hunks %v files %v", hunks, files)
+	}
+	for _, tc := range []struct {
+		name  string
+		key   string
+		start int
+		want  int
+	}{
+		{"next hunk", "}", 0, hunks[0]},
+		{"next hunk again", "}", hunks[0], hunks[1]},
+		{"no hunk past the end", "}", hunks[3], hunks[3]},
+		{"previous hunk", "{", hunks[2], hunks[1]},
+		{"no hunk before the first", "{", hunks[0], hunks[0]},
+		{"next file", "J", 0, files[1]},
+		{"next file from inside", "J", hunks[1], files[2]},
+		{"no file past the end", "J", files[2], files[2]},
+		{"previous file", "K", files[2], files[1]},
+		{"previous file from inside", "K", files[1] + 2, files[1]},
+		{"no file before the first", "K", files[0], files[0]},
+	} {
+		p.cursor = tc.start
+		if handled, _, _ := p.HandleKey(tc.key); !handled {
+			t.Errorf("%s: not handled", tc.name)
+		}
+		if p.cursor != tc.want {
+			t.Errorf("%s: cursor %d, want %d", tc.name, p.cursor, tc.want)
+		}
+	}
+}
+
+func TestDiffPaneFoldKeys(t *testing.T) {
+	p := foldedPane(t)
+	b := rowOf(p, RowFileHeader, "b.go", 0)
+	p.cursor = b + 3 // a code row inside b.go
+	full := len(p.rows)
+	if handled, _, focus := p.HandleKey("h"); !handled || focus {
+		t.Fatalf("h in a file: handled %v focus %v", handled, focus)
+	}
+	if p.cursor != b || !p.rows[b].Folded || len(p.rows) >= full {
+		t.Fatalf("b.go not folded onto its header: cursor %d", p.cursor)
+	}
+	if _, _, focus := p.HandleKey("h"); !focus {
+		t.Error("second h did not ask for the list")
+	}
+	p.cursor = 0
+	folded := len(p.rows)
+	p.HandleKey("l")
+	if len(p.rows) != folded || !p.rows[b].Folded {
+		t.Error("l off a folded header changed something")
+	}
+	p.cursor = b
+	p.HandleKey("l")
+	if p.rows[b].Folded || len(p.rows) != full {
+		t.Error("l did not unfold")
+	}
+	p.HandleKey("l") // on an unfolded header: nothing
+	if len(p.rows) != full {
+		t.Error("l folded or changed an unfolded file")
+	}
+	p.HandleKey("Z")
+	for _, r := range p.rows {
+		if r.Kind != RowFileHeader {
+			t.Fatalf("Z left a non-header row %v", r.Kind)
+		}
+		if !r.Folded {
+			t.Fatal("Z left a file unfolded")
+		}
+	}
+	p.HandleKey("Z")
+	if len(p.rows) != full {
+		t.Errorf("second Z: %d rows, want %d", len(p.rows), full)
+	}
+	// Z with one folded file folds the rest.
+	p.cursor = b + 1
+	p.HandleKey("h")
+	p.HandleKey("Z")
+	if len(p.rows) != 3 {
+		t.Errorf("Z with a mix: %d rows, want 3", len(p.rows))
+	}
+}
+
+func TestDiffPaneFoldSurvivesReload(t *testing.T) {
+	p := foldedPane(t)
+	c := rowOf(p, RowFileHeader, "c.go", 0)
+	p.cursor = c + 2
+	p.HandleKey("h")
+	a := rowOf(p, RowFileHeader, "a.go", 0)
+	p.cursor = a + 3
+	p.HandleKey("K") // stays: first file; now sit on a code row in a.go
+	p.cursor = a + 3
+	anchor := AnchorAt(p.rows, p.cursor)
+	m := readyMsg(7, threeFiles())
+	m.want = p.sel
+	if !p.Apply(m) {
+		t.Fatal("reload dropped")
+	}
+	if !p.rows[rowOf(p, RowFileHeader, "c.go", 0)].Folded {
+		t.Error("fold lost across reload")
+	}
+	if got := AnchorAt(p.rows, p.cursor); got != anchor {
+		t.Errorf("cursor anchor %+v, want %+v", got, anchor)
 	}
 }
