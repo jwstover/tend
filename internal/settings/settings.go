@@ -12,6 +12,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/jwstover/tend/internal/vcs"
 )
 
 // Kind is how a setting is edited.
@@ -52,12 +54,11 @@ var entries = []Entry{
 	{
 		Key:         KeyDiffTool,
 		Label:       "Diff tool",
-		Description: "Full-screen tool for viewing a task's diff: a preset name or a command template using {base}, {head} and {repo}.",
+		Description: "Full-screen tool for viewing a task's diff: a preset name or a command template using {base}, {head} and {repo}. External tools see refs only, so they show committed work only; uncommitted work is in the Diff tab.",
 		Kind:        KindChoice,
 		Default:     "",
 		DefaultNote: "auto-detect: the first preset found on $PATH",
-		// TODO(owner): #795 fills Choices from vcs.DiffToolPresetNames().
-		Choices:     nil,
+		Choices:     vcs.DiffToolPresetNames(),
 		AllowCustom: true,
 	},
 	{
