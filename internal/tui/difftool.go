@@ -28,6 +28,12 @@ type diffToolFinishedMsg struct{ err error }
 // base off the loop, and builds the command; it runs nothing. External
 // tools see refs only, so this shows committed work.
 func (a app) openDiffToolCmd(t task.Task) tea.Cmd {
+	picked := func() (task.BranchLink, bool) {
+		if a.detailTab == tabDiff && a.dp.taskID == t.ID {
+			return a.dp.SelectedLink()
+		}
+		return task.BranchLink{}, false
+	}
 	return func() tea.Msg {
 		links, err := a.store.TaskBranches(a.ctx, t.ID)
 		if err != nil {
@@ -36,10 +42,18 @@ func (a app) openDiffToolCmd(t task.Task) tea.Cmd {
 		if len(links) == 0 {
 			return statusMsg(flash{text: "no branch linked (L to link one)"})
 		}
-		// TODO(owner): #797 passes the Diff tab's selected link.
 		link := links[len(links)-1] // TaskBranches is oldest first
 		note := ""
-		if len(links) > 1 {
+		chosen := false
+		if pick, ok := picked(); ok {
+			// The Diff tab's selected link, if it is still linked.
+			for _, l := range links {
+				if l.ID == pick.ID {
+					link, chosen = l, true
+				}
+			}
+		}
+		if len(links) > 1 && !chosen {
 			note = fmt.Sprintf("%d branches linked; using %s", len(links), link.Branch)
 		}
 		value, _, err := a.store.Setting(a.ctx, "diff_tool")

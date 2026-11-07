@@ -260,9 +260,9 @@ func runSessionPoller(ctx context.Context, store Store, send func(tea.Msg)) {
 			sessionsChanged := pollSessions(ctx, store, pollInterval)
 			var runsChanged bool
 			runs, runsChanged = pollRuns(ctx, store, runs)
-			if sessionsChanged || runsChanged {
-				send(sessionsPolledMsg{changed: true})
-			}
+			// An idle tick still goes out: the Diff tab re-reads git on it,
+			// since a working tree changes without touching the database.
+			send(sessionsPolledMsg{changed: sessionsChanged || runsChanged})
 		}
 	}
 }
@@ -750,7 +750,9 @@ type app struct {
 	showDetail bool
 	focus      pane // which column owns j/k and the scroll keys
 	detail     viewport.Model
-	detailID   int64 // task currently rendered in the pane; 0 = none
+	detailID   int64     // task currently rendered in the pane; 0 = none
+	detailTab  detailTab // which tab the pane shows; survives a change of task
+	dp         diffPane  // the Diff tab (diffpane.go)
 	renderer   *glamour.TermRenderer
 
 	prompt       textinput.Model
@@ -1169,7 +1171,10 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// the same tick; the list reload it would otherwise get is what
 		// syncDetail does when the view is left. The agents view is all
 		// session markers, and tails its log the same way.
-		if !msg.changed || a.mode == modeStandup || a.mode == modeWorkflows {
+		if !msg.changed {
+			return a, a.diffLoad()
+		}
+		if a.mode == modeStandup || a.mode == modeWorkflows {
 			return a, nil
 		}
 		switch a.mode {
@@ -1183,6 +1188,13 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, a.loadSettings()
 		}
 		return a, a.loadTasks(a.mode)
+
+	case diffLoadedMsg:
+		// A result for a task that is no longer selected is dropped.
+		if n, ok := a.selectedNode(); ok && n.t.ID == msg.taskID {
+			a.dp.Apply(msg)
+		}
+		return a, nil
 
 	case dbChangedMsg:
 		// Coalesce: a reload already on its way may or may not have read
@@ -1603,6 +1615,14 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// fall through, so `q`, `:`, `?`, `S` and `i` still work from there.
 	if a.focus == paneProjects && a.mode == modeList {
 		if model, cmd, handled := a.handleProjectsKey(msg); handled {
+			return model, cmd
+		}
+	}
+
+	// The detail pane claims its own keys while it has the keyboard, and
+	// lets everything else fall through so `e`, `r`, `w`, `q` ... still work.
+	if a.detailKeysActive() {
+		if model, cmd, handled := a.handleDetailTabKey(msg); handled {
 			return model, cmd
 		}
 	}
@@ -2318,6 +2338,18 @@ func (a *app) syncDetail(force bool) tea.Cmd {
 		a.detail.SetContent(a.styles.Dimmed.Render("nothing selected"))
 		return nil
 	}
+	if a.detailTab == tabDiff {
+		// The Diff tab loads its own data; the Task tab's caches are
+		// refreshed when the tab is switched back to.
+		if n.t.ID != a.dp.taskID {
+			a.dp.Reset(n.t.ID)
+		}
+		a.detailID = n.t.ID
+		if force || !a.dp.loaded() {
+			return a.diffLoad()
+		}
+		return nil
+	}
 	if force || n.t.ID != a.detailID {
 		if n.t.ID != a.detailID {
 			// A genuinely different task starts scrolled to the top; a
@@ -2475,7 +2507,8 @@ func (a *app) resize() {
 	_, listWidth, detailWidth, _ := a.paneWidths()
 	if a.showDetail {
 		a.detail.SetWidth(max(detailWidth, 10))
-		a.detail.SetHeight(a.bodyHeight)
+		a.detail.SetHeight(max(a.bodyHeight-1, 1)) // under the tab bar
+		a.dp.SetSize(max(detailWidth, 10), max(a.bodyHeight-1, 1))
 		a.renderer, _ = newBodyRenderer(detailWidth - 2)
 	}
 	a.list.SetSize(listWidth, a.bodyHeight)
@@ -3008,10 +3041,10 @@ func (a app) listBody() string {
 	switch {
 	case a.showDetail && full:
 		// The detail pane replaces the list outright; projW is 0 here.
-		cols = append(cols, a.detail.View())
+		cols = append(cols, a.detailPaneView())
 	case a.showDetail:
 		cols = append(cols, a.list.View(),
-			a.verticalDivider(a.focus == paneDetail), a.detail.View())
+			a.verticalDivider(a.focus == paneDetail), a.detailPaneView())
 	default:
 		cols = append(cols, a.list.View())
 	}

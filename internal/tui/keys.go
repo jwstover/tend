@@ -36,6 +36,8 @@ type keyMap struct {
 	MoveProject    key.Binding // move the selected task to another project
 	MoveParent     key.Binding // move the selected task under another task, or to the top level
 	DiffTool       key.Binding // open the linked branch's diff in an external tool (difftool.go)
+	DetailTab      key.Binding // tab/shift+tab with the detail pane focused: Task / Diff (diffpane.go)
+	DiffBranch     key.Binding // B on the Diff tab: cycle the linked branch
 	LinkBranch     key.Binding // pick the branches the selected task's work is on (linkpicker.go)
 	Dependencies   key.Binding // pick which tasks the selected one waits on (dependencypicker.go)
 	Archive        key.Binding // archive/restore the selected project
@@ -154,6 +156,8 @@ func defaultKeyMap() keyMap {
 		// `D` is also the Workflows view's Duplicate; that view is
 		// dispatched before the global switch, so the two never meet.
 		DiffTool:   key.NewBinding(key.WithKeys("D"), key.WithHelp("D", "diff tool")),
+		DetailTab:  key.NewBinding(key.WithKeys("tab", "shift+tab"), key.WithHelp("tab", "task / diff tab")),
+		DiffBranch: key.NewBinding(key.WithKeys("B"), key.WithHelp("B", "next branch")),
 		LinkBranch: key.NewBinding(key.WithKeys("L"), key.WithHelp("L", "link branch")),
 		Archive:    key.NewBinding(key.WithKeys("A"), key.WithHelp("A", "archive")),
 		// `C` reveals the hidden population everywhere: completed tasks in
