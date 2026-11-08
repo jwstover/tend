@@ -131,6 +131,62 @@ func TestUncommittedDiffArgv(t *testing.T) {
 	}
 }
 
+func TestBaseFallbacks(t *testing.T) {
+	cases := []struct {
+		name     string
+		branch   string
+		upstream string          // reply to the @{upstream} lookup; "" = no upstream
+		originH  string          // reply to symbolic-ref origin/HEAD; "" = unset
+		refs     map[string]bool // refs that resolve
+		want     string
+	}{
+		{"dangling origin/HEAD at the workspace falls through", "feat/x", "", "origin/gitbutler/workspace",
+			map[string]bool{"origin/master": true}, "origin/master"},
+		{"origin/HEAD that does not resolve falls through", "feat/x", "", "origin/gone",
+			map[string]bool{"main": true}, "main"},
+		{"good origin/HEAD is used", "feat/x", "", "origin/develop",
+			map[string]bool{"origin/develop": true, "origin/main": true}, "origin/develop"},
+		{"integration upstream is the base", "task-737/sub-809", "origin/gui/integration", "origin/master",
+			map[string]bool{"origin/gui/integration": true, "origin/master": true}, "origin/gui/integration"},
+		{"same-named upstream is a push target, skipped", "task-790/x", "origin/task-790/x", "origin/main",
+			map[string]bool{"origin/task-790/x": true, "origin/main": true}, "origin/main"},
+		{"unfetched upstream is skipped", "feat/x", "origin/gone", "",
+			map[string]bool{"origin/main": true}, "origin/main"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls []call
+			c := fake(&calls, func(_, args string) ([]byte, error) {
+				switch {
+				case args == "symbolic-ref --short HEAD":
+					return nil, errors.New("fatal: ref HEAD is not a symbolic ref")
+				case strings.HasSuffix(args, "@{upstream}"):
+					if tc.upstream == "" {
+						return nil, errors.New("no upstream")
+					}
+					return []byte(tc.upstream + "\n"), nil
+				case args == "symbolic-ref --short refs/remotes/origin/HEAD":
+					if tc.originH == "" {
+						return nil, errors.New("not a symbolic ref")
+					}
+					return []byte(tc.originH + "\n"), nil
+				case strings.HasPrefix(args, "rev-parse --verify --quiet "):
+					ref := strings.TrimSuffix(strings.TrimPrefix(args, "rev-parse --verify --quiet "), "^{commit}")
+					if tc.refs[ref] {
+						return []byte("sha\n"), nil
+					}
+					return nil, errors.New("exit 1")
+				}
+				return nil, errors.New("unexpected " + args)
+			})
+			got, err := c.Base(context.Background(), "/repo", tc.branch)
+			if err != nil || got != tc.want {
+				t.Errorf("Base = %q, %v; want %q", got, err, tc.want)
+			}
+		})
+	}
+}
+
 func TestMissingBinaries(t *testing.T) {
 	c := &Client{Run: func(_ context.Context, _, name string, _ ...string) ([]byte, error) {
 		return nil, notFound(name)
