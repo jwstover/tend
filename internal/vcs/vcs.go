@@ -142,26 +142,51 @@ func (c *Client) BranchExists(ctx context.Context, repo, branch string) bool {
 	return err == nil
 }
 
-// Base is the ref a branch is diffed against: GitButler's target in
-// GitButler mode, otherwise the remote's default branch, falling back to
-// main then master.
+// Base is the ref a branch is diffed against, the first of:
+//   - GitButler's target merge base, in GitButler mode;
+//   - the branch's upstream, when it tracks a differently named branch (an
+//     integration branch it is stacked on), not its own push target;
+//   - origin/HEAD, when it resolves and is not a GitButler workspace ref (a
+//     clone of a repo someone pushed gitbutler/workspace to can have its
+//     origin/HEAD dangling at origin/gitbutler/workspace);
+//   - origin/main, origin/master, main, master, whichever resolves first.
+//
+// Every candidate is verified to resolve, so a stale ref falls through
+// rather than failing the diff.
 func (c *Client) Base(ctx context.Context, repo, branch string) (string, error) {
 	if c.IsGitButler(ctx, repo) {
 		if st, err := c.butStatus(ctx, repo); err == nil && st.MergeBase.CommitID != "" {
 			return st.MergeBase.CommitID, nil
 		}
 	}
+	resolves := func(ref string) bool {
+		_, err := c.git(ctx, repo, "rev-parse", "--verify", "--quiet", ref+"^{commit}")
+		return err == nil
+	}
+	if out, err := c.git(ctx, repo, "rev-parse", "--abbrev-ref", "--symbolic-full-name", branch+"@{upstream}"); err == nil {
+		up := strings.TrimSpace(string(out))
+		_, name, _ := strings.Cut(up, "/")
+		if up != "" && name != branch && !isWorkspaceRef(up) && resolves(up) {
+			return up, nil
+		}
+	}
 	if out, err := c.git(ctx, repo, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"); err == nil {
-		if b := strings.TrimSpace(string(out)); b != "" {
+		if b := strings.TrimSpace(string(out)); b != "" && !isWorkspaceRef(b) && resolves(b) {
 			return b, nil
 		}
 	}
-	for _, b := range []string{"main", "master"} {
-		if _, err := c.git(ctx, repo, "rev-parse", "--verify", "--quiet", "refs/heads/"+b); err == nil {
+	for _, b := range []string{"origin/main", "origin/master", "main", "master"} {
+		if resolves(b) {
 			return b, nil
 		}
 	}
 	return "", fmt.Errorf("no default branch in %s: %w", repo, ErrBranchNotFound)
+}
+
+// isWorkspaceRef reports whether ref names GitButler's workspace branch,
+// locally or on a remote: never a meaningful base.
+func isWorkspaceRef(ref string) bool {
+	return ref == "gitbutler/workspace" || strings.HasSuffix(ref, "/gitbutler/workspace")
 }
 
 // CommittedDiff is `git diff <base>...<branch>`.
