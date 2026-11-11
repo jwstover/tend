@@ -53,13 +53,17 @@ type agentsView struct {
 	// The right pane. For a headless session it is the step's log (the
 	// same runLog the run view tails); follow keeps the bottom in view as
 	// it grows and raw flips the rendering. For an interactive session it
-	// is the task's detail pane, from detail.
-	log      runLog
-	follow   bool
-	raw      bool
-	detail   agentDetail
-	vp       viewport.Model
-	renderer *glamour.TermRenderer
+	// is a live capture of its tmux pane (agentpane.go), or the task's
+	// detail pane, from detail, when hidePreview is on (`v`) or there is
+	// no pane to capture.
+	log         runLog
+	follow      bool
+	raw         bool
+	pane        agentPane
+	hidePreview bool
+	detail      agentDetail
+	vp          viewport.Model
+	renderer    *glamour.TermRenderer
 }
 
 // agentRow is one session as the list shows it: the session with its
@@ -265,10 +269,14 @@ func (a *app) syncAgentDetail() tea.Cmd {
 	a.av.log = runLog{}
 	if a.av.detail.sessionID != row.sess.ID {
 		a.av.detail = agentDetail{}
+		a.av.follow = true
 		a.av.vp.GotoTop()
 	}
+	// The task is loaded either way, so `v` and a pane that disappears
+	// fall back to it without a wait.
+	capture := a.capturePreview()
 	a.renderAgentPane()
-	return a.loadAgentDetail(row.sess.Session)
+	return tea.Batch(a.loadAgentDetail(row.sess.Session), capture)
 }
 
 // loadAgentDetail fetches everything the list view's detail pane shows
@@ -406,8 +414,12 @@ func (a app) handleAgentsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// `v` from the list watches the run; in the pane it is the raw-log
 	// toggle (RawLog shares the key), handled by handleAgentPaneKey.
 	case key.Matches(msg, a.keys.ViewRun) && a.focus != paneDetail:
-		if row, ok := a.selectedAgent(); ok && row.run != nil {
+		row, ok := a.selectedAgent()
+		if ok && row.run != nil {
 			return a, a.openRunView(*row.run)
+		}
+		if ok && !row.headless() {
+			return a, a.togglePreview()
 		}
 		a.status = flash{text: "not a workflow step session"}
 		return a, nil
@@ -476,6 +488,9 @@ func (a app) handleAgentPaneKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		a.focus = paneTasks
 		return a, nil
 	case key.Matches(msg, a.keys.RawLog):
+		if row, ok := a.selectedAgent(); ok && !row.headless() {
+			return a, a.togglePreview()
+		}
 		a.av.raw = !a.av.raw
 		a.renderAgentPane()
 		return a, nil
@@ -497,10 +512,29 @@ func (a app) handleAgentPaneKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 	}
-	if row, ok := a.selectedAgent(); ok && row.headless() {
+	// The log and the preview both keep their bottom in view until the
+	// user scrolls away from it.
+	_, previewing := a.previewing()
+	if row, ok := a.selectedAgent(); previewing || ok && row.headless() {
 		a.av.follow = a.av.vp.AtBottom()
 	}
 	return a, nil
+}
+
+// togglePreview flips an interactive session's pane between the live
+// preview and its task detail. The choice holds across sessions.
+func (a *app) togglePreview() tea.Cmd {
+	a.av.hidePreview = !a.av.hidePreview
+	a.av.follow = true
+	text := "pane preview"
+	if a.av.hidePreview {
+		text = "task detail"
+		a.av.vp.GotoTop()
+	}
+	a.status = flash{text: text}
+	capture := a.capturePreview()
+	a.renderAgentPane()
+	return capture
 }
 
 // --- controls -------------------------------------------------------------
@@ -745,6 +779,14 @@ func (a app) agentPaneHeading(width int) []string {
 		heading := "  " + s.SubHeader.Render("LOG")
 		gap := max(width-lipgloss.Width(heading)-lipgloss.Width(mode)-2, 1)
 		lines = append(lines, heading+strings.Repeat(" ", gap)+s.Faint.Render(mode))
+	} else if _, ok := a.previewing(); ok {
+		mode := "live"
+		if a.av.follow {
+			mode += " · following"
+		}
+		heading := "  " + s.SubHeader.Render("PANE")
+		gap := max(width-lipgloss.Width(heading)-lipgloss.Width(mode)-2, 1)
+		lines = append(lines, heading+strings.Repeat(" ", gap)+s.Faint.Render(mode))
 	}
 	return lines
 }
@@ -797,6 +839,17 @@ func (a *app) renderAgentPane() {
 			a.av.vp.GotoBottom()
 		}
 		return
+	case a.previewActive():
+		if p := a.av.pane; p.sessionID != row.sess.ID || !p.captured {
+			out = []string{"  " + a.styles.Muted.Render("capturing pane…")}
+		} else {
+			out = panePreviewLines(p.text, detailW)
+		}
+		a.av.vp.SetContent(strings.Join(out, "\n"))
+		if a.av.follow {
+			a.av.vp.GotoBottom()
+		}
+		return
 	case a.av.detail.sessionID != row.sess.ID:
 		out = []string{"  " + a.styles.Muted.Render("loading task…")}
 	default:
@@ -818,12 +871,16 @@ func (a app) agentsHints() [][2]string {
 		hints := [][2]string{{"j/k", "scroll"}, {"h/esc", "to sessions"}}
 		if row, ok := a.selectedAgent(); ok && row.headless() {
 			hints = append(hints, [2]string{"v", "raw"})
+		} else if ok {
+			hints = append(hints, [2]string{"v", a.previewToggleHint()})
 		}
 		return append(hints, [2]string{"⏎", "join"}, [2]string{"dd", "kill"}, [2]string{"?", "help"})
 	}
 	hints := [][2]string{{"j/k", "move"}, {"⏎/r", "join"}, {"dd", "kill"}}
 	if row, ok := a.selectedAgent(); ok && row.run != nil {
 		hints = append(hints, [2]string{"v", "watch run"})
+	} else if ok && !row.headless() {
+		hints = append(hints, [2]string{"v", a.previewToggleHint()})
 	}
 	ended := "show ended"
 	if a.av.showEnded {
