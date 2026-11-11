@@ -190,6 +190,7 @@ func Run(ctx context.Context, s Store, watcher ChangeWatcher, dbPath string) err
 	go runSessionPoller(pollCtx, s, p.Send)
 	startQuotaPoller(pollCtx, p.Send)
 	startUsagePoller(pollCtx, p.Send)
+	go runPanePreviewTicker(pollCtx, panePreviewInterval, p.Send)
 	go runScheduleTicker(pollCtx, s, func(ctx context.Context, runID int64) (string, error) {
 		return runner.Launch(ctx, s, runID, dbPath, false)
 	}, backupTickInterval)
@@ -1081,6 +1082,13 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if a.mode == modeAgents {
 			a.applyAgentDetail(msg)
 		}
+		return a, nil
+
+	case paneTickMsg:
+		return a, a.capturePreview()
+
+	case panePreviewMsg:
+		a.applyPanePreview(msg)
 		return a, nil
 
 	case sessionFinishedMsg:

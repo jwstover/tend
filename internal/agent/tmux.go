@@ -294,10 +294,23 @@ func KillSession(sessionName, configPath string) error {
 // convention is to swallow the resulting exec error to "" rather than
 // surface it, and no test exercised a real tmux server to catch it.
 func CapturePane(sessionName, configPath string) (string, error) {
+	return capturePane(sessionName, configPath)
+}
+
+// CapturePaneStyled is CapturePane with the pane's colours and attributes
+// kept as ANSI escape sequences (`-e`): the agents view's live preview of
+// an interactive session, which should look like the session does.
+// ClassifyPane matches plain text, so the status poller keeps CapturePane.
+func CapturePaneStyled(sessionName, configPath string) (string, error) {
+	return capturePane(sessionName, configPath, "-e")
+}
+
+func capturePane(sessionName, configPath string, extra ...string) (string, error) {
 	if sessionName == "" || !TmuxInstalled() {
 		return "", nil
 	}
 	args := append(serverArgs(configPath), "capture-pane", "-t", sessionName, "-p")
+	args = append(args, extra...)
 	out, err := exec.Command(tmuxBinary, args...).Output()
 	if err != nil {
 		return "", nil
