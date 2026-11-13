@@ -6,10 +6,13 @@ import (
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
+
+	"github.com/jwstover/tend/internal/task"
 )
 
 func newLsCmd(open func(context.Context) (Store, error)) *cobra.Command {
 	var projectName string
+	var asJSON bool
 	cmd := &cobra.Command{
 		Use:   "ls",
 		Short: "Dump the live view as plain text",
@@ -38,6 +41,10 @@ func newLsCmd(open func(context.Context) (Store, error)) *cobra.Command {
 				return err
 			}
 
+			if asJSON {
+				return lsJSON(ctx, cmd, s, tasks, tags)
+			}
+
 			w := tabwriter.NewWriter(cmd.OutOrStdout(), 2, 4, 2, ' ', 0)
 			for _, t := range tasks {
 				extra := ""
@@ -53,7 +60,28 @@ func newLsCmd(open func(context.Context) (Store, error)) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVarP(&projectName, "project", "p", "", "narrow to a named project")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "print {tasks, projects} as JSON (tasks without bodies; `tend show` has one in full)")
 	return cmd
+}
+
+// lsJSON prints the live view as {tasks, projects}: every project, so a
+// front end can name and group them, whatever --project narrowed.
+func lsJSON(ctx context.Context, cmd *cobra.Command, s Store, tasks []task.Task, tags map[int64][]string) error {
+	projects, err := s.ListProjects(ctx)
+	if err != nil {
+		return err
+	}
+	out := struct {
+		Tasks    []taskJSON    `json:"tasks"`
+		Projects []projectJSON `json:"projects"`
+	}{Tasks: make([]taskJSON, len(tasks)), Projects: make([]projectJSON, len(projects))}
+	for i, t := range tasks {
+		out.Tasks[i] = toTaskJSON(t, tags[t.ID])
+	}
+	for i, p := range projects {
+		out.Projects[i] = toProjectJSON(p)
+	}
+	return writeJSON(cmd.OutOrStdout(), out)
 }
 
 // lsScope resolves the project filter. nil means every project: with no

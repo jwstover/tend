@@ -679,6 +679,45 @@ func (s *Store) CreateSession(ctx context.Context, taskID int64, externalID, cwd
 	return sessionToDomain(row)
 }
 
+// CreateHostedSession writes the starting row for a session another
+// program hosts (task.Session.Host), labelled with the task's title as
+// CreateSession's callers do. The host writes it before starting claude,
+// for the same reason: the session's hooks find it from the first turn.
+func (s *Store) CreateHostedSession(ctx context.Context, taskID int64, externalID, cwd, label, host string) (task.Session, error) {
+	row, err := s.q.CreateHostedSession(ctx, gen.CreateHostedSessionParams{
+		TaskID: taskID, ExternalID: externalID, Cwd: cwd, Label: label, Host: host,
+	})
+	if err != nil {
+		return task.Session{}, fmt.Errorf("inserting hosted session for task %d: %w", taskID, err)
+	}
+	return sessionToDomain(row)
+}
+
+// SessionByExternalID returns the session with claude session id
+// externalID, or task.ErrSessionNotFound.
+func (s *Store) SessionByExternalID(ctx context.Context, externalID string) (task.Session, error) {
+	row, err := s.q.GetSessionByExternalID(ctx, externalID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return task.Session{}, task.ErrSessionNotFound
+	}
+	if err != nil {
+		return task.Session{}, fmt.Errorf("reading session %s: %w", externalID, err)
+	}
+	return sessionToDomain(row)
+}
+
+// DeleteHostedStartingSession takes back the row CreateHostedSession
+// wrote when the host could not start the session. Reports whether a row
+// went: only a hosted row still 'starting' is removed, never a session
+// that has reported anything or one tend launched.
+func (s *Store) DeleteHostedStartingSession(ctx context.Context, externalID string) (bool, error) {
+	n, err := s.q.DeleteHostedStartingSession(ctx, externalID)
+	if err != nil {
+		return false, fmt.Errorf("deleting hosted session %s: %w", externalID, err)
+	}
+	return n > 0, nil
+}
+
 // DeleteSession removes a session row, for the one case a row should not
 // outlive the moment it was written: a launch whose handoff failed (a
 // non-zero exit, a tmux that would not start) never became a session, and
@@ -1036,6 +1075,7 @@ func sessionToDomain(row gen.AgentSession) (task.Session, error) {
 		Cwd:             row.Cwd,
 		Label:           row.Label,
 		TmuxSession:     row.TmuxSession,
+		Host:            row.Host,
 		NeedsRecap:      row.NeedsRecap != 0,
 		Status:          task.SessionStatus(row.Status),
 		StatusUpdatedAt: statusUpdated,

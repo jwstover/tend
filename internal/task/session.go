@@ -1,6 +1,12 @@
 package task
 
-import "time"
+import (
+	"errors"
+	"time"
+)
+
+// ErrSessionNotFound is returned when no session has the given id.
+var ErrSessionNotFound = errors.New("session not found")
 
 // SessionStatus is what tend last observed about a Claude Code session's
 // own state. It is a cache of something watched from outside the
@@ -61,6 +67,10 @@ const (
 // so the session's own hooks find it from the very first turn, and a
 // fresh session reads starting, then idle, without ever being resumed.
 //
+// Host names the program hosting the session's terminal when it is not
+// tend ("devhub"), empty for a session tend launched. A hosted session is
+// in no tmux of tend's, so tend cannot attach to, resume or kill it.
+//
 // StepRunID is set when the session ran a workflow step (it points at
 // that step run, see internal/workflow) so the SESSIONS section can say
 // which step a session belonged to; nil for an ordinary session.
@@ -71,6 +81,7 @@ type Session struct {
 	Cwd             string
 	Label           string
 	TmuxSession     string
+	Host            string
 	NeedsRecap      bool
 	Status          SessionStatus
 	StatusUpdatedAt time.Time

@@ -33,6 +33,10 @@ type Querier interface {
 	// sub-task sitting in a different project from its parent is incoherent,
 	// and doing it in one statement keeps AddChild a single round trip.
 	CreateChildTask(ctx context.Context, arg CreateChildTaskParams) (Task, error)
+	// A session whose terminal another program hosts (see the host column):
+	// the same starting row as CreateSession, with no tmux session and no
+	// workflow step.
+	CreateHostedSession(ctx context.Context, arg CreateHostedSessionParams) (AgentSession, error)
 	CreateLogEntry(ctx context.Context, arg CreateLogEntryParams) (LogEntry, error)
 	CreateProject(ctx context.Context, name string) (Project, error)
 	CreateRun(ctx context.Context, arg CreateRunParams) (WorkflowRun, error)
@@ -67,6 +71,10 @@ type Querier interface {
 	CreateTaskWithBody(ctx context.Context, arg CreateTaskWithBodyParams) (Task, error)
 	CreateWorkflow(ctx context.Context, arg CreateWorkflowParams) (Workflow, error)
 	DeleteEdge(ctx context.Context, id int64) error
+	// Takes back a hosted session's row when its host could not start it:
+	// only a hosted row nothing has been heard from yet, so a live session
+	// or one tend launched is never removed this way.
+	DeleteHostedStartingSession(ctx context.Context, externalID string) (int64, error)
 	// Tags are implicit: they exist because a task carries them. Dropping the
 	// last reference drops the tag, so the tag list can't accumulate ghosts.
 	DeleteOrphanTags(ctx context.Context) error
@@ -97,6 +105,7 @@ type Querier interface {
 	GetSchedule(ctx context.Context, id int64) (Schedule, error)
 	GetScheduleByName(ctx context.Context, name string) (Schedule, error)
 	GetScheduleLastRunForTx(ctx context.Context, id int64) (WorkflowRun, error)
+	GetSessionByExternalID(ctx context.Context, externalID string) (AgentSession, error)
 	GetSetting(ctx context.Context, key string) (string, error)
 	GetStep(ctx context.Context, id int64) (WorkflowStep, error)
 	GetStepRun(ctx context.Context, id int64) (WorkflowStepRun, error)

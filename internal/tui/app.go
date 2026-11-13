@@ -35,6 +35,7 @@ type Store interface {
 	AddLogEntry(ctx context.Context, taskID *int64, body string) (task.LogEntry, error)
 	ListLogEntries(ctx context.Context, from, to time.Time) ([]task.LogEntry, error)
 	ListTaskLog(ctx context.Context, taskID int64) ([]task.LogEntry, error)
+	SessionBrief(ctx context.Context, taskID int64) (task.SessionBrief, error)
 	ListEvents(ctx context.Context, from, to time.Time) ([]task.Event, error)
 	ListLive(ctx context.Context, projectID *int64) ([]task.Task, error)
 	ListLiveWithCompleted(ctx context.Context, projectID *int64) ([]task.Task, error)

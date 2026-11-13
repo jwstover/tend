@@ -21,6 +21,7 @@ type AgentSession struct {
 	Status            string
 	StatusUpdatedAt   sql.NullString
 	WorkflowStepRunID sql.NullInt64
+	Host              string
 }
 
 type LogEntry struct {

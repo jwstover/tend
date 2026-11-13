@@ -39,17 +39,9 @@ func WriteMCPConfig(taskID, stepRunID int64, dbPath string) (path string, cleanu
 		return "", noop, nil
 	}
 
-	args := []string{"mcp", "--task-id", strconv.FormatInt(taskID, 10)}
-	if stepRunID != 0 {
-		args = append(args, "--step-run-id", strconv.FormatInt(stepRunID, 10))
-	}
-	args = append(args, "--db", dbPath)
-	cfg := mcpConfig{MCPServers: map[string]mcpServerConfig{
-		"tend": {Command: tendPath, Args: args},
-	}}
-	b, err := json.Marshal(cfg)
+	b, err := buildMCPConfig(tendPath, taskID, stepRunID, dbPath)
 	if err != nil {
-		return "", noop, fmt.Errorf("marshaling mcp config: %w", err)
+		return "", noop, err
 	}
 
 	f, err := os.CreateTemp("", "tend-mcp-*.json")
@@ -64,4 +56,22 @@ func WriteMCPConfig(taskID, stepRunID int64, dbPath string) (path string, cleanu
 
 	name := f.Name()
 	return name, func() { os.Remove(name) }, nil
+}
+
+// buildMCPConfig renders the --mcp-config JSON wiring `tend mcp` bound to
+// taskID (and stepRunID when non-zero) against dbPath.
+func buildMCPConfig(tendPath string, taskID, stepRunID int64, dbPath string) ([]byte, error) {
+	args := []string{"mcp", "--task-id", strconv.FormatInt(taskID, 10)}
+	if stepRunID != 0 {
+		args = append(args, "--step-run-id", strconv.FormatInt(stepRunID, 10))
+	}
+	args = append(args, "--db", dbPath)
+	cfg := mcpConfig{MCPServers: map[string]mcpServerConfig{
+		"tend": {Command: tendPath, Args: args},
+	}}
+	b, err := json.Marshal(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling mcp config: %w", err)
+	}
+	return b, nil
 }

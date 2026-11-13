@@ -48,11 +48,11 @@ type StoreFactory func(ctx context.Context, dbPath string) (Store, error)
 type TUIRunner func(ctx context.Context, dbPath string) error
 
 // Execute builds the command tree and runs it.
-func Execute(open StoreFactory, runTUI TUIRunner, openMCP MCPStoreFactory, openWorkflow WorkflowStoreFactory, openSchedule ScheduleStoreFactory) error {
-	return newRootCmd(open, runTUI, openMCP, openWorkflow, openSchedule).Execute()
+func Execute(open StoreFactory, runTUI TUIRunner, openMCP MCPStoreFactory, openWorkflow WorkflowStoreFactory, openSchedule ScheduleStoreFactory, openTask TaskStoreFactory) error {
+	return newRootCmd(open, runTUI, openMCP, openWorkflow, openSchedule, openTask).Execute()
 }
 
-func newRootCmd(open StoreFactory, runTUI TUIRunner, openMCP MCPStoreFactory, openWorkflow WorkflowStoreFactory, openSchedule ScheduleStoreFactory) *cobra.Command {
+func newRootCmd(open StoreFactory, runTUI TUIRunner, openMCP MCPStoreFactory, openWorkflow WorkflowStoreFactory, openSchedule ScheduleStoreFactory, openTask TaskStoreFactory) *cobra.Command {
 	var dbPath string
 
 	root := &cobra.Command{
@@ -81,7 +81,14 @@ func newRootCmd(open StoreFactory, runTUI TUIRunner, openMCP MCPStoreFactory, op
 	openScheduleHere := func(ctx context.Context) (ScheduleStore, error) {
 		return openSchedule(ctx, resolveDBPath(dbPath))
 	}
+	openTaskHere := func(ctx context.Context) (TaskStore, error) {
+		return openTask(ctx, resolveDBPath(dbPath))
+	}
 	root.AddCommand(newAddCmd(openHere))
+	root.AddCommand(newShowCmd(openTaskHere))
+	root.AddCommand(newStateCmd(openTaskHere))
+	root.AddCommand(newAppendCmd(openTaskHere))
+	root.AddCommand(newSessionCmd(openTaskHere, func() string { return resolveDBPath(dbPath) }))
 	root.AddCommand(newAuthCmd())
 	root.AddCommand(newLsCmd(openHere))
 	root.AddCommand(newProjectsCmd(openHere))
