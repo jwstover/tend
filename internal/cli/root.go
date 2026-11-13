@@ -25,6 +25,7 @@ type Store interface {
 	ListLive(ctx context.Context, projectID *int64) ([]task.Task, error)
 	ListLiveWithCompleted(ctx context.Context, projectID *int64) ([]task.Task, error)
 	ChildCounts(ctx context.Context) (map[int64]task.ChildCount, error)
+	ListSessionsForProject(ctx context.Context, projectID *int64) ([]task.TaskSession, error)
 	TagsByTask(ctx context.Context) (map[int64][]string, error)
 	GetProject(ctx context.Context, id int64) (task.Project, error)
 	ProjectByName(ctx context.Context, name string) (task.Project, error)

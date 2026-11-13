@@ -51,6 +51,10 @@ type taskJSON struct {
 	// TUI's N/M shows it; set by `ls`, 0/0 for a task without sub-tasks.
 	ChildrenDone  int64 `json:"children_done"`
 	ChildrenTotal int64 `json:"children_total"`
+	// Sessions are the ids of its sessions that have not ended, most
+	// recently active first; set by `ls`. A front end matches them to the
+	// terminals it shows to say which task has a session running.
+	Sessions []string `json:"sessions,omitempty"`
 }
 
 func toTaskJSON(t task.Task, tags []string) taskJSON {

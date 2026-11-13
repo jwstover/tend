@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jwstover/tend/internal/store"
 	"github.com/jwstover/tend/internal/task"
@@ -219,5 +220,40 @@ func TestLsJSONClosedAndProgress(t *testing.T) {
 	}
 	if find(ls("--json", "--closed"), done.ID) == nil {
 		t.Error("the done sub-task is missing with --closed")
+	}
+}
+
+// A task lists its sessions that have not ended, newest first; an ended
+// one is left out.
+func TestLsJSONListsOpenSessions(t *testing.T) {
+	ctx := context.Background()
+	s, _ := realTaskStore(t)
+	tk, err := s.AddTask(ctx, "fix it")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"ext-old", "ext-ended", "ext-new"} {
+		if _, err := s.CreateHostedSession(ctx, tk.ID, id, "/work", tk.Title, "devhub"); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SetSessionStatus(ctx, id, task.SessionIdle); err != nil { // stamps last_active_at
+			t.Fatal(err)
+		}
+		if id == "ext-old" {
+			time.Sleep(1100 * time.Millisecond) // last_active_at has whole seconds
+		}
+	}
+	if err := s.SetSessionStatus(ctx, "ext-ended", task.SessionEnded); err != nil {
+		t.Fatal(err)
+	}
+	out, err := runOn(newLsCmd(func(context.Context) (Store, error) { return keepOpen{s}, nil }), []string{"--json"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := decode[struct {
+		Tasks []taskJSON `json:"tasks"`
+	}](t, out).Tasks
+	if len(got) != 1 || strings.Join(got[0].Sessions, ",") != "ext-new,ext-old" {
+		t.Fatalf("sessions = %v, want ext-new,ext-old", got)
 	}
 }

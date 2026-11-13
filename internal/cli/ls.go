@@ -80,6 +80,16 @@ func lsJSON(ctx context.Context, cmd *cobra.Command, s Store, tasks []task.Task,
 	if err != nil {
 		return err
 	}
+	all, err := s.ListSessionsForProject(ctx, nil)
+	if err != nil {
+		return err
+	}
+	open := map[int64][]string{}
+	for _, se := range all { // newest first
+		if se.Status != task.SessionEnded {
+			open[se.TaskID] = append(open[se.TaskID], se.ExternalID)
+		}
+	}
 	out := struct {
 		Tasks    []taskJSON    `json:"tasks"`
 		Projects []projectJSON `json:"projects"`
@@ -87,6 +97,7 @@ func lsJSON(ctx context.Context, cmd *cobra.Command, s Store, tasks []task.Task,
 	for i, t := range tasks {
 		out.Tasks[i] = toTaskJSON(t, tags[t.ID])
 		out.Tasks[i].ChildrenDone, out.Tasks[i].ChildrenTotal = counts[t.ID].Done, counts[t.ID].Total
+		out.Tasks[i].Sessions = open[t.ID]
 	}
 	for i, p := range projects {
 		out.Projects[i] = toProjectJSON(p)

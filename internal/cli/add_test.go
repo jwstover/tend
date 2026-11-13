@@ -204,6 +204,11 @@ func (f *fakeStore) ListLiveWithCompleted(ctx context.Context, projectID *int64)
 	return f.ListLive(ctx, projectID)
 }
 
+// ListSessionsForProject: the fake keeps no sessions.
+func (f *fakeStore) ListSessionsForProject(context.Context, *int64) ([]task.TaskSession, error) {
+	return nil, nil
+}
+
 // ChildCounts derives done/total per parent from the fake's tasks.
 func (f *fakeStore) ChildCounts(context.Context) (map[int64]task.ChildCount, error) {
 	out := map[int64]task.ChildCount{}
