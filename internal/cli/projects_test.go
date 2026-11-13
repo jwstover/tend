@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -258,5 +259,23 @@ func TestAddUnknownProjectCapturesNothing(t *testing.T) {
 	}
 	if len(s.tasks) != 0 {
 		t.Errorf("captured %d tasks despite the bad project", len(s.tasks))
+	}
+}
+
+// --json prints the new project; a name taken (ignoring case) is refused.
+func TestProjectsAddJSON(t *testing.T) {
+	s := newFakeStore("tend")
+	out, err := runProjects(t, s, "add", "--json", "my", "garden")
+	if err != nil {
+		t.Fatalf("projects add --json: %v", err)
+	}
+	var got struct {
+		Project projectJSON `json:"project"`
+	}
+	if err := json.Unmarshal([]byte(out), &got); err != nil || got.Project.Name != "my garden" || got.Project.ID == 0 {
+		t.Fatalf("project = %+v, %v\n%s", got.Project, err, out)
+	}
+	if _, err := runProjects(t, s, "add", "--json", "TEND"); err == nil {
+		t.Error("a taken name: want an error")
 	}
 }
