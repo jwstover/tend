@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -313,5 +314,25 @@ func TestAddJiraURLAmongWordsStaysLiteral(t *testing.T) {
 	}
 	if len(s.tasks) != 1 || s.tasks[0].BodyMD != "" {
 		t.Errorf("tasks = %+v, want one literal-title task", s.tasks)
+	}
+}
+
+// --json prints the new task as `ls --json` would, into the named project,
+// with no confirmation line around it.
+func TestAddJSON(t *testing.T) {
+	s := newFakeStore("tend")
+	out, _, err := runAdd(t, s, "--json", "-p", "tend", "write", "the", "panel")
+	if err != nil {
+		t.Fatalf("add --json: %v", err)
+	}
+	var got struct {
+		Tasks []taskJSON `json:"tasks"`
+	}
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("not JSON: %v\n%s", err, out)
+	}
+	tend, _ := s.ProjectByName(context.Background(), "tend")
+	if len(got.Tasks) != 1 || got.Tasks[0].Title != "write the panel" || got.Tasks[0].ProjectID != tend.ID {
+		t.Fatalf("tasks = %+v", got.Tasks)
 	}
 }
