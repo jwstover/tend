@@ -172,3 +172,52 @@ func TestSessionPrepareDefaultsToTendsDirectory(t *testing.T) {
 		t.Fatalf("show default_cwd = %q, %v", shown.DefaultCwd, err)
 	}
 }
+
+// Progress counts every sub-task, closed ones included, so it reads 1/2
+// whether or not --closed brings the done one into the list.
+func TestLsJSONClosedAndProgress(t *testing.T) {
+	ctx := context.Background()
+	s, _ := realTaskStore(t)
+	parent, err := s.AddTask(ctx, "parent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	done, err := s.AddChild(ctx, parent.ID, "done one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AddChild(ctx, parent.ID, "open one"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetState(ctx, done.ID, task.StateDone); err != nil {
+		t.Fatal(err)
+	}
+	ls := func(args ...string) []taskJSON {
+		t.Helper()
+		out, err := runOn(newLsCmd(func(context.Context) (Store, error) { return keepOpen{s}, nil }), args)
+		if err != nil {
+			t.Fatalf("ls %v: %v", args, err)
+		}
+		return decode[struct {
+			Tasks []taskJSON `json:"tasks"`
+		}](t, out).Tasks
+	}
+	find := func(ts []taskJSON, id int64) *taskJSON {
+		for i := range ts {
+			if ts[i].ID == id {
+				return &ts[i]
+			}
+		}
+		return nil
+	}
+	open := ls("--json")
+	if p := find(open, parent.ID); p == nil || p.ChildrenDone != 1 || p.ChildrenTotal != 2 {
+		t.Fatalf("parent progress = %+v, want 1/2", p)
+	}
+	if find(open, done.ID) != nil {
+		t.Error("the done sub-task is listed without --closed")
+	}
+	if find(ls("--json", "--closed"), done.ID) == nil {
+		t.Error("the done sub-task is missing with --closed")
+	}
+}

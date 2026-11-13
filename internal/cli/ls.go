@@ -12,7 +12,7 @@ import (
 
 func newLsCmd(open func(context.Context) (Store, error)) *cobra.Command {
 	var projectName string
-	var asJSON bool
+	var asJSON, closed bool
 	cmd := &cobra.Command{
 		Use:   "ls",
 		Short: "Dump the live view as plain text",
@@ -31,7 +31,11 @@ func newLsCmd(open func(context.Context) (Store, error)) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			tasks, err := s.ListLive(ctx, filter)
+			list := s.ListLive
+			if closed {
+				list = s.ListLiveWithCompleted
+			}
+			tasks, err := list(ctx, filter)
 			if err != nil {
 				return err
 			}
@@ -60,6 +64,7 @@ func newLsCmd(open func(context.Context) (Store, error)) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVarP(&projectName, "project", "p", "", "narrow to a named project")
+	cmd.Flags().BoolVar(&closed, "closed", false, "include done, canceled and someday tasks, as the TUI's completed section does")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print {tasks, projects} as JSON (tasks without bodies; `tend show` has one in full)")
 	return cmd
 }
@@ -71,12 +76,17 @@ func lsJSON(ctx context.Context, cmd *cobra.Command, s Store, tasks []task.Task,
 	if err != nil {
 		return err
 	}
+	counts, err := s.ChildCounts(ctx)
+	if err != nil {
+		return err
+	}
 	out := struct {
 		Tasks    []taskJSON    `json:"tasks"`
 		Projects []projectJSON `json:"projects"`
 	}{Tasks: make([]taskJSON, len(tasks)), Projects: make([]projectJSON, len(projects))}
 	for i, t := range tasks {
 		out.Tasks[i] = toTaskJSON(t, tags[t.ID])
+		out.Tasks[i].ChildrenDone, out.Tasks[i].ChildrenTotal = counts[t.ID].Done, counts[t.ID].Total
 	}
 	for i, p := range projects {
 		out.Projects[i] = toProjectJSON(p)

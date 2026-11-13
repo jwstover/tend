@@ -199,6 +199,28 @@ func (f *fakeStore) ListLive(_ context.Context, projectID *int64) ([]task.Task, 
 
 func (f *fakeStore) TagsByTask(context.Context) (map[int64][]string, error) { return f.tags, nil }
 
+// ListLiveWithCompleted: the fake keeps no states apart, so it is ListLive.
+func (f *fakeStore) ListLiveWithCompleted(ctx context.Context, projectID *int64) ([]task.Task, error) {
+	return f.ListLive(ctx, projectID)
+}
+
+// ChildCounts derives done/total per parent from the fake's tasks.
+func (f *fakeStore) ChildCounts(context.Context) (map[int64]task.ChildCount, error) {
+	out := map[int64]task.ChildCount{}
+	for _, t := range f.tasks {
+		if t.ParentID == nil {
+			continue
+		}
+		c := out[*t.ParentID]
+		c.Total++
+		if t.State == task.StateDone {
+			c.Done++
+		}
+		out[*t.ParentID] = c
+	}
+	return out, nil
+}
+
 func (f *fakeStore) GetProject(_ context.Context, id int64) (task.Project, error) {
 	for _, p := range f.projects {
 		if p.ID == id {

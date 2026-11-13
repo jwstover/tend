@@ -23,6 +23,8 @@ type Store interface {
 	AddTaskWithBody(ctx context.Context, title, body string) (task.Task, error)
 	AddTaskWithBodyIn(ctx context.Context, projectID int64, title, body string) (task.Task, error)
 	ListLive(ctx context.Context, projectID *int64) ([]task.Task, error)
+	ListLiveWithCompleted(ctx context.Context, projectID *int64) ([]task.Task, error)
+	ChildCounts(ctx context.Context) (map[int64]task.ChildCount, error)
 	TagsByTask(ctx context.Context) (map[int64][]string, error)
 	GetProject(ctx context.Context, id int64) (task.Project, error)
 	ProjectByName(ctx context.Context, name string) (task.Project, error)

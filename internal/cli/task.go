@@ -47,6 +47,10 @@ type taskJSON struct {
 	Due       *string  `json:"due,omitempty"`
 	UpdatedAt string   `json:"updated_at"`
 	Body      *string  `json:"body_md,omitempty"`
+	// Sub-task progress over every sub-task, closed ones included, as the
+	// TUI's N/M shows it; set by `ls`, 0/0 for a task without sub-tasks.
+	ChildrenDone  int64 `json:"children_done"`
+	ChildrenTotal int64 `json:"children_total"`
 }
 
 func toTaskJSON(t task.Task, tags []string) taskJSON {
