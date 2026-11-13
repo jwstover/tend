@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/jwstover/tend/internal/task"
@@ -59,5 +60,18 @@ func TestAddChildOfMissingParent(t *testing.T) {
 	s := newTestStore(t)
 	if _, err := s.AddChild(context.Background(), 999, "orphan"); !errors.Is(err, task.ErrTaskNotFound) {
 		t.Fatalf("err = %v, want ErrTaskNotFound", err)
+	}
+}
+
+// A taken project name, in any case, says so rather than quoting SQLite.
+func TestCreateProjectNameTaken(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	if _, err := s.CreateProject(ctx, "garden"); err != nil {
+		t.Fatal(err)
+	}
+	_, err := s.CreateProject(ctx, "Garden")
+	if err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("err = %v, want one saying it already exists", err)
 	}
 }
