@@ -144,6 +144,15 @@ func TestLsJSON(t *testing.T) {
 	if len(got.Projects) < 2 {
 		t.Errorf("projects = %+v", got.Projects)
 	}
+	for _, p := range got.Projects {
+		want := int64(0)
+		if p.ID == got.Tasks[0].ProjectID {
+			want = 1
+		}
+		if p.LiveCount == nil || *p.LiveCount != want {
+			t.Errorf("project %s live_count = %v, want %d", p.Name, p.LiveCount, want)
+		}
+	}
 }
 
 // Without --cwd a new session starts where tend would start it: here the

@@ -101,6 +101,7 @@ func lsJSON(ctx context.Context, cmd *cobra.Command, s Store, tasks []task.Task,
 	}
 	for i, p := range projects {
 		out.Projects[i] = toProjectJSON(p)
+		out.Projects[i].LiveCount = &p.LiveCount
 	}
 	return writeJSON(cmd.OutOrStdout(), out)
 }

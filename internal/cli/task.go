@@ -76,11 +76,15 @@ func toTasksJSON(ts []task.Task) []taskJSON {
 	return out
 }
 
+// projectJSON is a project as the scriptable commands print it. LiveCount
+// is set by `ls` only: live top-level tasks, the number the TUI's projects
+// column shows.
 type projectJSON struct {
-	ID       int64  `json:"id"`
-	Name     string `json:"name"`
-	Cwd      string `json:"cwd,omitempty"`
-	Archived bool   `json:"archived"`
+	ID        int64  `json:"id"`
+	Name      string `json:"name"`
+	Cwd       string `json:"cwd,omitempty"`
+	Archived  bool   `json:"archived"`
+	LiveCount *int64 `json:"live_count,omitempty"`
 }
 
 func toProjectJSON(p task.Project) projectJSON {
