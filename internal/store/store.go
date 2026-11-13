@@ -547,6 +547,26 @@ func (s *Store) SetTitle(ctx context.Context, id int64, title string) error {
 	return nil
 }
 
+// SetBodyIfUnchanged replaces a task's body only if it is still the one
+// whose task.BodyVersion is version: false, and nothing written, when it
+// has changed since the caller read it. The write is conditional on the
+// old body itself, so a change landing between the read and the write is
+// caught too. ErrTaskNotFound for an unknown task.
+func (s *Store) SetBodyIfUnchanged(ctx context.Context, id int64, body, version string) (bool, error) {
+	t, err := s.GetTask(ctx, id)
+	if err != nil {
+		return false, err
+	}
+	if task.BodyVersion(t.BodyMD) != version {
+		return false, nil
+	}
+	n, err := s.q.SetTaskBodyIfUnchanged(ctx, gen.SetTaskBodyIfUnchangedParams{Body: body, ID: id, OldBody: t.BodyMD})
+	if err != nil {
+		return false, fmt.Errorf("setting task %d body: %w", id, err)
+	}
+	return n > 0, nil
+}
+
 // SetBody replaces a task's markdown body.
 func (s *Store) SetBody(ctx context.Context, id int64, body string) error {
 	if err := s.q.SetTaskBody(ctx, gen.SetTaskBodyParams{BodyMd: body, ID: id}); err != nil {

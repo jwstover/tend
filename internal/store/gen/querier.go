@@ -285,6 +285,9 @@ type Querier interface {
 	SetStepRunSettings(ctx context.Context, arg SetStepRunSettingsParams) error
 	SetStepSortOrder(ctx context.Context, arg SetStepSortOrderParams) error
 	SetTaskBody(ctx context.Context, arg SetTaskBodyParams) error
+	// Replaces the body only while it is still the one the caller read, so a
+	// save never wipes out a change made since (an agent's append_task_body).
+	SetTaskBodyIfUnchanged(ctx context.Context, arg SetTaskBodyIfUnchangedParams) (int64, error)
 	SetTaskDue(ctx context.Context, arg SetTaskDueParams) error
 	// Reparents one task; NULL promotes it to the top level. Cycle checks
 	// and the sub-tree's project follow-along live in Store.SetParent, for

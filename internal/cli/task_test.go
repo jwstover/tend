@@ -266,3 +266,36 @@ func TestLsJSONListsOpenSessions(t *testing.T) {
 		t.Fatalf("sessions = %v, want ext-new,ext-old", got)
 	}
 }
+
+// `tend body` saves against the version `show` printed and refuses once the
+// body has changed since.
+func TestBodyExpectsTheVersionItEdited(t *testing.T) {
+	ctx := context.Background()
+	s, open := realTaskStore(t)
+	tk, err := s.AddTaskWithBody(ctx, "fix it", "first")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts, _ := open(ctx)
+	read, err := show(ctx, ts, tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := strconv.FormatInt(tk.ID, 10)
+	body := func(text, version string) (string, error) {
+		cmd := newBodyCmd(open)
+		cmd.SetIn(strings.NewReader(text))
+		return runOn(cmd, []string{id, "--expect", version})
+	}
+	out, err := body("edited", read.Task.BodyVersion)
+	if err != nil {
+		t.Fatalf("body: %v", err)
+	}
+	saved := decode[showJSON](t, out)
+	if *saved.Task.Body != "edited" || saved.Task.BodyVersion == read.Task.BodyVersion {
+		t.Fatalf("saved = %q (%s)", *saved.Task.Body, saved.Task.BodyVersion)
+	}
+	if _, err := body("again", read.Task.BodyVersion); err == nil || !strings.Contains(err.Error(), "changed") {
+		t.Fatalf("stale save: err = %v, want a refusal", err)
+	}
+}

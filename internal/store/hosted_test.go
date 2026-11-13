@@ -75,3 +75,31 @@ func TestCreateProjectNameTaken(t *testing.T) {
 		t.Fatalf("err = %v, want one saying it already exists", err)
 	}
 }
+
+// A body save goes through only against the version it was read at; once
+// someone else has changed the body, the stale save writes nothing.
+func TestSetBodyIfUnchanged(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	tk, err := s.AddTaskWithBody(ctx, "fix it", "first")
+	if err != nil {
+		t.Fatal(err)
+	}
+	read := task.BodyVersion("first")
+	if err := s.AppendBody(ctx, tk.ID, "an agent's note"); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := s.SetBodyIfUnchanged(ctx, tk.ID, "mine", read); err != nil || ok {
+		t.Fatalf("stale save: ok %v, err %v; want refused", ok, err)
+	}
+	now, _ := s.GetTask(ctx, tk.ID)
+	if !strings.Contains(now.BodyMD, "an agent's note") {
+		t.Fatalf("body = %q, the agent's note is gone", now.BodyMD)
+	}
+	if ok, err := s.SetBodyIfUnchanged(ctx, tk.ID, "mine", task.BodyVersion(now.BodyMD)); err != nil || !ok {
+		t.Fatalf("fresh save: ok %v, err %v; want saved", ok, err)
+	}
+	if got, _ := s.GetTask(ctx, tk.ID); got.BodyMD != "mine" {
+		t.Fatalf("body = %q, want mine", got.BodyMD)
+	}
+}

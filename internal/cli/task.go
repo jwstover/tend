@@ -24,6 +24,7 @@ type TaskStore interface {
 	TaskBranches(ctx context.Context, taskID int64) ([]task.BranchLink, error)
 	SetState(ctx context.Context, id int64, st task.State) error
 	AppendBody(ctx context.Context, id int64, text string) error
+	SetBodyIfUnchanged(ctx context.Context, id int64, body, version string) (bool, error)
 	CreateHostedSession(ctx context.Context, taskID int64, externalID, cwd, label, host string) (task.Session, error)
 	SessionByExternalID(ctx context.Context, externalID string) (task.Session, error)
 	DeleteHostedStartingSession(ctx context.Context, externalID string) (bool, error)
@@ -47,6 +48,9 @@ type taskJSON struct {
 	Due       *string  `json:"due,omitempty"`
 	UpdatedAt string   `json:"updated_at"`
 	Body      *string  `json:"body_md,omitempty"`
+	// BodyVersion names the body above (task.BodyVersion), for `tend body
+	// --expect`; set with it, by `show`.
+	BodyVersion string `json:"body_version,omitempty"`
 	// Sub-task progress over every sub-task, closed ones included, as the
 	// TUI's N/M shows it; set by `ls`, 0/0 for a task without sub-tasks.
 	ChildrenDone  int64 `json:"children_done"`
@@ -189,6 +193,7 @@ func show(ctx context.Context, s TaskStore, id int64) (showJSON, error) {
 	}
 	t := toTaskJSON(b.Task, b.Tags)
 	t.Body = &b.Task.BodyMD
+	t.BodyVersion = task.BodyVersion(b.Task.BodyMD)
 	sessions, err := s.ListSessionsForTask(ctx, id)
 	if err != nil {
 		return showJSON{}, err
@@ -256,6 +261,49 @@ func newStateCmd(open func(context.Context) (TaskStore, error)) *cobra.Command {
 			})
 		},
 	}
+}
+
+func newBodyCmd(open func(context.Context) (TaskStore, error)) *cobra.Command {
+	var expect string
+	cmd := &cobra.Command{
+		Use:   "body <task-id> --expect <version>",
+		Short: "Replace a task's body from stdin, unless it changed since you read it",
+		Long: "Replace a task's markdown body with stdin. --expect is the " +
+			"body_version `tend show` printed with the body you edited: when the " +
+			"body has changed since (an agent appended to it), nothing is written " +
+			"and the command fails, so no one's change is lost. Prints the task " +
+			"as `tend show` does.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			id, err := taskID(args[0])
+			if err != nil {
+				return err
+			}
+			if expect == "" {
+				return fmt.Errorf("--expect is required: the body_version you edited")
+			}
+			b, err := io.ReadAll(cmd.InOrStdin())
+			if err != nil {
+				return err
+			}
+			return withTaskStore(cmd, open, func(ctx context.Context, s TaskStore) error {
+				ok, err := s.SetBodyIfUnchanged(ctx, id, string(b), expect)
+				if err != nil {
+					return err
+				}
+				if !ok {
+					return fmt.Errorf("task %d's body changed since version %s: reload it and merge your edit", id, expect)
+				}
+				out, err := show(ctx, s, id)
+				if err != nil {
+					return err
+				}
+				return writeJSON(cmd.OutOrStdout(), out)
+			})
+		},
+	}
+	cmd.Flags().StringVar(&expect, "expect", "", "the body_version of the body you edited")
+	return cmd
 }
 
 func newAppendCmd(open func(context.Context) (TaskStore, error)) *cobra.Command {

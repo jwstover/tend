@@ -93,6 +93,7 @@ func newRootCmd(open StoreFactory, runTUI TUIRunner, openMCP MCPStoreFactory, op
 	root.AddCommand(newShowCmd(openTaskHere))
 	root.AddCommand(newStateCmd(openTaskHere))
 	root.AddCommand(newAppendCmd(openTaskHere))
+	root.AddCommand(newBodyCmd(openTaskHere))
 	root.AddCommand(newSessionCmd(openTaskHere, func() string { return resolveDBPath(dbPath) }))
 	root.AddCommand(newAuthCmd())
 	root.AddCommand(newLsCmd(openHere))
