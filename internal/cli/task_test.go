@@ -144,3 +144,31 @@ func TestLsJSON(t *testing.T) {
 		t.Errorf("projects = %+v", got.Projects)
 	}
 }
+
+// Without --cwd a new session starts where tend would start it: here the
+// project's directory, since the task has no session yet. With neither,
+// prepare says to pass --cwd.
+func TestSessionPrepareDefaultsToTendsDirectory(t *testing.T) {
+	ctx := context.Background()
+	s, open := realTaskStore(t)
+	tk, err := s.AddTask(ctx, "fix it")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts, _ := open(ctx)
+	in := prepareArgs{taskID: tk.ID, dir: t.TempDir(), host: "devhub", tendPath: "/bin/tend", dbPath: "/data/tend.db"}
+	if _, err := prepare(ctx, ts, in); err == nil || !strings.Contains(err.Error(), "--cwd") {
+		t.Fatalf("no directory anywhere: err = %v, want one naming --cwd", err)
+	}
+	if err := s.SetProjectCwd(ctx, tk.ProjectID, "/proj"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := prepare(ctx, ts, in)
+	if err != nil || got.Cwd != "/proj" {
+		t.Fatalf("prepare = %+v, %v; want cwd /proj", got, err)
+	}
+	shown, err := show(ctx, ts, tk.ID)
+	if err != nil || shown.DefaultCwd != "/proj" {
+		t.Fatalf("show default_cwd = %q, %v", shown.DefaultCwd, err)
+	}
+}

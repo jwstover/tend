@@ -109,3 +109,17 @@ type TaskSession struct {
 func (s Session) Headless() bool {
 	return s.StepRunID != nil && s.TmuxSession == ""
 }
+
+// DefaultCwd is where a new session on a task starts unless someone says
+// otherwise, most specific evidence first: the most recently active of its
+// sessions' directory (sessions newest first, as ListSessionsForTask
+// returns them) — the task has already been worked on somewhere, and that
+// choice beats a project-wide default — else its project's default
+// directory. "" when neither says; a caller adds its own last resort (the
+// TUI, the directory tend was started from).
+func DefaultCwd(sessions []Session, project Project) string {
+	if len(sessions) > 0 && sessions[0].Cwd != "" {
+		return sessions[0].Cwd
+	}
+	return project.Cwd
+}

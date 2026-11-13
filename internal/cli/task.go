@@ -100,16 +100,19 @@ type logJSON struct {
 }
 
 // showJSON is `tend show --json`: a task and everything around it.
+// DefaultCwd is where a new session on it starts (task.DefaultCwd), "" when
+// neither its sessions nor its project say.
 type showJSON struct {
-	Task     taskJSON      `json:"task"`
-	Project  projectJSON   `json:"project"`
-	Parent   *taskJSON     `json:"parent,omitempty"`
-	Children []taskJSON    `json:"children"`
-	Blockers []taskJSON    `json:"blockers"`
-	Blocking []taskJSON    `json:"blocking"`
-	Sessions []sessionJSON `json:"sessions"`
-	Branches []branchJSON  `json:"branches"`
-	Log      []logJSON     `json:"log"`
+	Task       taskJSON      `json:"task"`
+	Project    projectJSON   `json:"project"`
+	DefaultCwd string        `json:"default_cwd"`
+	Parent     *taskJSON     `json:"parent,omitempty"`
+	Children   []taskJSON    `json:"children"`
+	Blockers   []taskJSON    `json:"blockers"`
+	Blocking   []taskJSON    `json:"blocking"`
+	Sessions   []sessionJSON `json:"sessions"`
+	Branches   []branchJSON  `json:"branches"`
+	Log        []logJSON     `json:"log"`
 }
 
 // stamp renders a time as RFC 3339 in UTC, "" for the zero time.
@@ -174,23 +177,24 @@ func show(ctx context.Context, s TaskStore, id int64) (showJSON, error) {
 	}
 	t := toTaskJSON(b.Task, b.Tags)
 	t.Body = &b.Task.BodyMD
+	sessions, err := s.ListSessionsForTask(ctx, id)
+	if err != nil {
+		return showJSON{}, err
+	}
 	out := showJSON{
-		Task:     t,
-		Project:  toProjectJSON(b.Project),
-		Children: toTasksJSON(b.Children),
-		Blockers: toTasksJSON(b.Blockers),
-		Blocking: toTasksJSON(b.Blocking),
-		Sessions: []sessionJSON{},
-		Branches: []branchJSON{},
-		Log:      []logJSON{},
+		Task:       t,
+		Project:    toProjectJSON(b.Project),
+		DefaultCwd: task.DefaultCwd(sessions, b.Project),
+		Children:   toTasksJSON(b.Children),
+		Blockers:   toTasksJSON(b.Blockers),
+		Blocking:   toTasksJSON(b.Blocking),
+		Sessions:   []sessionJSON{},
+		Branches:   []branchJSON{},
+		Log:        []logJSON{},
 	}
 	if b.Parent != nil {
 		p := toTaskJSON(*b.Parent, nil)
 		out.Parent = &p
-	}
-	sessions, err := s.ListSessionsForTask(ctx, id)
-	if err != nil {
-		return showJSON{}, err
 	}
 	for _, se := range sessions {
 		out.Sessions = append(out.Sessions, sessionJSON{

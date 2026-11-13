@@ -118,18 +118,11 @@ func (a *app) scrollSessionPicker(n int) {
 	a.sessionPickerTop = sessionPickerWindow(a.sessionPickerSel, a.sessionPickerTop, n, a.sessionPickerVisible())
 }
 
-// defaultCwd suggests where to launch a new session, most specific
-// evidence first: the most recently active existing session's directory
-// (ListSessionsForTask orders newest first) — the task itself has already
-// been worked on somewhere, and a deliberate choice there beats a
-// project-wide default; else the task's project's default working
-// directory (task.Project.Cwd); else the directory tend itself was
-// started from.
+// defaultCwd suggests where to launch a new session: task.DefaultCwd (the
+// task's latest session's directory, else its project's default), else the
+// directory tend itself was started from.
 func (a app) defaultCwd(sessions []task.Session, projectID int64) string {
-	if len(sessions) > 0 {
-		return sessions[0].Cwd
-	}
-	if cwd := a.projectCwd(projectID); cwd != "" {
+	if cwd := task.DefaultCwd(sessions, task.Project{Cwd: a.projectCwd(projectID)}); cwd != "" {
 		return cwd
 	}
 	return a.startCwd

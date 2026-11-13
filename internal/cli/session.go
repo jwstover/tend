@@ -17,6 +17,7 @@ import (
 // start claude with and the files to start it with (agent.SessionFiles).
 type preparedJSON struct {
 	Session string `json:"session"`
+	Cwd     string `json:"cwd"`
 	agent.SessionFiles
 }
 
@@ -40,9 +41,10 @@ func newSessionPrepareCmd(open func(context.Context) (TaskStore, error), dbPath 
 	cmd := &cobra.Command{
 		Use:   "prepare <task-id>",
 		Short: "Record a hosted session on a task and write the files it starts with",
-		Long: "Record a new Claude session on a task, hosted by --host, and write " +
+		Long: "Record a new Claude session on a task, hosted by --host, in --cwd (else the " +
+			"task's latest session's directory, else its project's), and write " +
 			"its MCP config, hook settings and task brief into <dir>/<session>. " +
-			"Prints {session, mcp_config, settings, system_prompt_file} as JSON: " +
+			"Prints {session, cwd, mcp_config, settings, system_prompt_file} as JSON: " +
 			"start claude with --session-id and those files. With --resume, write " +
 			"fresh files for that hosted session instead (the brief as the task " +
 			"stands now) and record no new one. A host that cannot start the " +
@@ -72,7 +74,7 @@ func newSessionPrepareCmd(open func(context.Context) (TaskStore, error), dbPath 
 			})
 		},
 	}
-	cmd.Flags().StringVar(&cwd, "cwd", "", "directory the session runs in (required for a new session)")
+	cmd.Flags().StringVar(&cwd, "cwd", "", "directory the session runs in (default: the task's latest session's, else its project's)")
 	cmd.Flags().StringVar(&dir, "dir", "", "directory to write the session's files under")
 	cmd.Flags().StringVar(&host, "host", "", "the program hosting the session's terminal, e.g. devhub")
 	cmd.Flags().StringVar(&resume, "resume", "", "a hosted session of this task to write fresh files for")
@@ -110,10 +112,16 @@ func prepare(ctx context.Context, s TaskStore, in prepareArgs) (preparedJSON, er
 		if err := s.TouchSession(ctx, sess.ID); err != nil {
 			return preparedJSON{}, err
 		}
-		return preparedJSON{Session: sess.ExternalID, SessionFiles: files}, nil
+		return preparedJSON{Session: sess.ExternalID, Cwd: sess.Cwd, SessionFiles: files}, nil
 	}
 	if in.cwd == "" {
-		return preparedJSON{}, fmt.Errorf("--cwd is required for a new session")
+		sessions, err := s.ListSessionsForTask(ctx, in.taskID)
+		if err != nil {
+			return preparedJSON{}, err
+		}
+		if in.cwd = task.DefaultCwd(sessions, b.Project); in.cwd == "" {
+			return preparedJSON{}, fmt.Errorf("task %d has no session or project directory to start in: pass --cwd", in.taskID)
+		}
 	}
 	id, err := agent.NewSessionID()
 	if err != nil {
@@ -127,7 +135,7 @@ func prepare(ctx context.Context, s TaskStore, in prepareArgs) (preparedJSON, er
 		os.RemoveAll(filepath.Join(in.dir, id))
 		return preparedJSON{}, err
 	}
-	return preparedJSON{Session: id, SessionFiles: files}, nil
+	return preparedJSON{Session: id, Cwd: in.cwd, SessionFiles: files}, nil
 }
 
 func newSessionDiscardCmd(open func(context.Context) (TaskStore, error)) *cobra.Command {
