@@ -190,6 +190,10 @@ func (s *Store) AddChild(ctx context.Context, parentID int64, title string) (tas
 		Title:    t,
 		ParentID: parentID,
 	})
+	if errors.Is(err, sql.ErrNoRows) {
+		// The insert copies the parent's project, so no parent, no row.
+		return task.Task{}, fmt.Errorf("sub-task of %d: %w", parentID, task.ErrTaskNotFound)
+	}
 	if err != nil {
 		return task.Task{}, fmt.Errorf("inserting sub-task of %d: %w", parentID, err)
 	}
@@ -543,6 +547,26 @@ func (s *Store) SetTitle(ctx context.Context, id int64, title string) error {
 	return nil
 }
 
+// SetBodyIfUnchanged replaces a task's body only if it is still the one
+// whose task.BodyVersion is version: false, and nothing written, when it
+// has changed since the caller read it. The write is conditional on the
+// old body itself, so a change landing between the read and the write is
+// caught too. ErrTaskNotFound for an unknown task.
+func (s *Store) SetBodyIfUnchanged(ctx context.Context, id int64, body, version string) (bool, error) {
+	t, err := s.GetTask(ctx, id)
+	if err != nil {
+		return false, err
+	}
+	if task.BodyVersion(t.BodyMD) != version {
+		return false, nil
+	}
+	n, err := s.q.SetTaskBodyIfUnchanged(ctx, gen.SetTaskBodyIfUnchangedParams{Body: body, ID: id, OldBody: t.BodyMD})
+	if err != nil {
+		return false, fmt.Errorf("setting task %d body: %w", id, err)
+	}
+	return n > 0, nil
+}
+
 // SetBody replaces a task's markdown body.
 func (s *Store) SetBody(ctx context.Context, id int64, body string) error {
 	if err := s.q.SetTaskBody(ctx, gen.SetTaskBodyParams{BodyMd: body, ID: id}); err != nil {
@@ -677,6 +701,45 @@ func (s *Store) CreateSession(ctx context.Context, taskID int64, externalID, cwd
 		return task.Session{}, fmt.Errorf("inserting session for task %d: %w", taskID, err)
 	}
 	return sessionToDomain(row)
+}
+
+// CreateHostedSession writes the starting row for a session another
+// program hosts (task.Session.Host), labelled with the task's title as
+// CreateSession's callers do. The host writes it before starting claude,
+// for the same reason: the session's hooks find it from the first turn.
+func (s *Store) CreateHostedSession(ctx context.Context, taskID int64, externalID, cwd, label, host string) (task.Session, error) {
+	row, err := s.q.CreateHostedSession(ctx, gen.CreateHostedSessionParams{
+		TaskID: taskID, ExternalID: externalID, Cwd: cwd, Label: label, Host: host,
+	})
+	if err != nil {
+		return task.Session{}, fmt.Errorf("inserting hosted session for task %d: %w", taskID, err)
+	}
+	return sessionToDomain(row)
+}
+
+// SessionByExternalID returns the session with claude session id
+// externalID, or task.ErrSessionNotFound.
+func (s *Store) SessionByExternalID(ctx context.Context, externalID string) (task.Session, error) {
+	row, err := s.q.GetSessionByExternalID(ctx, externalID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return task.Session{}, task.ErrSessionNotFound
+	}
+	if err != nil {
+		return task.Session{}, fmt.Errorf("reading session %s: %w", externalID, err)
+	}
+	return sessionToDomain(row)
+}
+
+// DeleteHostedStartingSession takes back the row CreateHostedSession
+// wrote when the host could not start the session. Reports whether a row
+// went: only a hosted row still 'starting' is removed, never a session
+// that has reported anything or one tend launched.
+func (s *Store) DeleteHostedStartingSession(ctx context.Context, externalID string) (bool, error) {
+	n, err := s.q.DeleteHostedStartingSession(ctx, externalID)
+	if err != nil {
+		return false, fmt.Errorf("deleting hosted session %s: %w", externalID, err)
+	}
+	return n > 0, nil
 }
 
 // DeleteSession removes a session row, for the one case a row should not
@@ -1036,6 +1099,7 @@ func sessionToDomain(row gen.AgentSession) (task.Session, error) {
 		Cwd:             row.Cwd,
 		Label:           row.Label,
 		TmuxSession:     row.TmuxSession,
+		Host:            row.Host,
 		NeedsRecap:      row.NeedsRecap != 0,
 		Status:          task.SessionStatus(row.Status),
 		StatusUpdatedAt: statusUpdated,

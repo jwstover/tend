@@ -29,21 +29,7 @@ func newProjectsCmd(open func(context.Context) (Store, error)) *cobra.Command {
 			Args:  cobra.NoArgs,
 			RunE:  func(cmd *cobra.Command, _ []string) error { return listProjects(cmd, open) },
 		},
-		&cobra.Command{
-			Use:   "add <name>",
-			Short: "Create a project",
-			Args:  cobra.MinimumNArgs(1),
-			RunE: func(cmd *cobra.Command, args []string) error {
-				return withStore(cmd, open, func(ctx context.Context, s Store) error {
-					p, err := s.CreateProject(ctx, joinArgs(args))
-					if err != nil {
-						return err
-					}
-					fmt.Fprintf(cmd.OutOrStdout(), "created project %s\n", p.Name)
-					return nil
-				})
-			},
-		},
+		newProjectsAddCmd(open),
 		&cobra.Command{
 			Use:   "rename <name> <new-name>",
 			Short: "Rename a project",
@@ -221,4 +207,32 @@ func joinArgs(args []string) string {
 		out += a
 	}
 	return out
+}
+
+// newProjectsAddCmd is `tend projects add`; --json prints the new project
+// as `tend ls --json` does, for a front end that selects it next.
+func newProjectsAddCmd(open func(context.Context) (Store, error)) *cobra.Command {
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "add <name>",
+		Short: "Create a project",
+		Args:  cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return withStore(cmd, open, func(ctx context.Context, s Store) error {
+				p, err := s.CreateProject(ctx, joinArgs(args))
+				if err != nil {
+					return err
+				}
+				if asJSON {
+					return writeJSON(cmd.OutOrStdout(), struct {
+						Project projectJSON `json:"project"`
+					}{toProjectJSON(p)})
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "created project %s\n", p.Name)
+				return nil
+			})
+		},
+	}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "print {project} as JSON")
+	return cmd
 }

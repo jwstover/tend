@@ -15,6 +15,8 @@ import (
 
 func newAddCmd(open func(context.Context) (Store, error)) *cobra.Command {
 	var projectName string
+	var asJSON bool
+	var parentID int64
 	cmd := &cobra.Command{
 		Use:     "add <text>...",
 		Aliases: []string{"a"},
@@ -25,13 +27,22 @@ func newAddCmd(open func(context.Context) (Store, error)) *cobra.Command {
 			"become the task title and the link lands in the body (see " +
 			"`tend auth jira login`).\n\nCaptures land in the project new tasks are " +
 			"aimed at (see `tend projects use`); --project overrides that for one " +
-			"invocation.",
+			"invocation. --parent captures sub-tasks of a task instead, in its " +
+			"project. --json prints {tasks} (as `tend ls --json` does) " +
+			"instead of the confirmation.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
+			if parentID != 0 && projectName != "" {
+				return fmt.Errorf("--parent and --project can't be given together: a sub-task is in its parent's project")
+			}
+			var parent *int64
+			if parentID != 0 {
+				parent = &parentID
+			}
 
 			if len(args) == 1 {
 				if iss, ok := jira.ParseIssueURL(args[0]); ok {
-					return addJiraTask(cmd, open, iss, projectName)
+					return addJiraTask(cmd, open, iss, projectName, parent, asJSON)
 				}
 			}
 
@@ -54,20 +65,41 @@ func newAddCmd(open func(context.Context) (Store, error)) *cobra.Command {
 				return err
 			}
 
+			var added []task.Task
 			for _, title := range titles {
-				t, err := addOne(ctx, s, target, title, "")
+				t, err := addOne(ctx, s, target, parent, title, "")
 				if err != nil {
 					return fmt.Errorf("adding %q: %w", title, err)
 				}
-				fmt.Fprintf(cmd.OutOrStdout(), "added #%d%s: %s\n",
-					t.ID, projectSuffix(ctx, s, t.ProjectID), t.Title)
+				added = append(added, t)
 			}
-			return nil
+			return reportAdded(cmd, ctx, s, added, asJSON)
 		},
 	}
 	cmd.Flags().StringVarP(&projectName, "project", "p", "",
 		"capture into a named project instead of the active one")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "print the new tasks as JSON")
+	cmd.Flags().Int64Var(&parentID, "parent", 0, "capture as sub-tasks of this task id")
 	return cmd
+}
+
+// reportAdded confirms a capture: one line per task naming where it
+// landed, or with asJSON the tasks as `tend ls --json` prints them.
+func reportAdded(cmd *cobra.Command, ctx context.Context, s Store, added []task.Task, asJSON bool) error {
+	if asJSON {
+		out := struct {
+			Tasks []taskJSON `json:"tasks"`
+		}{Tasks: make([]taskJSON, len(added))}
+		for i, t := range added {
+			out.Tasks[i] = toTaskJSON(t, nil)
+		}
+		return writeJSON(cmd.OutOrStdout(), out)
+	}
+	for _, t := range added {
+		fmt.Fprintf(cmd.OutOrStdout(), "added #%d%s: %s\n",
+			t.ID, projectSuffix(ctx, s, t.ProjectID), t.Title)
+	}
+	return nil
 }
 
 // captureTarget resolves where a capture lands: an explicit --project, or
@@ -85,9 +117,21 @@ func captureTarget(ctx context.Context, s Store, name string) (*int64, error) {
 	return &p.ID, nil
 }
 
-// addOne captures one task, into an explicit project when the caller has
-// one and the active project otherwise.
-func addOne(ctx context.Context, s Store, target *int64, title, body string) (task.Task, error) {
+// addOne captures one task: a sub-task of parent when given (its body
+// appended after, as AddChild takes none), else into an explicit project
+// when the caller has one and the active project otherwise.
+func addOne(ctx context.Context, s Store, target, parent *int64, title, body string) (task.Task, error) {
+	if parent != nil {
+		t, err := s.AddChild(ctx, *parent, title)
+		if err != nil || body == "" {
+			return t, err
+		}
+		if err := s.AppendBody(ctx, t.ID, body); err != nil {
+			return t, err
+		}
+		t.BodyMD = body
+		return t, nil
+	}
 	switch {
 	case target != nil && body != "":
 		return s.AddTaskWithBodyIn(ctx, *target, title, body)
@@ -104,7 +148,7 @@ func addOne(ctx context.Context, s Store, target *int64, title, body string) (ta
 // title (or the bare key when the lookup can't happen) plus the link in
 // the body. Lookup failures warn but never block capture.
 func addJiraTask(cmd *cobra.Command, open func(context.Context) (Store, error),
-	iss jira.Issue, projectName string) error {
+	iss jira.Issue, projectName string, parent *int64, asJSON bool) error {
 	ctx := cmd.Context()
 
 	title, warn := jira.Expand(ctx, iss)
@@ -122,13 +166,11 @@ func addJiraTask(cmd *cobra.Command, open func(context.Context) (Store, error),
 	if err != nil {
 		return err
 	}
-	t, err := addOne(ctx, s, target, title, iss.URL+"\n")
+	t, err := addOne(ctx, s, target, parent, title, iss.URL+"\n")
 	if err != nil {
 		return fmt.Errorf("adding %q: %w", title, err)
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "added #%d%s: %s\n",
-		t.ID, projectSuffix(ctx, s, t.ProjectID), t.Title)
-	return nil
+	return reportAdded(cmd, ctx, s, []task.Task{t}, asJSON)
 }
 
 // projectSuffix renders " to <project>" for the capture confirmation.

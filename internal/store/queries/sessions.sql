@@ -135,3 +135,23 @@ WHERE external_id = ? AND status_updated_at IS ?;
 UPDATE agent_sessions
 SET status = 'ended', status_updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now')
 WHERE external_id = ? AND status_updated_at IS ?;
+
+-- name: CreateHostedSession :one
+-- A session whose terminal another program hosts (see the host column):
+-- the same starting row as CreateSession, with no tmux session and no
+-- workflow step.
+INSERT INTO agent_sessions (task_id, external_id, cwd, label, tmux_session, host, status, status_updated_at)
+VALUES (?, ?, ?, ?, '', ?, 'starting', strftime('%Y-%m-%d %H:%M:%f', 'now'))
+RETURNING *;
+
+-- name: GetSessionByExternalID :one
+SELECT *
+FROM agent_sessions
+WHERE external_id = ?;
+
+-- name: DeleteHostedStartingSession :execrows
+-- Takes back a hosted session's row when its host could not start it:
+-- only a hosted row nothing has been heard from yet, so a live session
+-- or one tend launched is never removed this way.
+DELETE FROM agent_sessions
+WHERE external_id = ? AND host != '' AND status = 'starting';
