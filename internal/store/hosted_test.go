@@ -52,3 +52,12 @@ func TestHostedSessionLifecycle(t *testing.T) {
 		t.Fatalf("delete of a starting hosted session: ok %v, err %v; want true", ok, err)
 	}
 }
+
+// A sub-task of a task that doesn't exist is ErrTaskNotFound, not a bare
+// "no rows".
+func TestAddChildOfMissingParent(t *testing.T) {
+	s := newTestStore(t)
+	if _, err := s.AddChild(context.Background(), 999, "orphan"); !errors.Is(err, task.ErrTaskNotFound) {
+		t.Fatalf("err = %v, want ErrTaskNotFound", err)
+	}
+}

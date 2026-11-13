@@ -190,6 +190,10 @@ func (s *Store) AddChild(ctx context.Context, parentID int64, title string) (tas
 		Title:    t,
 		ParentID: parentID,
 	})
+	if errors.Is(err, sql.ErrNoRows) {
+		// The insert copies the parent's project, so no parent, no row.
+		return task.Task{}, fmt.Errorf("sub-task of %d: %w", parentID, task.ErrTaskNotFound)
+	}
 	if err != nil {
 		return task.Task{}, fmt.Errorf("inserting sub-task of %d: %w", parentID, err)
 	}

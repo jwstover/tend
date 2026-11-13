@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -200,6 +201,28 @@ func (f *fakeStore) ListLive(_ context.Context, projectID *int64) ([]task.Task, 
 
 func (f *fakeStore) TagsByTask(context.Context) (map[int64][]string, error) { return f.tags, nil }
 
+// AddChild captures a sub-task in its parent's project.
+func (f *fakeStore) AddChild(_ context.Context, parentID int64, title string) (task.Task, error) {
+	for _, p := range f.tasks {
+		if p.ID == parentID {
+			t := task.Task{ID: int64(len(f.tasks) + 1), Title: title, ProjectID: p.ProjectID, ParentID: &parentID, State: task.StateInbox}
+			f.tasks = append(f.tasks, t)
+			return t, nil
+		}
+	}
+	return task.Task{}, task.ErrTaskNotFound
+}
+
+func (f *fakeStore) AppendBody(_ context.Context, id int64, text string) error {
+	for i := range f.tasks {
+		if f.tasks[i].ID == id {
+			f.tasks[i].BodyMD += text
+			return nil
+		}
+	}
+	return task.ErrTaskNotFound
+}
+
 // ListLiveWithCompleted: the fake keeps no states apart, so it is ListLive.
 func (f *fakeStore) ListLiveWithCompleted(ctx context.Context, projectID *int64) ([]task.Task, error) {
 	return f.ListLive(ctx, projectID)
@@ -334,5 +357,34 @@ func TestAddJSON(t *testing.T) {
 	tend, _ := s.ProjectByName(context.Background(), "tend")
 	if len(got.Tasks) != 1 || got.Tasks[0].Title != "write the panel" || got.Tasks[0].ProjectID != tend.ID {
 		t.Fatalf("tasks = %+v", got.Tasks)
+	}
+}
+
+// --parent captures a sub-task in its parent's project; with --project it
+// is refused, since a sub-task can't sit elsewhere.
+func TestAddParent(t *testing.T) {
+	ctx := context.Background()
+	s := newFakeStore("tend")
+	tend, _ := s.ProjectByName(ctx, "tend")
+	parent, err := s.AddTaskIn(ctx, tend.ID, "parent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, _, err := runAdd(t, s, "--json", "--parent", strconv.FormatInt(parent.ID, 10), "a", "child")
+	if err != nil {
+		t.Fatalf("add --parent: %v", err)
+	}
+	var got struct {
+		Tasks []taskJSON `json:"tasks"`
+	}
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("not JSON: %v\n%s", err, out)
+	}
+	c := got.Tasks[0]
+	if c.Title != "a child" || c.ParentID == nil || *c.ParentID != parent.ID || c.ProjectID != tend.ID {
+		t.Fatalf("child = %+v", c)
+	}
+	if _, _, err := runAdd(t, s, "--parent", "1", "-p", "tend", "x"); err == nil {
+		t.Error("--parent with --project: want an error")
 	}
 }
