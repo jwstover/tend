@@ -60,6 +60,9 @@ func (s *Store) CreateProject(ctx context.Context, name string) (task.Project, e
 		return task.Project{}, err
 	}
 	row, err := s.q.CreateProject(ctx, n)
+	if err != nil && isUniqueViolation(err) {
+		return task.Project{}, fmt.Errorf("a project named %q already exists", n)
+	}
 	if err != nil {
 		return task.Project{}, fmt.Errorf("creating project %q: %w", n, err)
 	}

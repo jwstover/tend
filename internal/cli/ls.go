@@ -6,10 +6,13 @@ import (
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
+
+	"github.com/jwstover/tend/internal/task"
 )
 
 func newLsCmd(open func(context.Context) (Store, error)) *cobra.Command {
 	var projectName string
+	var asJSON, closed bool
 	cmd := &cobra.Command{
 		Use:   "ls",
 		Short: "Dump the live view as plain text",
@@ -28,7 +31,11 @@ func newLsCmd(open func(context.Context) (Store, error)) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			tasks, err := s.ListLive(ctx, filter)
+			list := s.ListLive
+			if closed {
+				list = s.ListLiveWithCompleted
+			}
+			tasks, err := list(ctx, filter)
 			if err != nil {
 				return err
 			}
@@ -36,6 +43,10 @@ func newLsCmd(open func(context.Context) (Store, error)) *cobra.Command {
 			tags, err := s.TagsByTask(ctx)
 			if err != nil {
 				return err
+			}
+
+			if asJSON {
+				return lsJSON(ctx, cmd, s, tasks, tags)
 			}
 
 			w := tabwriter.NewWriter(cmd.OutOrStdout(), 2, 4, 2, ' ', 0)
@@ -53,7 +64,46 @@ func newLsCmd(open func(context.Context) (Store, error)) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVarP(&projectName, "project", "p", "", "narrow to a named project")
+	cmd.Flags().BoolVar(&closed, "closed", false, "include done, canceled and someday tasks, as the TUI's completed section does")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "print {tasks, projects} as JSON (tasks without bodies; `tend show` has one in full)")
 	return cmd
+}
+
+// lsJSON prints the live view as {tasks, projects}: every project, so a
+// front end can name and group them, whatever --project narrowed.
+func lsJSON(ctx context.Context, cmd *cobra.Command, s Store, tasks []task.Task, tags map[int64][]string) error {
+	projects, err := s.ListProjects(ctx)
+	if err != nil {
+		return err
+	}
+	counts, err := s.ChildCounts(ctx)
+	if err != nil {
+		return err
+	}
+	all, err := s.ListSessionsForProject(ctx, nil)
+	if err != nil {
+		return err
+	}
+	open := map[int64][]string{}
+	for _, se := range all { // newest first
+		if se.Status != task.SessionEnded {
+			open[se.TaskID] = append(open[se.TaskID], se.ExternalID)
+		}
+	}
+	out := struct {
+		Tasks    []taskJSON    `json:"tasks"`
+		Projects []projectJSON `json:"projects"`
+	}{Tasks: make([]taskJSON, len(tasks)), Projects: make([]projectJSON, len(projects))}
+	for i, t := range tasks {
+		out.Tasks[i] = toTaskJSON(t, tags[t.ID])
+		out.Tasks[i].ChildrenDone, out.Tasks[i].ChildrenTotal = counts[t.ID].Done, counts[t.ID].Total
+		out.Tasks[i].Sessions = open[t.ID]
+	}
+	for i, p := range projects {
+		out.Projects[i] = toProjectJSON(p)
+		out.Projects[i].LiveCount = &p.LiveCount
+	}
+	return writeJSON(cmd.OutOrStdout(), out)
 }
 
 // lsScope resolves the project filter. nil means every project: with no

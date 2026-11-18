@@ -30,3 +30,18 @@ func TestNormalizeProjectCwd(t *testing.T) {
 		}
 	}
 }
+
+// A task's latest session's directory beats its project's; with neither,
+// there is no default.
+func TestDefaultCwd(t *testing.T) {
+	p := Project{Cwd: "/proj"}
+	if got := DefaultCwd([]Session{{Cwd: "/last"}, {Cwd: "/older"}}, p); got != "/last" {
+		t.Errorf("with sessions = %q, want /last", got)
+	}
+	if got := DefaultCwd(nil, p); got != "/proj" {
+		t.Errorf("no sessions = %q, want /proj", got)
+	}
+	if got := DefaultCwd(nil, Project{}); got != "" {
+		t.Errorf("nothing = %q, want empty", got)
+	}
+}

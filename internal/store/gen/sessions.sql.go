@@ -24,10 +24,54 @@ func (q *Queries) ClaimSessionRecap(ctx context.Context, externalID string) (int
 	return result.RowsAffected()
 }
 
+const createHostedSession = `-- name: CreateHostedSession :one
+INSERT INTO agent_sessions (task_id, external_id, cwd, label, tmux_session, host, status, status_updated_at)
+VALUES (?, ?, ?, ?, '', ?, 'starting', strftime('%Y-%m-%d %H:%M:%f', 'now'))
+RETURNING id, task_id, external_id, cwd, label, started_at, last_active_at, tmux_session, needs_recap, status, status_updated_at, workflow_step_run_id, host
+`
+
+type CreateHostedSessionParams struct {
+	TaskID     int64
+	ExternalID string
+	Cwd        string
+	Label      string
+	Host       string
+}
+
+// A session whose terminal another program hosts (see the host column):
+// the same starting row as CreateSession, with no tmux session and no
+// workflow step.
+func (q *Queries) CreateHostedSession(ctx context.Context, arg CreateHostedSessionParams) (AgentSession, error) {
+	row := q.db.QueryRowContext(ctx, createHostedSession,
+		arg.TaskID,
+		arg.ExternalID,
+		arg.Cwd,
+		arg.Label,
+		arg.Host,
+	)
+	var i AgentSession
+	err := row.Scan(
+		&i.ID,
+		&i.TaskID,
+		&i.ExternalID,
+		&i.Cwd,
+		&i.Label,
+		&i.StartedAt,
+		&i.LastActiveAt,
+		&i.TmuxSession,
+		&i.NeedsRecap,
+		&i.Status,
+		&i.StatusUpdatedAt,
+		&i.WorkflowStepRunID,
+		&i.Host,
+	)
+	return i, err
+}
+
 const createSession = `-- name: CreateSession :one
 INSERT INTO agent_sessions (task_id, external_id, cwd, label, tmux_session, workflow_step_run_id, status, status_updated_at)
 VALUES (?, ?, ?, ?, ?, ?, 'starting', strftime('%Y-%m-%d %H:%M:%f', 'now'))
-RETURNING id, task_id, external_id, cwd, label, started_at, last_active_at, tmux_session, needs_recap, status, status_updated_at, workflow_step_run_id
+RETURNING id, task_id, external_id, cwd, label, started_at, last_active_at, tmux_session, needs_recap, status, status_updated_at, workflow_step_run_id, host
 `
 
 type CreateSessionParams struct {
@@ -72,8 +116,25 @@ func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) (A
 		&i.Status,
 		&i.StatusUpdatedAt,
 		&i.WorkflowStepRunID,
+		&i.Host,
 	)
 	return i, err
+}
+
+const deleteHostedStartingSession = `-- name: DeleteHostedStartingSession :execrows
+DELETE FROM agent_sessions
+WHERE external_id = ? AND host != '' AND status = 'starting'
+`
+
+// Takes back a hosted session's row when its host could not start it:
+// only a hosted row nothing has been heard from yet, so a live session
+// or one tend launched is never removed this way.
+func (q *Queries) DeleteHostedStartingSession(ctx context.Context, externalID string) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteHostedStartingSession, externalID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const deleteSession = `-- name: DeleteSession :exec
@@ -87,6 +148,33 @@ WHERE id = ?
 func (q *Queries) DeleteSession(ctx context.Context, id int64) error {
 	_, err := q.db.ExecContext(ctx, deleteSession, id)
 	return err
+}
+
+const getSessionByExternalID = `-- name: GetSessionByExternalID :one
+SELECT id, task_id, external_id, cwd, label, started_at, last_active_at, tmux_session, needs_recap, status, status_updated_at, workflow_step_run_id, host
+FROM agent_sessions
+WHERE external_id = ?
+`
+
+func (q *Queries) GetSessionByExternalID(ctx context.Context, externalID string) (AgentSession, error) {
+	row := q.db.QueryRowContext(ctx, getSessionByExternalID, externalID)
+	var i AgentSession
+	err := row.Scan(
+		&i.ID,
+		&i.TaskID,
+		&i.ExternalID,
+		&i.Cwd,
+		&i.Label,
+		&i.StartedAt,
+		&i.LastActiveAt,
+		&i.TmuxSession,
+		&i.NeedsRecap,
+		&i.Status,
+		&i.StatusUpdatedAt,
+		&i.WorkflowStepRunID,
+		&i.Host,
+	)
+	return i, err
 }
 
 const listSessionStatuses = `-- name: ListSessionStatuses :many
@@ -126,7 +214,7 @@ func (q *Queries) ListSessionStatuses(ctx context.Context) ([]ListSessionStatuse
 }
 
 const listSessionsForProject = `-- name: ListSessionsForProject :many
-SELECT s.id, s.task_id, s.external_id, s.cwd, s.label, s.started_at, s.last_active_at, s.tmux_session, s.needs_recap, s.status, s.status_updated_at, s.workflow_step_run_id, t.title AS task_title, t.state AS task_state
+SELECT s.id, s.task_id, s.external_id, s.cwd, s.label, s.started_at, s.last_active_at, s.tmux_session, s.needs_recap, s.status, s.status_updated_at, s.workflow_step_run_id, s.host, t.title AS task_title, t.state AS task_state
 FROM agent_sessions s
 JOIN tasks t ON t.id = s.task_id
 WHERE (?1 IS NULL OR t.project_id = ?1)
@@ -167,6 +255,7 @@ func (q *Queries) ListSessionsForProject(ctx context.Context, projectID interfac
 			&i.AgentSession.Status,
 			&i.AgentSession.StatusUpdatedAt,
 			&i.AgentSession.WorkflowStepRunID,
+			&i.AgentSession.Host,
 			&i.TaskTitle,
 			&i.TaskState,
 		); err != nil {
@@ -184,7 +273,7 @@ func (q *Queries) ListSessionsForProject(ctx context.Context, projectID interfac
 }
 
 const listSessionsForTask = `-- name: ListSessionsForTask :many
-SELECT id, task_id, external_id, cwd, label, started_at, last_active_at, tmux_session, needs_recap, status, status_updated_at, workflow_step_run_id
+SELECT id, task_id, external_id, cwd, label, started_at, last_active_at, tmux_session, needs_recap, status, status_updated_at, workflow_step_run_id, host
 FROM agent_sessions
 WHERE task_id = ?
 ORDER BY last_active_at DESC, id DESC
@@ -212,6 +301,7 @@ func (q *Queries) ListSessionsForTask(ctx context.Context, taskID int64) ([]Agen
 			&i.Status,
 			&i.StatusUpdatedAt,
 			&i.WorkflowStepRunID,
+			&i.Host,
 		); err != nil {
 			return nil, err
 		}
@@ -227,7 +317,7 @@ func (q *Queries) ListSessionsForTask(ctx context.Context, taskID int64) ([]Agen
 }
 
 const listSessionsNeedingRecap = `-- name: ListSessionsNeedingRecap :many
-SELECT id, task_id, external_id, cwd, label, started_at, last_active_at, tmux_session, needs_recap, status, status_updated_at, workflow_step_run_id
+SELECT id, task_id, external_id, cwd, label, started_at, last_active_at, tmux_session, needs_recap, status, status_updated_at, workflow_step_run_id, host
 FROM agent_sessions
 WHERE needs_recap = 1
 ORDER BY last_active_at DESC, id DESC
@@ -255,6 +345,7 @@ func (q *Queries) ListSessionsNeedingRecap(ctx context.Context) ([]AgentSession,
 			&i.Status,
 			&i.StatusUpdatedAt,
 			&i.WorkflowStepRunID,
+			&i.Host,
 		); err != nil {
 			return nil, err
 		}
@@ -270,7 +361,7 @@ func (q *Queries) ListSessionsNeedingRecap(ctx context.Context) ([]AgentSession,
 }
 
 const listSessionsWithTmux = `-- name: ListSessionsWithTmux :many
-SELECT id, task_id, external_id, cwd, label, started_at, last_active_at, tmux_session, needs_recap, status, status_updated_at, workflow_step_run_id
+SELECT id, task_id, external_id, cwd, label, started_at, last_active_at, tmux_session, needs_recap, status, status_updated_at, workflow_step_run_id, host
 FROM agent_sessions
 WHERE tmux_session != '' AND status != 'ended'
 ORDER BY last_active_at DESC, id DESC
@@ -301,6 +392,7 @@ func (q *Queries) ListSessionsWithTmux(ctx context.Context) ([]AgentSession, err
 			&i.Status,
 			&i.StatusUpdatedAt,
 			&i.WorkflowStepRunID,
+			&i.Host,
 		); err != nil {
 			return nil, err
 		}

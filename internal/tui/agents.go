@@ -531,6 +531,15 @@ func (a app) killSelectedAgent() tea.Cmd {
 	}
 	sess := row.sess.Session
 	a.av.selectID = sess.ID
+	if sess.Host != "" {
+		// Its process is the host's to stop; tend can only stop showing
+		// it live, e.g. after its pane closed without a SessionEnd hook.
+		if sess.Status == task.SessionEnded {
+			return statusCmd(flash{text: "session already ended"})
+		}
+		return a.mutate(flash{kind: flashDone, text: "marked ended — close its terminal in " + sess.Host},
+			func() error { return a.store.SetSessionStatus(a.ctx, sess.ExternalID, task.SessionEnded) })
+	}
 	if sess.Headless() {
 		if row.run != nil && !row.run.State.Terminal() && row.run.State != workflow.RunPaused {
 			runID := row.run.ID

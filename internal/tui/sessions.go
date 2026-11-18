@@ -118,18 +118,11 @@ func (a *app) scrollSessionPicker(n int) {
 	a.sessionPickerTop = sessionPickerWindow(a.sessionPickerSel, a.sessionPickerTop, n, a.sessionPickerVisible())
 }
 
-// defaultCwd suggests where to launch a new session, most specific
-// evidence first: the most recently active existing session's directory
-// (ListSessionsForTask orders newest first) — the task itself has already
-// been worked on somewhere, and a deliberate choice there beats a
-// project-wide default; else the task's project's default working
-// directory (task.Project.Cwd); else the directory tend itself was
-// started from.
+// defaultCwd suggests where to launch a new session: task.DefaultCwd (the
+// task's latest session's directory, else its project's default), else the
+// directory tend itself was started from.
 func (a app) defaultCwd(sessions []task.Session, projectID int64) string {
-	if len(sessions) > 0 {
-		return sessions[0].Cwd
-	}
-	if cwd := a.projectCwd(projectID); cwd != "" {
+	if cwd := task.DefaultCwd(sessions, task.Project{Cwd: a.projectCwd(projectID)}); cwd != "" {
 		return cwd
 	}
 	return a.startCwd
@@ -276,32 +269,10 @@ func (a app) resumeGuardedCmd(sess task.Session) tea.Cmd {
 // project comes from the store rather than the loaded projects column so
 // the block is right even when the column has not loaded yet.
 func (a app) sessionBriefPrompt(taskID int64) string {
-	t, err := a.store.GetTask(a.ctx, taskID)
+	b, err := a.store.SessionBrief(a.ctx, taskID)
 	if err != nil {
 		return ""
 	}
-	b := task.SessionBrief{Task: t}
-	if projects, err := a.store.ListProjects(a.ctx); err == nil {
-		for _, p := range projects {
-			if p.ID == t.ProjectID {
-				b.Project = p
-				break
-			}
-		}
-	}
-	b.Tags, _ = a.store.TagsForTask(a.ctx, taskID)
-	if t.ParentID != nil {
-		if p, err := a.store.GetTask(a.ctx, *t.ParentID); err == nil {
-			b.Parent = &p
-		}
-	}
-	b.Children, _ = a.store.ListChildren(a.ctx, taskID)
-	if len(b.Children) > 0 {
-		b.ChildBlockers, _ = a.store.BlockerCounts(a.ctx)
-	}
-	b.Blockers, _ = a.store.Blockers(a.ctx, taskID)
-	b.Blocking, _ = a.store.Blocking(a.ctx, taskID)
-	b.Log, _ = a.store.ListTaskLog(a.ctx, taskID)
 	return task.SessionSystemPrompt(b)
 }
 
@@ -456,6 +427,11 @@ func (a app) abandonLaunchCmd(msg sessionFinishedMsg, status flash) tea.Cmd {
 // already-running session (the attach branch) keeps whatever it was
 // launched with.
 func resumeSessionCmd(sess task.Session, dbPath, systemPrompt, advisorModel string, ref takeoverRef) tea.Cmd {
+	if sess.Host != "" {
+		// Its terminal is the host's: a resume here would be a second
+		// claude on the same transcript.
+		return statusCmd(flash{text: hostedText(sess)})
+	}
 	if err := agent.CheckInstalled(); err != nil {
 		return errCmd(err)
 	}
@@ -919,4 +895,10 @@ func sessionPickerMore(top, end, n int) string {
 		parts = append(parts, fmt.Sprintf("↓ %d more", n-end))
 	}
 	return strings.Join(parts, "   ")
+}
+
+// hostedText is the flash for an action tend cannot take on a session
+// another program hosts (task.Session.Host).
+func hostedText(sess task.Session) string {
+	return "this session runs in " + sess.Host + " — open it there"
 }

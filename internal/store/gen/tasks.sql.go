@@ -569,6 +569,29 @@ func (q *Queries) SetTaskBody(ctx context.Context, arg SetTaskBodyParams) error 
 	return err
 }
 
+const setTaskBodyIfUnchanged = `-- name: SetTaskBodyIfUnchanged :execrows
+UPDATE tasks
+SET body_md    = ?1,
+    updated_at = datetime('now')
+WHERE id = ?2 AND body_md = ?3
+`
+
+type SetTaskBodyIfUnchangedParams struct {
+	Body    string
+	ID      int64
+	OldBody string
+}
+
+// Replaces the body only while it is still the one the caller read, so a
+// save never wipes out a change made since (an agent's append_task_body).
+func (q *Queries) SetTaskBodyIfUnchanged(ctx context.Context, arg SetTaskBodyIfUnchangedParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, setTaskBodyIfUnchanged, arg.Body, arg.ID, arg.OldBody)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const setTaskDue = `-- name: SetTaskDue :exec
 UPDATE tasks
 SET due        = ?,

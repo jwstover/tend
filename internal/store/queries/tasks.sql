@@ -142,6 +142,14 @@ SET body_md    = ?,
     updated_at = datetime('now')
 WHERE id = ?;
 
+-- name: SetTaskBodyIfUnchanged :execrows
+-- Replaces the body only while it is still the one the caller read, so a
+-- save never wipes out a change made since (an agent's append_task_body).
+UPDATE tasks
+SET body_md    = sqlc.arg(body),
+    updated_at = datetime('now')
+WHERE id = sqlc.arg(id) AND body_md = sqlc.arg(old_body);
+
 -- name: AppendTaskBody :exec
 -- Appends text as a new paragraph: an empty body just becomes the text,
 -- otherwise trailing whitespace is trimmed and a blank line separates the

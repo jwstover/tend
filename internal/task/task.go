@@ -3,6 +3,8 @@
 package task
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -145,4 +147,14 @@ type Task struct {
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
 	CompletedAt *time.Time
+}
+
+// BodyVersion names one exact body: the first 16 hex digits of its
+// SHA-256. A front end that edits a body passes the version it read back
+// with its save, so the save is refused if the body changed meanwhile
+// (Store.SetBodyIfUnchanged). Task timestamps have whole seconds, too
+// coarse to tell an edit from an agent's append in the same second.
+func BodyVersion(body string) string {
+	sum := sha256.Sum256([]byte(body))
+	return hex.EncodeToString(sum[:8])
 }
