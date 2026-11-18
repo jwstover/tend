@@ -12,6 +12,7 @@ import (
 
 	"github.com/jwstover/tend/internal/store"
 	"github.com/jwstover/tend/internal/task"
+	"github.com/jwstover/tend/internal/workflow"
 )
 
 // realTaskStore opens a scratch database: these commands are thin over
@@ -297,5 +298,58 @@ func TestBodyExpectsTheVersionItEdited(t *testing.T) {
 	}
 	if _, err := body("again", read.Task.BodyVersion); err == nil || !strings.Contains(err.Error(), "changed") {
 		t.Fatalf("stale save: err = %v, want a refusal", err)
+	}
+}
+
+// A session that ran a workflow step says which run, in what state, and
+// whether its step finished, so a front end can refuse a resume the way
+// the TUI does. An ordinary session leaves the field out.
+func TestShowGivesAStepSessionItsRun(t *testing.T) {
+	ctx := context.Background()
+	s, _ := realTaskStore(t)
+	tk, err := s.AddTask(ctx, "fix it")
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := s.CreateWorkflow(ctx, "wf", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := s.AddStep(ctx, w.ID, "only", workflow.StepAgent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := s.CreateRun(ctx, w.ID, tk.ID, "/work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sr, err := s.CreateStepRun(ctx, workflow.StepRun{RunID: run.ID, StepID: st.ID, SessionExternalID: "ext-step"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateStepRunSession(ctx, sr.ID, tk.ID, "ext-step", "/work", "step", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetRunState(ctx, run.ID, workflow.RunPaused); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateHostedSession(ctx, tk.ID, "ext-plain", "/work", tk.Title, "devhub"); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := show(ctx, keepOpen{s}, tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runs := map[string]*runJSON{}
+	for _, se := range out.Sessions {
+		runs[se.Session] = se.Run
+	}
+	want := runJSON{ID: run.ID, State: "paused", StepFinished: false}
+	if got := runs["ext-step"]; got == nil || *got != want {
+		t.Errorf("ext-step run = %+v, want %+v", got, want)
+	}
+	if got, ok := runs["ext-plain"]; !ok || got != nil {
+		t.Errorf("ext-plain run = %+v (listed %v), want none", got, ok)
 	}
 }

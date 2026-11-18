@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/jwstover/tend/internal/task"
+	"github.com/jwstover/tend/internal/workflow"
 )
 
 // TaskStore is the slice of the persistence layer behind the scriptable
@@ -29,6 +30,8 @@ type TaskStore interface {
 	SessionByExternalID(ctx context.Context, externalID string) (task.Session, error)
 	DeleteHostedStartingSession(ctx context.Context, externalID string) (bool, error)
 	TouchSession(ctx context.Context, id int64) error
+	GetStepRun(ctx context.Context, id int64) (workflow.StepRun, error)
+	GetRun(ctx context.Context, id int64) (workflow.Run, error)
 	Close() error
 }
 
@@ -103,6 +106,18 @@ type sessionJSON struct {
 	Cwd          string `json:"cwd"`
 	StartedAt    string `json:"started_at"`
 	LastActiveAt string `json:"last_active_at"`
+	// Run is set when the session ran a workflow step: a front end refuses
+	// to resume it while the run still owns it, as the TUI does.
+	Run *runJSON `json:"run,omitempty"`
+}
+
+// runJSON is the workflow run a step session belongs to. The TUI resumes
+// such a session only once the run is terminal or paused, and a paused
+// run whose step is unfinished is a takeover, not a plain resume.
+type runJSON struct {
+	ID           int64  `json:"id"`
+	State        string `json:"state"`
+	StepFinished bool   `json:"step_finished"`
 }
 
 type branchJSON struct {
@@ -214,10 +229,18 @@ func show(ctx context.Context, s TaskStore, id int64) (showJSON, error) {
 		out.Parent = &p
 	}
 	for _, se := range sessions {
-		out.Sessions = append(out.Sessions, sessionJSON{
+		j := sessionJSON{
 			Session: se.ExternalID, Label: se.Label, Status: string(se.Status), Host: se.Host,
 			Cwd: se.Cwd, StartedAt: stamp(se.StartedAt), LastActiveAt: stamp(se.LastActiveAt),
-		})
+		}
+		if se.StepRunID != nil {
+			r, err := stepRun(ctx, s, *se.StepRunID)
+			if err != nil {
+				return showJSON{}, err
+			}
+			j.Run = &r
+		}
+		out.Sessions = append(out.Sessions, j)
 	}
 	branches, err := s.TaskBranches(ctx, id)
 	if err != nil {
@@ -343,4 +366,17 @@ func newAppendCmd(open func(context.Context) (TaskStore, error)) *cobra.Command 
 			})
 		},
 	}
+}
+
+// stepRun is the run behind a step session's step run, as `show` reports it.
+func stepRun(ctx context.Context, s TaskStore, stepRunID int64) (runJSON, error) {
+	sr, err := s.GetStepRun(ctx, stepRunID)
+	if err != nil {
+		return runJSON{}, err
+	}
+	run, err := s.GetRun(ctx, sr.RunID)
+	if err != nil {
+		return runJSON{}, err
+	}
+	return runJSON{ID: run.ID, State: string(run.State), StepFinished: sr.Finished()}, nil
 }
