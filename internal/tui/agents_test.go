@@ -5,6 +5,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
@@ -342,10 +343,102 @@ func TestAgentsViewReloadHoldsCursorByID(t *testing.T) {
 	}
 }
 
-// An interactive session's pane is its task's detail pane: body, log and
-// sessions, under a heading naming the session.
+// A live interactive session's pane is a preview of its tmux pane by
+// default, refreshed on the preview tick; `v` flips it to the task detail
+// and back.
+func TestAgentsViewInteractivePanePreview(t *testing.T) {
+	ctx := context.Background()
+	var capture atomic.Value
+	capture.Store("\x1b[1m> hello from claude\x1b[0m\n✶ Pondering… (3s)\n\n")
+	var captured []string
+	stubCapturePaneStyled(t, func(sess task.Session) (string, error) {
+		captured = append(captured, sess.TmuxSession)
+		return capture.Load().(string), nil
+	})
+	m, s := wideApp(t)
+	tk, err := s.AddTask(ctx, "fix the bug")
+	if err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	if err := s.SetBody(ctx, tk.ID, "Reproduce with the flaky fixture first."); err != nil {
+		t.Fatalf("SetBody: %v", err)
+	}
+	mustSession(t, s, tk, "ext-1", "tend-ext-1")
+	m = drive(t, m, refreshMsg{})
+	m = enterAgents(t, m)
+
+	content := ansi.Strip(m.View().Content)
+	for _, want := range []string{"PANE", "> hello from claude", "Pondering… (3s)"} {
+		if !strings.Contains(content, want) {
+			t.Errorf("preview missing %q:\n%s", want, content)
+		}
+	}
+	if strings.Contains(content, "Reproduce with the flaky fixture first.") {
+		t.Errorf("preview shows the task body; want the pane:\n%s", content)
+	}
+	if len(captured) == 0 || captured[0] != "tend-ext-1" {
+		t.Errorf("captured %v, want the session's tmux pane", captured)
+	}
+
+	// The tick re-captures it.
+	capture.Store("> second frame")
+	m = drive(t, m, paneTickMsg{})
+	if content := ansi.Strip(m.View().Content); !strings.Contains(content, "> second frame") {
+		t.Errorf("tick did not refresh the preview:\n%s", content)
+	}
+
+	// `v` shows the task, and again goes back to the pane.
+	m = drive(t, m, keyPress('v'))
+	content = ansi.Strip(m.View().Content)
+	if !strings.Contains(content, "Reproduce with the flaky fixture first.") || strings.Contains(content, "second frame") {
+		t.Errorf("after v, want the task detail:\n%s", content)
+	}
+	n := len(captured)
+	m = drive(t, m, paneTickMsg{})
+	if len(captured) != n {
+		t.Errorf("tick captured with the preview off")
+	}
+	m = drive(t, m, keyPress('v'))
+	if content := ansi.Strip(m.View().Content); !strings.Contains(content, "> second frame") {
+		t.Errorf("after v again, want the preview:\n%s", content)
+	}
+}
+
+// Lines wider than the pane are cut without breaking their escapes, and
+// each ends with a reset so a colour cannot bleed past the column.
+func TestPanePreviewLinesCrop(t *testing.T) {
+	lines := panePreviewLines("\x1b[31m"+strings.Repeat("x", 50)+"\x1b[0m\nshort", 20)
+	if len(lines) != 2 {
+		t.Fatalf("got %d lines, want 2", len(lines))
+	}
+	for i, l := range lines {
+		if w := ansi.StringWidth(l); w > 20 {
+			t.Errorf("line %d width %d, want ≤ 20: %q", i, w, l)
+		}
+		if !strings.HasSuffix(l, "\x1b[0m") {
+			t.Errorf("line %d not closed with a reset: %q", i, l)
+		}
+	}
+	if got := ansi.Strip(lines[1]); got != " short" {
+		t.Errorf("short line = %q", got)
+	}
+}
+
+// stubCapturePaneStyled pins the agents view's pane preview to fn, so the
+// view is driven without a real tmux server.
+func stubCapturePaneStyled(t *testing.T, fn func(task.Session) (string, error)) {
+	t.Helper()
+	prev := capturePaneStyled
+	capturePaneStyled = fn
+	t.Cleanup(func() { capturePaneStyled = prev })
+}
+
+// An interactive session with no pane to capture (its tmux session gone)
+// falls back to its task's detail pane: body, log and sessions, under a
+// heading naming the session.
 func TestAgentsViewInteractivePaneShowsTask(t *testing.T) {
 	ctx := context.Background()
+	stubCapturePaneStyled(t, func(task.Session) (string, error) { return "", nil })
 	m, s := wideApp(t)
 	tk, err := s.AddTask(ctx, "fix the bug")
 	if err != nil {
