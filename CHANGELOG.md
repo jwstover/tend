@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.6.0](https://github.com/jwstover/tend/compare/v0.5.0...v0.6.0) (2026-11-19)
+
+
+### Features
+
+* **cli:** hosted sessions start where the TUI would start them ([5d83e7e](https://github.com/jwstover/tend/commit/5d83e7e8863ff4b6b27997e36a85cd81086192ff))
+* **cli:** JSON task commands and Claude sessions devhub hosts ([#173](https://github.com/jwstover/tend/issues/173)) ([16ae373](https://github.com/jwstover/tend/commit/16ae3732b7083330181153075e7bf6e649a45c81))
+* **cli:** JSON task commands and sessions another program hosts ([4a94d64](https://github.com/jwstover/tend/commit/4a94d64cc70a5bc66d4758a3c1c79dc8e517b2d3))
+* **cli:** ls --json gives each project its live count ([a610637](https://github.com/jwstover/tend/commit/a610637f4aab9f04a23078383c4e13bbd332545a))
+* **cli:** ls --json lists each task's open session ids ([b701cce](https://github.com/jwstover/tend/commit/b701cceb662323bd1e43b98c7a0710759d9b58af))
+* **cli:** tend add --json prints the new tasks ([f9aaeb6](https://github.com/jwstover/tend/commit/f9aaeb6e82b223219d03222e136e2ea90be8af70))
+* **cli:** tend add --parent captures sub-tasks ([6c7483f](https://github.com/jwstover/tend/commit/6c7483f3f7ce579d27a784421fb64a6c792f7076))
+* **cli:** tend body replaces a body unless it changed since ([44f9e87](https://github.com/jwstover/tend/commit/44f9e8779e5652084ad12cdce3837cfc9993ec7e))
+* **cli:** tend ls --closed, and sub-task progress in ls --json ([e7769ee](https://github.com/jwstover/tend/commit/e7769eee295ee567d6ebe3eef51a6bdaf8d87816))
+* **cli:** tend projects add --json prints the new project ([b892432](https://github.com/jwstover/tend/commit/b892432532bf7f689cadae14cc606a51044b7319))
+* **cli:** tend show --json gives a step session its workflow run ([784a8a7](https://github.com/jwstover/tend/commit/784a8a7c4545cc5c79a92769696353d6ebc297a6))
+* **cli:** tend show --json gives a step session its workflow run ([a563d3e](https://github.com/jwstover/tend/commit/a563d3eab73f22c68f4f0339c2cd86c33d974d19))
+* **tui:** preview a live session's pane in the agents view ([56578d3](https://github.com/jwstover/tend/commit/56578d3d819a60447c7e28b97c07ccd06949e61c))
+* **tui:** preview a live session's pane in the agents view ([645ab8c](https://github.com/jwstover/tend/commit/645ab8cdef94ceb810e4b49eb5ea33ac24b1d2b4))
+
+
+### Bug Fixes
+
+* **store:** a taken project name says so ([7770d65](https://github.com/jwstover/tend/commit/7770d65675b8d98545fe73726c39d03d096d6c2e))
+
 ## [0.5.0](https://github.com/jwstover/tend/compare/v0.4.0...v0.5.0) (2026-11-07)
 
 
