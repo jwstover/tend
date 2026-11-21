@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"regexp"
 	"strings"
 
 	"github.com/jwstover/tend/internal/task"
@@ -19,9 +20,25 @@ import (
 // interruptible window (generating or running a tool) and drops the
 // clause entirely the instant Claude Code returns to the input prompt.
 // One stable substring beats an open-ended list of spinner text.
+//
+// Claude Code 2.1.291 dropped that clause: the status bar now reads the
+// same while working as at idle. What still tells them apart is the
+// spinner line above the input box, which while a turn runs is a glyph,
+// a one-word verb with an ellipsis, then the elapsed time in parentheses
+// ("✢ Cerebrating… (1m 7s · ↓ 3.2k tokens)"), and once it ends becomes
+// past tense with no ellipsis ("✻ Churned for 1m 20s · done 11:26 AM").
+// workingSpinner matches that shape rather than any verb or glyph, for
+// the same reason the verbs were never listed: both rotate. The literal
+// stays for older builds.
 var workingChrome = []string{
 	"esc to interrupt",
 }
+
+// workingSpinner is the shape of the mid-turn spinner line, anchored to
+// the start of a line so the same characters inside transcript text do
+// not count: one glyph, a space, a single word ending in "…", then " ("
+// and a digit for the elapsed time.
+var workingSpinner = regexp.MustCompile(`(?m)^\S \p{L}+… \(\d`)
 
 // blockedChrome is literal substrings that only appear while an
 // interactive prompt — a permission request or an AskUserQuestion-style
@@ -61,6 +78,9 @@ func ClassifyPane(text string) task.SessionStatus {
 		if strings.Contains(text, chrome) {
 			return task.SessionWorking
 		}
+	}
+	if workingSpinner.MatchString(text) {
+		return task.SessionWorking
 	}
 	for _, chrome := range blockedChrome {
 		if strings.Contains(text, chrome) {
