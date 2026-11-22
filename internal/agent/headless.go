@@ -15,6 +15,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/jwstover/tend/internal/usage"
 )
 
 // HeadlessCmd builds the headless equivalent of LaunchCmdWith: the same
@@ -134,13 +136,16 @@ type HeadlessResult struct {
 	// Found reports whether a result event was seen at all. It is false
 	// for a stream cut short by a crash, a kill, or a stub that never
 	// finished, in which case the other fields are zero.
-	Found             bool
-	Text              string
-	Subtype           string
-	IsError           bool
-	SessionID         string
-	NumTurns          int
-	CostUSD           float64
+	Found     bool
+	Text      string
+	Subtype   string
+	IsError   bool
+	SessionID string
+	NumTurns  int
+	CostUSD   float64
+	// Usage is this one claude process's token counts, zero when Found is
+	// false.
+	Usage             usage.Tokens
 	PermissionDenials int
 }
 
@@ -157,6 +162,12 @@ type streamEvent struct {
 	NumTurns          int               `json:"num_turns"`
 	TotalCostUSD      float64           `json:"total_cost_usd"`
 	PermissionDenials []json.RawMessage `json:"permission_denials"`
+	Usage             struct {
+		InputTokens         int64 `json:"input_tokens"`
+		OutputTokens        int64 `json:"output_tokens"`
+		CacheCreationTokens int64 `json:"cache_creation_input_tokens"`
+		CacheReadTokens     int64 `json:"cache_read_input_tokens"`
+	} `json:"usage"`
 }
 
 // ParseStream reads a stream-json log — live from a pipe or after the
@@ -193,13 +204,19 @@ func parseResultLine(line []byte) (HeadlessResult, bool) {
 		return HeadlessResult{}, false
 	}
 	return HeadlessResult{
-		Found:             true,
-		Text:              ev.Result,
-		Subtype:           ev.Subtype,
-		IsError:           ev.IsError,
-		SessionID:         ev.SessionID,
-		NumTurns:          ev.NumTurns,
-		CostUSD:           ev.TotalCostUSD,
+		Found:     true,
+		Text:      ev.Result,
+		Subtype:   ev.Subtype,
+		IsError:   ev.IsError,
+		SessionID: ev.SessionID,
+		NumTurns:  ev.NumTurns,
+		CostUSD:   ev.TotalCostUSD,
+		Usage: usage.Tokens{
+			Input:         ev.Usage.InputTokens,
+			Output:        ev.Usage.OutputTokens,
+			CacheCreation: ev.Usage.CacheCreationTokens,
+			CacheRead:     ev.Usage.CacheReadTokens,
+		},
 		PermissionDenials: len(ev.PermissionDenials),
 	}, true
 }
