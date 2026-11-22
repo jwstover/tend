@@ -37,6 +37,7 @@ import (
 //     `--verbose`, so both are always set. Stdout is then one JSON object
 //     per line, ending in a `result` event that carries the assistant's
 //     final text (see ParseStream).
+//
 //   - A `-p` session with `--session-id` is written to the same on-disk
 //     transcript an interactive one is, and `claude --resume <id>` picks it
 //     up with its context intact — which is what lets a running step be
@@ -44,6 +45,7 @@ import (
 //     or was killed: the transcript is appended turn by turn, so
 //     cancelling ctx (which sends SIGTERM, then SIGKILL after
 //     headlessKillDelay) leaves a session that is still resumable.
+//
 //   - With no --permission-mode, a `-p` run does not prompt: any tool
 //     call that would need approval is denied, and the run still ends
 //     with subtype "success" and is_error false. The denials are only
@@ -51,10 +53,17 @@ import (
 //     ParseStream surfaces as HeadlessResult.PermissionDenials. Hooks
 //     (--settings) and MCP servers (--mcp-config) both work in print mode
 //     exactly as they do interactively.
+//
 //   - `--append-system-prompt <text>` adds to the default system prompt
 //     (`--system-prompt` would replace it); it is accepted on a `--resume`
 //     turn as well. This is how the runner states the finish_step
 //     contract to every step (tend task #197).
+//
+//   - Telemetry (opts.Telemetry, tend task #31): when set, the step's
+//     process gets the OpenTelemetry env that makes claude export its
+//     events to the runner's receiver, the step run id in the URL. It is
+//     forward-only (a step can exit before its exporter flushes) and
+//     enrichment only: the result event stays the source of truth.
 //
 // opts.Prompt is required: `-p` with no positional prompt reads stdin,
 // which a headless step never has. Options come before the prompt for
@@ -108,6 +117,9 @@ func headlessCmd(ctx context.Context, cwd string, sessionArgs []string, mcpConfi
 
 	c := exec.CommandContext(ctx, binary, args...)
 	c.Dir = cwd
+	if env := opts.Telemetry.Env(); env != nil {
+		c.Env = append(os.Environ(), env...)
+	}
 	// The step gets its own process group so cancelling reaches everything
 	// claude spawned — MCP servers, a Bash tool's shell — and not just
 	// claude: a child that inherited stdout would otherwise hold the pipe
