@@ -690,17 +690,14 @@ type app struct {
 
 	// Step attribute picker overlay: model, permission mode, or the target
 	// step of the edge being drafted.
-	wfPickerOpen   bool
+	wfPicker       picker[wfPickerOption]
 	wfPickerKind   wfPickerKind
 	wfPickerStepID int64
-	wfPickerSel    int
 
 	// Gate outcome picker overlay (runview.go): the outcomes the waiting
 	// gate routes, for a gate whose edges go beyond approve/reject.
-	gatePickerOpen      bool
+	gatePicker          picker[string]
 	gatePickerStepRunID int64
-	gatePickerOutcomes  []string
-	gatePickerSel       int
 
 	// Takeover picker overlay (takeover.go): what to do with a paused run
 	// once its step's session has been driven by hand and returned.
@@ -711,14 +708,10 @@ type app struct {
 	retry retryPicker
 
 	// Workflow-run picker overlay (workflowrun.go): choose a workflow to
-	// run on a task. wfRunPickerQuery is the type-to-filter text and
-	// wfRunPickerSel indexes the filtered rows. wfRunPending is the
-	// validated request while its cwd prompt is open, nil otherwise.
-	wfRunPickerOpen      bool
-	wfRunPickerTask      task.Task
-	wfRunPickerWorkflows []workflow.Workflow
-	wfRunPickerQuery     string
-	wfRunPickerSel       int
+	// run on a task. wfRunPending is the validated request while its cwd
+	// prompt is open, nil otherwise.
+	wfRunPicker     picker[workflow.Workflow]
+	wfRunPickerTask task.Task
 
 	// Global task search overlay (search.go): searchQuery is the typed text,
 	// searchResults the matches for it and searchSel the highlighted one.
@@ -766,38 +759,28 @@ type app struct {
 
 	// Session picker overlay: choose an existing session to resume, or
 	// launch a new one, for a task.
-	sessionPickerOpen      bool
+	sessionPicker          picker[task.Session]
 	sessionPickerTaskID    int64
 	sessionPickerProjectID int64 // the task's project, for its default cwd
 	sessionPickerLabel     string
-	sessionPickerSessions  []task.Session
-	sessionPickerQuery     string // type-to-filter over the session labels
-	sessionPickerSel       int    // 0 = "+ new session", k = the k-th matching session
-	sessionPickerTop       int    // first matching session row in the scroll window
 
 	// Command palette overlay: a fuzzy-matched command list anchored just
 	// above the footer.
-	paletteOpen  bool
-	paletteQuery string
-	paletteSel   int
+	palette picker[paletteCommand]
 
 	// URL picker overlay: choose one link from a task with multiple links.
 	// Project picker overlay: choose which project a task belongs to.
-	projectPickerOpen   bool
+	projectPicker       picker[task.Project]
 	projectPickerTaskID int64
 	projectPickerLabel  string
-	projectPickerSel    int
 
 	// Parent picker overlay (parentpicker.go): choose which task, or the
 	// top level, a task hangs under. Rows are the project's other tasks as
-	// breadcrumb paths; the query narrows them like the palette's.
-	parentPickerOpen   bool
+	// breadcrumb paths, fuzzy-filtered like the palette's.
+	parentPicker       picker[parentRow]
 	parentPickerTaskID int64
 	parentPickerFrom   *int64 // the task's parent when the picker opened; nil = top level
 	parentPickerLabel  string
-	parentPickerQuery  string
-	parentPickerSel    int
-	parentPickerRows   []parentRow
 	// A confirmed move, until its refreshMsg lands: the reload then drops
 	// the stale child caches on both ends and expands the new parent.
 	pendingMove *parentMove
@@ -810,13 +793,10 @@ type app struct {
 	// Dependency picker overlay (dependencypicker.go): which open tasks the
 	// selected one waits on. A multi-select that stays open across toggles,
 	// so checked tracks the edges as the store confirms them.
-	depPickerOpen    bool
+	depPicker        picker[dependencyRow]
 	depPickerTaskID  int64
 	depPickerProject int64 // the task's project; rows elsewhere show their project name
 	depPickerLabel   string
-	depPickerQuery   string
-	depPickerSel     int
-	depPickerRows    []dependencyRow
 	depPickerChecked map[int64]bool
 
 	// Branch link picker overlay (linkpicker.go).
@@ -824,9 +804,7 @@ type app struct {
 	// vcs runs git/but for the picker and the diff views; tests replace it.
 	vcs VCS
 
-	urlPickerOpen bool
-	urlPickerURLs []link
-	urlPickerSel  int
+	urlPicker picker[link]
 
 	helpOpen   bool // `?` key-reference overlay
 	helpScroll int  // first body row of the overlay on screen (help.go)
@@ -1385,22 +1363,22 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	a.pendingSelectID = 0
 
 	// An open URL picker swallows all keys.
-	if a.urlPickerOpen {
+	if a.urlPicker.open {
 		return a.handleURLPickerKey(msg)
 	}
 
 	// So does an open project picker.
-	if a.projectPickerOpen {
+	if a.projectPicker.open {
 		return a.handleProjectPickerKey(msg)
 	}
 
 	// And the parent picker.
-	if a.parentPickerOpen {
+	if a.parentPicker.open {
 		return a.handleParentPickerKey(msg)
 	}
 
 	// And the dependency picker.
-	if a.depPickerOpen {
+	if a.depPicker.open {
 		return a.handleDependencyPickerKey(msg)
 	}
 
@@ -1410,12 +1388,12 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// And a step attribute picker (workflows view).
-	if a.wfPickerOpen {
+	if a.wfPicker.open {
 		return a.handleWfPickerKey(msg)
 	}
 
 	// An open session picker swallows all keys.
-	if a.sessionPickerOpen {
+	if a.sessionPicker.open {
 		return a.handleSessionPickerKey(msg)
 	}
 
@@ -1425,12 +1403,12 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// As does the workflow-run picker.
-	if a.wfRunPickerOpen {
+	if a.wfRunPicker.open {
 		return a.handleWorkflowRunPickerKey(msg)
 	}
 
 	// And the gate outcome picker (run view).
-	if a.gatePickerOpen {
+	if a.gatePicker.open {
 		return a.handleGatePickerKey(msg)
 	}
 
@@ -1445,7 +1423,7 @@ func (a app) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// An open palette swallows all keys.
-	if a.paletteOpen {
+	if a.palette.open {
 		return a.handlePaletteKey(msg)
 	}
 
@@ -2994,32 +2972,32 @@ func (a app) View() tea.View {
 	// Palette and help splice in just above the footer, over the bottom
 	// body rows. A panel taller than the screen loses its top rows, like
 	// the design's splice.
-	if a.paletteOpen || a.helpOpen || a.urlPickerOpen || a.sessionPickerOpen ||
-		a.projectPickerOpen || a.parentPickerOpen || a.depPickerOpen || a.lp.open || a.wfPickerOpen || a.wfRunPickerOpen || a.searchOpen ||
-		a.gatePickerOpen || a.takeover.open || a.retry.open {
+	if a.palette.open || a.helpOpen || a.urlPicker.open || a.sessionPicker.open ||
+		a.projectPicker.open || a.parentPicker.open || a.depPicker.open || a.lp.open || a.wfPicker.open || a.wfRunPicker.open || a.searchOpen ||
+		a.gatePicker.open || a.takeover.open || a.retry.open {
 		box := a.paletteView()
 		switch {
 		case a.helpOpen:
 			box = a.helpView()
-		case a.urlPickerOpen:
+		case a.urlPicker.open:
 			box = a.urlPickerView()
-		case a.sessionPickerOpen:
+		case a.sessionPicker.open:
 			box = a.sessionPickerView()
-		case a.projectPickerOpen:
+		case a.projectPicker.open:
 			box = a.projectPickerView()
-		case a.parentPickerOpen:
+		case a.parentPicker.open:
 			box = a.parentPickerView()
-		case a.depPickerOpen:
+		case a.depPicker.open:
 			box = a.dependencyPickerView()
 		case a.lp.open:
 			box = a.linkPickerView()
-		case a.wfPickerOpen:
+		case a.wfPicker.open:
 			box = a.wfPickerView()
-		case a.wfRunPickerOpen:
+		case a.wfRunPicker.open:
 			box = a.workflowRunPickerView()
 		case a.searchOpen:
 			box = a.searchView()
-		case a.gatePickerOpen:
+		case a.gatePicker.open:
 			box = a.gatePickerView()
 		case a.takeover.open:
 			box = a.takeoverPickerView()
